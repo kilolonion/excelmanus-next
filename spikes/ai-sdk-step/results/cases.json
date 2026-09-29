@@ -1,0 +1,494 @@
+{
+  "env": {
+    "node": "v24.1.0",
+    "platform": "darwin/arm64",
+    "model": "mimo-v2.6-flash",
+    "baseURL": "api.xiaomimimo.com",
+    "aiSdk": {
+      "ai": "7.0.108",
+      "openaiCompatible": "3.0.53",
+      "provider": "4.0.17",
+      "providerUtils": "5.0.45"
+    }
+  },
+  "results": [
+    {
+      "id": "A01",
+      "provider": "mimo",
+      "title": "流式纯文本",
+      "expect": "≥2 text.delta；finish=stop；usage>0；记录首字节与总耗时",
+      "pass": true,
+      "durationMs": 4555.247958,
+      "firstDeltaMs": 3181.4368750000003,
+      "eventKinds": [
+        "reasoning.delta",
+        "reasoning.delta",
+        "reasoning.delta",
+        "reasoning.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "usage",
+        "finish",
+        "usage"
+      ],
+      "underlyingCalls": 1,
+      "details": {
+        "textDeltas": 17,
+        "finish": {
+          "kind": "finish",
+          "reason": "stop",
+          "rawReason": "stop"
+        },
+        "usage": {
+          "inputTokens": 26,
+          "outputTokens": 46,
+          "reasoningTokens": 16
+        }
+      }
+    },
+    {
+      "id": "A02",
+      "provider": "mimo",
+      "title": "思考内容流式输出",
+      "expect": "≥1 reasoning.delta，与 text 分开；否则记录原始 SSE",
+      "pass": true,
+      "durationMs": 3621.8145840000007,
+      "firstDeltaMs": 2453.1171669999994,
+      "eventKinds": [
+        "reasoning.delta",
+        "reasoning.delta",
+        "reasoning.delta",
+        "reasoning.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "usage",
+        "finish",
+        "usage"
+      ],
+      "underlyingCalls": 1,
+      "details": {
+        "reasoningDeltas": 4,
+        "textDeltas": 14,
+        "reasoningPreview": "9.11 和 9.9 比较大小",
+        "textPreview": "**9.9 大于 9.11。**\n\n比较时可以统一小数位数：9.90 > 9.11，所以 9.9 更大。"
+      }
+    },
+    {
+      "id": "A03",
+      "provider": "mimo",
+      "title": "单步工具调用（无 execute）",
+      "expect": "tool.call(name=workbook_read, args 过 schema)；finish=tool-calls；底层恰好 1 次请求",
+      "pass": true,
+      "durationMs": 3527.511624999999,
+      "firstDeltaMs": 2873.0084580000002,
+      "eventKinds": [
+        "reasoning.delta",
+        "reasoning.delta",
+        "reasoning.delta",
+        "reasoning.delta",
+        "reasoning.delta",
+        "tool.args.delta",
+        "tool.args.delta",
+        "tool.args.delta",
+        "tool.args.delta",
+        "tool.args.delta",
+        "tool.args.delta",
+        "tool.args.delta",
+        "tool.args.delta",
+        "tool.args.delta",
+        "tool.args.delta",
+        "tool.call",
+        "usage",
+        "finish",
+        "usage"
+      ],
+      "underlyingCalls": 1,
+      "details": {
+        "toolCall": {
+          "kind": "tool.call",
+          "toolCallId": "call_18879e036b454408b36cd161",
+          "toolName": "workbook_read",
+          "args": {
+            "path": "sales.xlsx",
+            "range": "Sheet1!A1:C5"
+          },
+          "rawArgs": "{\"path\":\"sales.xlsx\",\"range\":\"Sheet1!A1:C5\"}"
+        },
+        "finish": {
+          "kind": "finish",
+          "reason": "tool-calls",
+          "rawReason": "tool_calls"
+        },
+        "argsSchemaValid": true
+      }
+    },
+    {
+      "id": "A04",
+      "provider": "mimo",
+      "title": "多轮+工具结果回传",
+      "expect": "第2步请求含 tool_calls/配对 tool_call_id；思考内容回传情况记录；回答引用表中数据",
+      "pass": true,
+      "durationMs": 6457.821916999999,
+      "firstDeltaMs": 5006.912709000002,
+      "eventKinds": [
+        "reasoning.delta",
+        "reasoning.delta",
+        "reasoning.delta",
+        "reasoning.delta",
+        "reasoning.delta",
+        "reasoning.delta",
+        "reasoning.delta",
+        "reasoning.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "usage",
+        "finish",
+        "usage"
+      ],
+      "underlyingCalls": 1,
+      "details": {
+        "assistantHasToolCalls": true,
+        "toolCallIdMatch": true,
+        "reasoningSentBack": true,
+        "reasoningFieldName": [
+          "reasoning_content"
+        ],
+        "answerPreview": "根据刚才读取的数据，**Gamma** 的 amount 最大，为 **1530**。\n\n各产品对比：\n- Alpha：1200\n- Beta：890\n- Gamma：1530 ✅",
+        "citesData": true,
+        "step1ReasoningLen": 56
+      }
+    },
+    {
+      "id": "A05",
+      "provider": "mimo",
+      "title": "中断",
+      "expect": "首delta后200ms abort；迭代1s内结束（记录末事件形态）；无未处理拒绝；随后普通 step 成功",
+      "pass": true,
+      "durationMs": 3722.0547910000023,
+      "firstDeltaMs": 3388.1776250000003,
+      "eventKinds": [
+        "reasoning.delta",
+        "reasoning.delta",
+        "reasoning.delta",
+        "reasoning.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "error"
+      ],
+      "underlyingCalls": 2,
+      "details": {
+        "aborted": true,
+        "endedAs": "error(aborted)",
+        "msFromAbortToEnd": 5.974665999998251,
+        "endWithin1sOfAbort": true,
+        "deltasAfterAbort": 0,
+        "unhandledRejections": 0,
+        "followupOk": true
+      }
+    },
+    {
+      "id": "A06",
+      "provider": "mimo",
+      "title": "认证失败分类",
+      "expect": "error(auth, retryable=false)；错误信息不含请求头与密钥",
+      "pass": true,
+      "durationMs": 102.73387500000172,
+      "firstDeltaMs": null,
+      "eventKinds": [
+        "error"
+      ],
+      "underlyingCalls": 1,
+      "details": {
+        "error": {
+          "kind": "error",
+          "error": {
+            "kind": "auth",
+            "retryable": false,
+            "message": "Invalid API Key",
+            "statusCode": 401,
+            "detail": "{\n    \"error\": {\n        \"message\": \"Invalid API Key\",\n        \"param\": \"Please provide valid API Key\",\n        \"code\": \"401\",\n        \"type\": \"invalid_key\"\n    }\n}\n"
+          }
+        },
+        "headerLeak": false
+      }
+    },
+    {
+      "id": "A07",
+      "provider": "mimo",
+      "title": "模型不存在分类",
+      "expect": "error(model_not_found|invalid_request, 不可重试)；记录原始状态码与错误体摘要",
+      "pass": true,
+      "durationMs": 48.73283399999855,
+      "firstDeltaMs": null,
+      "eventKinds": [
+        "error"
+      ],
+      "underlyingCalls": 1,
+      "details": {
+        "kind": "invalid_request",
+        "statusCode": 400,
+        "detail": "{\n    \"error\": {\n        \"code\": \"400\",\n        \"message\": \"Unsupported model nonexistent-model-xyz\"\n    }\n}\n"
+      }
+    },
+    {
+      "id": "M01",
+      "provider": "mock",
+      "title": "429+Retry-After 分类",
+      "expect": "rate_limit/retryable/retryAfterMs=2000",
+      "pass": true,
+      "durationMs": 2.636167000000569,
+      "firstDeltaMs": null,
+      "eventKinds": [
+        "error"
+      ],
+      "underlyingCalls": 1,
+      "details": {
+        "error": {
+          "kind": "error",
+          "error": {
+            "kind": "rate_limit",
+            "retryable": true,
+            "retryAfterMs": 2000,
+            "message": "Too Many Requests",
+            "statusCode": 429,
+            "detail": "{\"error\":{\"message\":\"rate limited\"}}"
+          }
+        }
+      }
+    },
+    {
+      "id": "M02",
+      "provider": "mock",
+      "title": "流中断",
+      "expect": "3 个 text.delta 后 error(stream_interrupted, retryable)",
+      "pass": true,
+      "durationMs": 3.9381670000002487,
+      "firstDeltaMs": 2.3019580000000133,
+      "eventKinds": [
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "error",
+        "usage",
+        "finish",
+        "usage"
+      ],
+      "underlyingCalls": 1,
+      "details": {
+        "textDeltas": 3,
+        "error": {
+          "kind": "error",
+          "error": {
+            "kind": "stream_interrupted",
+            "retryable": true,
+            "message": "socket hangup"
+          }
+        }
+      }
+    },
+    {
+      "id": "M03",
+      "provider": "mock",
+      "title": "上下文超限分类",
+      "expect": "context_overflow",
+      "pass": true,
+      "durationMs": 2.2181669999990845,
+      "firstDeltaMs": null,
+      "eventKinds": [
+        "error"
+      ],
+      "underlyingCalls": 1,
+      "details": {
+        "error": {
+          "kind": "error",
+          "error": {
+            "kind": "context_overflow",
+            "retryable": true,
+            "message": "context_length_exceeded: maximum context length is 8192",
+            "statusCode": 400,
+            "detail": "{\"error\":{\"code\":\"context_length_exceeded\",\"message\":\"maximum context length is 8192 tokens\"}}"
+          }
+        }
+      }
+    },
+    {
+      "id": "M04a",
+      "provider": "mock",
+      "title": "5xx 分类",
+      "expect": "server_error/retryable",
+      "pass": true,
+      "durationMs": 0.9088750000009895,
+      "firstDeltaMs": null,
+      "eventKinds": [
+        "error"
+      ],
+      "underlyingCalls": 1,
+      "details": {
+        "error": {
+          "kind": "error",
+          "error": {
+            "kind": "server_error",
+            "retryable": true,
+            "message": "Internal Server Error",
+            "statusCode": 500,
+            "detail": "{\"error\":\"boom\"}"
+          }
+        }
+      }
+    },
+    {
+      "id": "M04b",
+      "provider": "mock",
+      "title": "网络错误分类",
+      "expect": "network/retryable",
+      "pass": true,
+      "durationMs": 1.413791000002675,
+      "firstDeltaMs": null,
+      "eventKinds": [
+        "error"
+      ],
+      "underlyingCalls": 1,
+      "details": {
+        "error": {
+          "kind": "error",
+          "error": {
+            "kind": "network",
+            "retryable": true,
+            "message": "fetch failed"
+          }
+        }
+      }
+    },
+    {
+      "id": "M05",
+      "provider": "mock",
+      "title": "中立格式往返",
+      "expect": "prompt 逐字段一致；思考 providerOptions/providerMetadata 原样在对应位置",
+      "pass": true,
+      "durationMs": 3.0979999999981374,
+      "firstDeltaMs": 2.3116660000014235,
+      "eventKinds": [
+        "text.delta",
+        "text.delta",
+        "usage",
+        "finish",
+        "usage"
+      ],
+      "underlyingCalls": 1,
+      "details": {
+        "prompt": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "看一下数据"
+              }
+            ]
+          },
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "reasoning",
+                "text": "需要先读表",
+                "providerOptions": {
+                  "mimo": {
+                    "signature": "sig-xyz"
+                  }
+                }
+              },
+              {
+                "type": "text",
+                "text": "我先读一下。"
+              },
+              {
+                "type": "tool-call",
+                "toolCallId": "call_1",
+                "toolName": "workbook_read",
+                "input": {
+                  "path": "a.xlsx",
+                  "range": "A1"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "content": [
+              {
+                "type": "tool-result",
+                "toolCallId": "call_1",
+                "toolName": "workbook_read",
+                "output": {
+                  "type": "json",
+                  "value": {
+                    "value": 42
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "结论？"
+              }
+            ]
+          }
+        ],
+        "reasoningPart": {
+          "type": "reasoning",
+          "text": "需要先读表",
+          "providerOptions": {
+            "mimo": {
+              "signature": "sig-xyz"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

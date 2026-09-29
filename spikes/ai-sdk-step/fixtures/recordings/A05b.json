@@ -1,0 +1,23 @@
+[
+  {
+    "url": "https://api.xiaomimimo.com/v1/chat/completions",
+    "method": "POST",
+    "requestHeaders": {
+      "authorization": "<redacted>",
+      "content-type": "application/json",
+      "user-agent": "ai-sdk/openai-compatible/3.0.53 ai-sdk/provider-utils/5.0.45 runtime/node.js/24"
+    },
+    "requestBody": "{\"model\":\"mimo-v2.6-flash\",\"messages\":[{\"role\":\"system\",\"content\":\"You are a helpful assistant. 用中文回答。\"},{\"role\":\"user\",\"content\":\"说“好”。\"}],\"stream\":true,\"stream_options\":{\"include_usage\":true}}",
+    "status": 200,
+    "responseHeaders": {
+      "connection": "keep-alive",
+      "content-type": "text/event-stream",
+      "date": "Tue, 29 Sep 2026 14:09:43 GMT",
+      "server": "MiFE/3.4.34",
+      "transfer-encoding": "chunked",
+      "vary": "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
+      "x-mife-upstream-status": "200"
+    },
+    "responseBody": "data: {\"id\":\"51111f12-35ee-4de9-8834-4380f3f56b41_c7981ec6476945698f8c8cacc322e401\",\"choices\":[{\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"tool_calls\":null,\"reasoning_content\":null},\"finish_reason\":null,\"index\":0}],\"created\":1790690983,\"model\":\"mimo-v2.6-flash\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"id\":\"51111f12-35ee-4de9-8834-4380f3f56b41_c7981ec6476945698f8c8cacc322e401\",\"choices\":[{\"delta\":{\"content\":null,\"role\":null,\"tool_calls\":null,\"reasoning_content\":\"The user asked\"},\"finish_reason\":null,\"index\":0}],\"created\":1790690983,\"model\":\"mimo-v2.6-flash\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"id\":\"51111f12-35ee-4de9-8834-4380f3f56b41_c7981ec6476945698f8c8cacc322e401\",\"choices\":[{\"delta\":{\"content\":null,\"role\":null,\"tool_calls\":null,\"reasoning_content\":\" me to say \\\"好\\\" (which\"},\"finish_reason\":null,\"index\":0}],\"created\":1790690983,\"model\":\"mimo-v2.6-flash\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"id\":\"51111f12-35ee-4de9-8834-4380f3f56b41_c7981ec6476945698f8c8cacc322e401\",\"choices\":[{\"delta\":{\"content\":null,\"role\":null,\"tool_calls\":null,\"reasoning_content\":\" means \\\"okay\"},\"finish_reason\":null,\"index\":0}],\"created\":1790690983,\"model\":\"mimo-v2.6-flash\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"id\":\"51111f12-35ee-4de9-8834-4380f3f56b41_c7981ec6476945698f8c8cacc322e401\",\"choices\":[{\"delta\":{\"content\":null,\"role\":null,\"tool_calls\":null,\"reasoning_content\":\"/g\"},\"finish_reason\":null,\"index\":0}],\"created\":1790690983,\"model\":\"mimo-v2.6-flash\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"id\":\"51111f12-35ee-4de9-8834-4380f3f56b41_c7981ec6476945698f8c8cacc322e401\",\"choices\":[{\"delta\":{\"content\":null,\"role\":null,\"tool_calls\":null,\"reasoning_content\":\"ood\\\" in Chinese).\"},\"finish_reason\":null,\"index\":0}],\"created\":1790690983,\"model\":\"mimo-v2.6-flash\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"id\":\"51111f12-35ee-4de9-8834-4380f3f56b41_c7981ec6476945698f8c8cacc322e401\",\"choices\":[{\"delta\":{\"content\":\"好\",\"role\":null,\"tool_calls\":null,\"reasoning_content\":null},\"finish_reason\":null,\"index\":0}],\"created\":1790690983,\"model\":\"mimo-v2.6-flash\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"id\":\"51111f12-35ee-4de9-8834-4380f3f56b41_c7981ec6476945698f8c8cacc322e401\",\"choices\":[{\"delta\":{\"content\":null,\"role\":null,\"tool_calls\":null,\"reasoning_content\":null},\"finish_reason\":\"stop\",\"index\":0}],\"created\":1790690983,\"model\":\"mimo-v2.6-flash\",\"object\":\"chat.completion.chunk\",\"usage\":null}\n\ndata: {\"id\":\"51111f12-35ee-4de9-8834-4380f3f56b41_c7981ec6476945698f8c8cacc322e401\",\"choices\":[],\"created\":1790690983,\"model\":\"mimo-v2.6-flash\",\"object\":\"chat.completion.chunk\",\"usage\":{\"completion_tokens\":24,\"prompt_tokens\":26,\"total_tokens\":50,\"completion_tokens_details\":{\"reasoning_tokens\":21},\"prompt_tokens_details\":{\"cached_tokens\":0}}}\n\ndata: [DONE]\n\n"
+  }
+]

@@ -26,11 +26,11 @@
 | T-4 | `.xls`/`.xlsb` 导入方案 | 同上 | |
 | T-5 | QuickJS 在 `worker_threads` 中的运行、异步变体性能 | [08 §7](08-sandbox.md#7-m0-技术验证硬性) | 2026-09-29：同步变体 + 宿主 Promise 桥，51/51 逃逸用例与性能判据通过（macOS arm64；x64/Windows 待 M3 CI），见 [ADR 0001](decisions/0001-run-script-sandbox-quickjs-sync.md) |
 | T-6 | ChatGPT 订阅 provider 选用哪个社区包或自写薄适配 | [09 §4.2](09-models.md#42-实现推荐) | |
-| T-7 | 国产模型（千问、智谱、豆包、MiniMax）经 `@ai-sdk/openai-compatible` 的思考与工具调用兼容性；是否有可用的 AI SDK 7 社区包 | 录制回放 | |
-| T-8 | `node:sqlite` 在 Electron 44 中是否可用、是否含 FTS5 | 实测 | |
+| T-7 | 国产模型（千问、智谱、豆包、MiniMax）经 `@ai-sdk/openai-compatible` 的思考与工具调用兼容性；是否有可用的 AI SDK 7 社区包 | 录制回放 | 部分：小米 MiMo 经 openai-compatible 的流式、思考（`reasoning_content`）、工具调用、中断全部通过，见 [ADR 0005](decisions/0005-model-gateway-ai-sdk-single-step.md)；其余国产模型与 OpenAI/Anthropic/DeepSeek 待补 |
+| T-8 | `node:sqlite` 在 Electron 44 中是否可用、是否含 FTS5 | 实测 | 2026-09-29：Electron 44.4.3 主进程与 run-as-node 可用（SQLite 3.53.4，含 FTS5/JSON1）；中文检索用 trigram + 短查询 LIKE 回退；utilityProcess 待在桌面会话补测，见 [ADR 0004](decisions/0004-storage-node-sqlite.md) |
 | T-9 | 本机 Web 形态的截图渲染：借用已打开的浏览器页签 vs 连接系统 Chrome/Edge 的可靠性 | 实测 | |
 | T-10 | 工作台加载 20 万行工作簿的分块策略 | 实测 | |
-| T-11 | Univer 作为服务端文档模型的性能、内存与回放一致性 | [07 §12](07-workbook-engine.md#12-m0-技术验证spike硬性必须在-m1-开始前完成并写-adr) | |
+| T-11 | Univer 作为服务端文档模型的性能、内存与回放一致性 | [07 §12](07-workbook-engine.md#12-m0-技术验证spike硬性必须在-m1-开始前完成并写-adr) | 2026-09-29：达标（带两条传输修补后 1000/1000）；内置撤销不可用，改用写集前像逆操作 + 快照回滚兜底；活文档上限 400 万格，见 [ADR 0003](decisions/0003-univer-server-document-model.md) |
 | T-12 | Univer 升级时 mutation 格式兼容策略 | 锁定版本 + 旧日志回放测试 | |
 | T-13 | `doc:` 主题的大批量分片推送对工作台渲染性能的影响 | 实测 | |
 

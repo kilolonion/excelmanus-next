@@ -1,0 +1,19 @@
+{
+  "name": "@excelmanus-spike/node-sqlite",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/probe.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "probe:node": "node src/probe.ts node",
+    "probe:run-as-node": "ELECTRON_RUN_AS_NODE=1 electron src/probe.ts electron-run-as-node",
+    "probe:main": "electron src/electron-main.mjs",
+    "probe:utility": "electron src/electron-utility.mjs"
+  },
+  "devDependencies": {
+    "electron": "44.4.3"
+  }
+}
