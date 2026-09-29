@@ -1,0 +1,409 @@
+{
+  "_readme": "M0-A2 公式引擎判据（由项目负责人编写，执行者不得修改期望值；如认为期望值有误，报告给负责人而不是改文件）。data 为 Data 工作表从 A1 起的二维数据（null=空单元格）。每个 case 在 Cases 工作表的独立单元格写入 formula，读取计算结果与 expect 比较。expect.t: num（默认绝对容差 1e-9，可用 tol 覆盖）/ str / bool / err（错误值文本）/ numRange（min<=x<max，int=true 要求整数）。volatile 函数只检查范围。",
+  "data": [
+    [1, 10, "apple", null, null, null, "x", "y", "z", null, -100],
+    [2, 20, "banana", null, null, null, 1, 2, 3, null, 60],
+    [3, 30, "cherry", null, null, null, null, null, null, null, 60],
+    [4, 40, "apple"],
+    [5, 50, "banana"],
+    [6, 60, "cherry"],
+    [7, 70, "apple"],
+    [8, 80, "banana"],
+    [9, 90, "cherry"],
+    [10, 100, "apple"]
+  ],
+  "cases": [
+    { "fn": "SUM", "formula": "=SUM(Data!A1:A10)", "expect": { "t": "num", "v": 55 } },
+    {
+      "fn": "SUMIF",
+      "formula": "=SUMIF(Data!C1:C10,\"apple\",Data!B1:B10)",
+      "expect": { "t": "num", "v": 220 }
+    },
+    {
+      "fn": "SUMIFS",
+      "formula": "=SUMIFS(Data!B1:B10,Data!C1:C10,\"banana\",Data!A1:A10,\">2\")",
+      "expect": { "t": "num", "v": 130 }
+    },
+    {
+      "fn": "SUMPRODUCT",
+      "formula": "=SUMPRODUCT(Data!A1:A10,Data!B1:B10)",
+      "expect": { "t": "num", "v": 3850 }
+    },
+    { "fn": "AVERAGE", "formula": "=AVERAGE(Data!A1:A10)", "expect": { "t": "num", "v": 5.5 } },
+    {
+      "fn": "AVERAGEIF",
+      "formula": "=AVERAGEIF(Data!C1:C10,\"cherry\",Data!B1:B10)",
+      "expect": { "t": "num", "v": 60 }
+    },
+    {
+      "fn": "AVERAGEIFS",
+      "formula": "=AVERAGEIFS(Data!B1:B10,Data!C1:C10,\"apple\",Data!A1:A10,\"<=7\")",
+      "expect": { "t": "num", "v": 40 }
+    },
+    {
+      "fn": "COUNT",
+      "formula": "=COUNT(Data!A1:A10,Data!C1:C3)",
+      "expect": { "t": "num", "v": 10 }
+    },
+    { "fn": "COUNTA", "formula": "=COUNTA(Data!A1:C10)", "expect": { "t": "num", "v": 30 } },
+    {
+      "fn": "COUNTBLANK",
+      "formula": "=COUNTBLANK(Data!E1:E10)",
+      "expect": { "t": "num", "v": 10 }
+    },
+    {
+      "fn": "COUNTIF",
+      "formula": "=COUNTIF(Data!C1:C10,\"apple\")",
+      "expect": { "t": "num", "v": 4 }
+    },
+    {
+      "fn": "COUNTIFS",
+      "formula": "=COUNTIFS(Data!C1:C10,\"banana\",Data!A1:A10,\">=5\")",
+      "expect": { "t": "num", "v": 2 }
+    },
+    { "fn": "MAX", "formula": "=MAX(Data!A1:A10)", "expect": { "t": "num", "v": 10 } },
+    {
+      "fn": "MAXIFS",
+      "formula": "=MAXIFS(Data!B1:B10,Data!C1:C10,\"banana\")",
+      "expect": { "t": "num", "v": 80 }
+    },
+    { "fn": "MIN", "formula": "=MIN(Data!B1:B10)", "expect": { "t": "num", "v": 10 } },
+    {
+      "fn": "MINIFS",
+      "formula": "=MINIFS(Data!B1:B10,Data!C1:C10,\"cherry\")",
+      "expect": { "t": "num", "v": 30 }
+    },
+    { "fn": "ROUND", "formula": "=ROUND(2.567,2)", "expect": { "t": "num", "v": 2.57 } },
+    { "fn": "ROUNDUP", "formula": "=ROUNDUP(2.561,2)", "expect": { "t": "num", "v": 2.57 } },
+    { "fn": "ROUNDDOWN", "formula": "=ROUNDDOWN(2.569,2)", "expect": { "t": "num", "v": 2.56 } },
+    { "fn": "INT", "formula": "=INT(-2.5)", "expect": { "t": "num", "v": -3 } },
+    { "fn": "MOD", "formula": "=MOD(-7,3)", "expect": { "t": "num", "v": 2 } },
+    { "fn": "ABS", "formula": "=ABS(-3.5)", "expect": { "t": "num", "v": 3.5 } },
+    { "fn": "CEILING", "formula": "=CEILING(2.1,0.5)", "expect": { "t": "num", "v": 2.5 } },
+    { "fn": "FLOOR", "formula": "=FLOOR(2.9,0.5)", "expect": { "t": "num", "v": 2.5 } },
+    { "fn": "POWER", "formula": "=POWER(2,10)", "expect": { "t": "num", "v": 1024 } },
+    { "fn": "SQRT", "formula": "=SQRT(144)", "expect": { "t": "num", "v": 12 } },
+    { "fn": "PRODUCT", "formula": "=PRODUCT(Data!A1:A5)", "expect": { "t": "num", "v": 120 } },
+    { "fn": "RAND", "formula": "=RAND()", "expect": { "t": "numRange", "min": 0, "max": 1 } },
+    {
+      "fn": "RANDBETWEEN",
+      "formula": "=RANDBETWEEN(5,10)",
+      "expect": { "t": "numRange", "min": 5, "max": 10.5, "int": true }
+    },
+    { "fn": "SIGN", "formula": "=SIGN(-9)", "expect": { "t": "num", "v": -1 } },
+    { "fn": "TRUNC", "formula": "=TRUNC(-8.9)", "expect": { "t": "num", "v": -8 } },
+    { "fn": "LN", "formula": "=LN(EXP(1))", "expect": { "t": "num", "v": 1 } },
+    { "fn": "LOG", "formula": "=LOG(8,2)", "expect": { "t": "num", "v": 3 } },
+    { "fn": "LOG10", "formula": "=LOG10(1000)", "expect": { "t": "num", "v": 3 } },
+    { "fn": "EXP", "formula": "=EXP(0)", "expect": { "t": "num", "v": 1 } },
+    { "fn": "SUBTOTAL", "formula": "=SUBTOTAL(9,Data!A1:A10)", "expect": { "t": "num", "v": 55 } },
+    {
+      "fn": "AGGREGATE",
+      "formula": "=AGGREGATE(9,6,Data!A1:A10)",
+      "expect": { "t": "num", "v": 55 }
+    },
+    { "fn": "MEDIAN", "formula": "=MEDIAN(Data!B1:B10)", "expect": { "t": "num", "v": 55 } },
+    { "fn": "MODE", "formula": "=MODE(1,2,2,3,3,3)", "expect": { "t": "num", "v": 3 } },
+    { "fn": "LARGE", "formula": "=LARGE(Data!B1:B10,2)", "expect": { "t": "num", "v": 90 } },
+    { "fn": "SMALL", "formula": "=SMALL(Data!B1:B10,3)", "expect": { "t": "num", "v": 30 } },
+    { "fn": "RANK", "formula": "=RANK(30,Data!B1:B10)", "expect": { "t": "num", "v": 8 } },
+    {
+      "fn": "STDEV",
+      "formula": "=STDEV(Data!A1:A10)",
+      "expect": { "t": "num", "v": 3.0276503540974917, "tol": 1e-9 }
+    },
+    {
+      "fn": "STDEV.S",
+      "formula": "=STDEV.S(Data!A1:A10)",
+      "expect": { "t": "num", "v": 3.0276503540974917, "tol": 1e-9 }
+    },
+    {
+      "fn": "VAR",
+      "formula": "=VAR(Data!A1:A10)",
+      "expect": { "t": "num", "v": 9.166666666666666, "tol": 1e-9 }
+    },
+    {
+      "fn": "VAR.S",
+      "formula": "=VAR.S(Data!A1:A10)",
+      "expect": { "t": "num", "v": 9.166666666666666, "tol": 1e-9 }
+    },
+    {
+      "fn": "PERCENTILE",
+      "formula": "=PERCENTILE(Data!A1:A10,0.5)",
+      "expect": { "t": "num", "v": 5.5 }
+    },
+    {
+      "fn": "QUARTILE",
+      "formula": "=QUARTILE(Data!A1:A10,1)",
+      "expect": { "t": "num", "v": 3.25 }
+    },
+    {
+      "fn": "CORREL",
+      "formula": "=CORREL(Data!A1:A10,Data!B1:B10)",
+      "expect": { "t": "num", "v": 1, "tol": 1e-9 }
+    },
+    {
+      "fn": "SLOPE",
+      "formula": "=SLOPE(Data!B1:B10,Data!A1:A10)",
+      "expect": { "t": "num", "v": 10, "tol": 1e-9 }
+    },
+    {
+      "fn": "INTERCEPT",
+      "formula": "=INTERCEPT(Data!B1:B10,Data!A1:A10)",
+      "expect": { "t": "num", "v": 0, "tol": 1e-9 }
+    },
+    { "fn": "MROUND", "formula": "=MROUND(10,3)", "expect": { "t": "num", "v": 9 } },
+    { "fn": "QUOTIENT", "formula": "=QUOTIENT(17,5)", "expect": { "t": "num", "v": 3 } },
+    { "fn": "GCD", "formula": "=GCD(12,18)", "expect": { "t": "num", "v": 6 } },
+    { "fn": "LCM", "formula": "=LCM(4,6)", "expect": { "t": "num", "v": 12 } },
+    { "fn": "FACT", "formula": "=FACT(5)", "expect": { "t": "num", "v": 120 } },
+    {
+      "fn": "PI",
+      "formula": "=PI()",
+      "expect": { "t": "num", "v": 3.141592653589793, "tol": 1e-12 }
+    },
+    {
+      "fn": "IF",
+      "formula": "=IF(Data!A1>0,\"pos\",\"neg\")",
+      "expect": { "t": "str", "v": "pos" }
+    },
+    {
+      "fn": "IFS",
+      "formula": "=IFS(Data!A1>5,\"big\",Data!A1>0,\"small\")",
+      "expect": { "t": "str", "v": "small" }
+    },
+    { "fn": "IFERROR", "formula": "=IFERROR(1/0,\"err\")", "expect": { "t": "str", "v": "err" } },
+    { "fn": "IFNA", "formula": "=IFNA(NA(),\"na\")", "expect": { "t": "str", "v": "na" } },
+    { "fn": "AND", "formula": "=AND(TRUE,1>0)", "expect": { "t": "bool", "v": true } },
+    { "fn": "OR", "formula": "=OR(FALSE,1>2)", "expect": { "t": "bool", "v": false } },
+    { "fn": "NOT", "formula": "=NOT(FALSE)", "expect": { "t": "bool", "v": true } },
+    { "fn": "XOR", "formula": "=XOR(TRUE,TRUE)", "expect": { "t": "bool", "v": false } },
+    { "fn": "TRUE", "formula": "=TRUE()", "expect": { "t": "bool", "v": true } },
+    { "fn": "FALSE", "formula": "=FALSE()", "expect": { "t": "bool", "v": false } },
+    {
+      "fn": "SWITCH",
+      "formula": "=SWITCH(2,1,\"a\",2,\"b\",\"z\")",
+      "expect": { "t": "str", "v": "b" }
+    },
+    {
+      "fn": "VLOOKUP",
+      "formula": "=VLOOKUP(3,Data!A1:C10,3,FALSE)",
+      "expect": { "t": "str", "v": "cherry" }
+    },
+    {
+      "fn": "HLOOKUP",
+      "formula": "=HLOOKUP(\"y\",Data!G1:I2,2,FALSE)",
+      "expect": { "t": "num", "v": 2 }
+    },
+    {
+      "fn": "XLOOKUP",
+      "formula": "=XLOOKUP(\"cherry\",Data!C1:C10,Data!B1:B10)",
+      "expect": { "t": "num", "v": 30 }
+    },
+    {
+      "fn": "LOOKUP",
+      "formula": "=LOOKUP(4.5,Data!A1:A10,Data!B1:B10)",
+      "expect": { "t": "num", "v": 40 }
+    },
+    { "fn": "INDEX", "formula": "=INDEX(Data!B1:B10,4)", "expect": { "t": "num", "v": 40 } },
+    {
+      "fn": "MATCH",
+      "formula": "=MATCH(\"cherry\",Data!C1:C10,0)",
+      "expect": { "t": "num", "v": 3 }
+    },
+    {
+      "fn": "XMATCH",
+      "formula": "=XMATCH(\"banana\",Data!C1:C10)",
+      "expect": { "t": "num", "v": 2 }
+    },
+    { "fn": "OFFSET", "formula": "=OFFSET(Data!A1,2,1)", "expect": { "t": "num", "v": 30 } },
+    { "fn": "INDIRECT", "formula": "=INDIRECT(\"Data!B5\")", "expect": { "t": "num", "v": 50 } },
+    {
+      "fn": "CHOOSE",
+      "formula": "=CHOOSE(2,\"a\",\"b\",\"c\")",
+      "expect": { "t": "str", "v": "b" }
+    },
+    { "fn": "ROW", "formula": "=ROW(Data!B7)", "expect": { "t": "num", "v": 7 } },
+    { "fn": "ROWS", "formula": "=ROWS(Data!A1:A10)", "expect": { "t": "num", "v": 10 } },
+    { "fn": "COLUMN", "formula": "=COLUMN(Data!C1)", "expect": { "t": "num", "v": 3 } },
+    { "fn": "COLUMNS", "formula": "=COLUMNS(Data!A1:C1)", "expect": { "t": "num", "v": 3 } },
+    { "fn": "ADDRESS", "formula": "=ADDRESS(2,3)", "expect": { "t": "str", "v": "$C$2" } },
+    {
+      "fn": "TRANSPOSE",
+      "formula": "=INDEX(TRANSPOSE(Data!A1:A3),1,2)",
+      "expect": { "t": "num", "v": 2 }
+    },
+    {
+      "fn": "FILTER",
+      "formula": "=SUM(FILTER(Data!B1:B10,Data!A1:A10>8))",
+      "expect": { "t": "num", "v": 190 }
+    },
+    {
+      "fn": "SORT",
+      "formula": "=INDEX(SORT(Data!A1:A10,1,-1),1)",
+      "expect": { "t": "num", "v": 10 }
+    },
+    { "fn": "UNIQUE", "formula": "=ROWS(UNIQUE(Data!C1:C10))", "expect": { "t": "num", "v": 3 } },
+    { "fn": "SEQUENCE", "formula": "=SUM(SEQUENCE(4))", "expect": { "t": "num", "v": 10 } },
+    {
+      "fn": "CONCAT",
+      "formula": "=CONCAT(\"a\",\"b\",\"c\")",
+      "expect": { "t": "str", "v": "abc" }
+    },
+    {
+      "fn": "CONCATENATE",
+      "formula": "=CONCATENATE(\"x\",1,\"y\")",
+      "expect": { "t": "str", "v": "x1y" }
+    },
+    {
+      "fn": "TEXTJOIN",
+      "formula": "=TEXTJOIN(\",\",TRUE,Data!C1:C3)",
+      "expect": { "t": "str", "v": "apple,banana,cherry" }
+    },
+    { "fn": "LEFT", "formula": "=LEFT(\"Excel\",2)", "expect": { "t": "str", "v": "Ex" } },
+    { "fn": "RIGHT", "formula": "=RIGHT(\"Excel\",3)", "expect": { "t": "str", "v": "cel" } },
+    { "fn": "MID", "formula": "=MID(\"Excel\",2,3)", "expect": { "t": "str", "v": "xce" } },
+    { "fn": "LEN", "formula": "=LEN(\"你好abc\")", "expect": { "t": "num", "v": 5 } },
+    { "fn": "FIND", "formula": "=FIND(\"c\",\"abcabc\",4)", "expect": { "t": "num", "v": 6 } },
+    { "fn": "SEARCH", "formula": "=SEARCH(\"C\",\"abcabc\")", "expect": { "t": "num", "v": 3 } },
+    {
+      "fn": "SUBSTITUTE",
+      "formula": "=SUBSTITUTE(\"a-b-c\",\"-\",\"+\")",
+      "expect": { "t": "str", "v": "a+b+c" }
+    },
+    {
+      "fn": "REPLACE",
+      "formula": "=REPLACE(\"abcdef\",2,3,\"X\")",
+      "expect": { "t": "str", "v": "aXef" }
+    },
+    { "fn": "TRIM", "formula": "=TRIM(\"  a   b  \")", "expect": { "t": "str", "v": "a b" } },
+    { "fn": "UPPER", "formula": "=UPPER(\"abC\")", "expect": { "t": "str", "v": "ABC" } },
+    { "fn": "LOWER", "formula": "=LOWER(\"AbC\")", "expect": { "t": "str", "v": "abc" } },
+    {
+      "fn": "PROPER",
+      "formula": "=PROPER(\"hello wORLD\")",
+      "expect": { "t": "str", "v": "Hello World" }
+    },
+    {
+      "fn": "TEXT",
+      "formula": "=TEXT(1234.567,\"#,##0.00\")",
+      "expect": { "t": "str", "v": "1,234.57" }
+    },
+    { "fn": "VALUE", "formula": "=VALUE(\"12.5\")", "expect": { "t": "num", "v": 12.5 } },
+    { "fn": "REPT", "formula": "=REPT(\"ab\",3)", "expect": { "t": "str", "v": "ababab" } },
+    { "fn": "EXACT", "formula": "=EXACT(\"a\",\"A\")", "expect": { "t": "bool", "v": false } },
+    {
+      "fn": "CLEAN",
+      "formula": "=CLEAN(\"a\"&CHAR(7)&\"b\")",
+      "expect": { "t": "str", "v": "ab" }
+    },
+    { "fn": "CHAR", "formula": "=CHAR(65)", "expect": { "t": "str", "v": "A" } },
+    { "fn": "CODE", "formula": "=CODE(\"A\")", "expect": { "t": "num", "v": 65 } },
+    {
+      "fn": "NUMBERVALUE",
+      "formula": "=NUMBERVALUE(\"1.234,5\",\",\",\".\")",
+      "expect": { "t": "num", "v": 1234.5 }
+    },
+    { "fn": "FIXED", "formula": "=FIXED(1234.567,1)", "expect": { "t": "str", "v": "1,234.6" } },
+    { "fn": "T", "formula": "=T(\"abc\")", "expect": { "t": "str", "v": "abc" } },
+    {
+      "fn": "TODAY",
+      "formula": "=TODAY()",
+      "expect": { "t": "numRange", "min": 45000, "max": 80000, "int": true }
+    },
+    { "fn": "NOW", "formula": "=NOW()", "expect": { "t": "numRange", "min": 45000, "max": 80000 } },
+    { "fn": "DATE", "formula": "=DATE(2024,2,29)", "expect": { "t": "num", "v": 45351 } },
+    { "fn": "YEAR", "formula": "=YEAR(DATE(2024,2,29))", "expect": { "t": "num", "v": 2024 } },
+    { "fn": "MONTH", "formula": "=MONTH(DATE(2024,2,29))", "expect": { "t": "num", "v": 2 } },
+    { "fn": "DAY", "formula": "=DAY(DATE(2024,2,29))", "expect": { "t": "num", "v": 29 } },
+    { "fn": "HOUR", "formula": "=HOUR(TIME(13,45,30))", "expect": { "t": "num", "v": 13 } },
+    { "fn": "MINUTE", "formula": "=MINUTE(TIME(13,45,30))", "expect": { "t": "num", "v": 45 } },
+    { "fn": "SECOND", "formula": "=SECOND(TIME(13,45,30))", "expect": { "t": "num", "v": 30 } },
+    { "fn": "WEEKDAY", "formula": "=WEEKDAY(DATE(2024,2,29))", "expect": { "t": "num", "v": 5 } },
+    { "fn": "WEEKNUM", "formula": "=WEEKNUM(DATE(2024,2,29))", "expect": { "t": "num", "v": 9 } },
+    { "fn": "EDATE", "formula": "=EDATE(DATE(2024,1,31),1)", "expect": { "t": "num", "v": 45351 } },
+    {
+      "fn": "EOMONTH",
+      "formula": "=EOMONTH(DATE(2024,1,15),1)",
+      "expect": { "t": "num", "v": 45351 }
+    },
+    {
+      "fn": "DATEDIF",
+      "formula": "=DATEDIF(DATE(2024,1,1),DATE(2024,3,15),\"m\")",
+      "expect": { "t": "num", "v": 2 }
+    },
+    {
+      "fn": "DAYS",
+      "formula": "=DAYS(DATE(2024,3,1),DATE(2024,2,1))",
+      "expect": { "t": "num", "v": 29 }
+    },
+    {
+      "fn": "NETWORKDAYS",
+      "formula": "=NETWORKDAYS(DATE(2024,1,1),DATE(2024,1,7))",
+      "expect": { "t": "num", "v": 5 }
+    },
+    {
+      "fn": "WORKDAY",
+      "formula": "=WORKDAY(DATE(2024,1,5),1)",
+      "expect": { "t": "num", "v": 45299 }
+    },
+    { "fn": "TIME", "formula": "=TIME(12,0,0)", "expect": { "t": "num", "v": 0.5 } },
+    {
+      "fn": "DATEVALUE",
+      "formula": "=DATEVALUE(\"2024-02-29\")",
+      "expect": { "t": "num", "v": 45351 }
+    },
+    { "fn": "TIMEVALUE", "formula": "=TIMEVALUE(\"06:00\")", "expect": { "t": "num", "v": 0.25 } },
+    {
+      "fn": "YEARFRAC",
+      "formula": "=YEARFRAC(DATE(2024,1,1),DATE(2024,7,1))",
+      "expect": { "t": "num", "v": 0.5 }
+    },
+    { "fn": "ISNUMBER", "formula": "=ISNUMBER(Data!A1)", "expect": { "t": "bool", "v": true } },
+    { "fn": "ISTEXT", "formula": "=ISTEXT(Data!C1)", "expect": { "t": "bool", "v": true } },
+    { "fn": "ISBLANK", "formula": "=ISBLANK(Data!Z99)", "expect": { "t": "bool", "v": true } },
+    { "fn": "ISERROR", "formula": "=ISERROR(1/0)", "expect": { "t": "bool", "v": true } },
+    { "fn": "ISERR", "formula": "=ISERR(NA())", "expect": { "t": "bool", "v": false } },
+    { "fn": "ISNA", "formula": "=ISNA(NA())", "expect": { "t": "bool", "v": true } },
+    { "fn": "ISLOGICAL", "formula": "=ISLOGICAL(TRUE)", "expect": { "t": "bool", "v": true } },
+    { "fn": "ISEVEN", "formula": "=ISEVEN(4)", "expect": { "t": "bool", "v": true } },
+    { "fn": "ISODD", "formula": "=ISODD(4)", "expect": { "t": "bool", "v": false } },
+    { "fn": "N", "formula": "=N(TRUE)", "expect": { "t": "num", "v": 1 } },
+    { "fn": "NA", "formula": "=NA()", "expect": { "t": "err", "v": "#N/A" } },
+    {
+      "fn": "PMT",
+      "formula": "=PMT(0.05/12,60,-10000)",
+      "expect": { "t": "num", "v": 188.7123356, "tol": 0.005 }
+    },
+    {
+      "fn": "FV",
+      "formula": "=FV(0.05,10,-100)",
+      "expect": { "t": "num", "v": 1257.789254554, "tol": 1e-6 }
+    },
+    {
+      "fn": "PV",
+      "formula": "=PV(0.05,10,-100)",
+      "expect": { "t": "num", "v": 772.173492918, "tol": 1e-6 }
+    },
+    {
+      "fn": "NPV",
+      "formula": "=NPV(0.1,100,100,100)",
+      "expect": { "t": "num", "v": 248.685199098, "tol": 1e-6 }
+    },
+    {
+      "fn": "IRR",
+      "formula": "=IRR(Data!K1:K3)",
+      "expect": { "t": "num", "v": 0.130662386, "tol": 1e-6 }
+    }
+  ],
+  "errorCases": [
+    { "id": "div0", "formula": "=1/0", "expect": { "t": "err", "v": "#DIV/0!" } },
+    { "id": "valueErr", "formula": "=VALUE(\"abc\")", "expect": { "t": "err", "v": "#VALUE!" } },
+    { "id": "unknownFn", "formula": "=NOSUCHFUNCTION(1)", "expect": { "t": "err", "v": "#NAME?" } },
+    {
+      "id": "missingSheet",
+      "formula": "=Data!A1+Missing!A1",
+      "expect": { "t": "err", "v": "#REF!" }
+    }
+  ]
+}

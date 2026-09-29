@@ -1,0 +1,19 @@
+{
+  "name": "@excelmanus/memory",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@excelmanus/kernel": "workspace:*",
+    "@excelmanus/protocol": "workspace:*",
+    "@excelmanus/core": "workspace:*",
+    "@excelmanus/models": "workspace:*",
+    "@excelmanus/sandbox": "workspace:*"
+  }
+}

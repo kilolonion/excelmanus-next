@@ -1,0 +1,365 @@
+{
+  "meta": {
+    "test": "T4-writeset",
+    "sequences": 200,
+    "baseSeed": 91607007,
+    "node": "v24.1.0",
+    "ts": "2026-09-29T04:54:02.305Z",
+    "elapsedMs": 19416
+  },
+  "summary": {
+    "ops": 6997,
+    "opsChecked": 6201,
+    "violations": 0
+  },
+  "ruleTable": {
+    "sheet.mutation.set-range-values": {
+      "count": 5567,
+      "paramsOnly": true,
+      "rule": "cellValue 的 {row:{col}} 键集 → 最小包围矩形"
+    },
+    "formula.mutation.set-trigger-formula-calculation-start": {
+      "count": 197,
+      "paramsOnly": true,
+      "rule": "dirtyRanges 列表（触发计算的上界；实际值变更由 set-range-values 承载）"
+    },
+    "formula.mutation.set-formula-data": {
+      "count": 1871,
+      "paramsOnly": true,
+      "rule": "formulaData 的 sheetId→row→col 键集"
+    },
+    "formula.mutation.set-array-formula-data": {
+      "count": 1617,
+      "paramsOnly": true,
+      "rule": "arrayFormulaRange/arrayFormulaCellData 键集"
+    },
+    "sheet.mutation.set-worksheet-row-height": {
+      "count": 215,
+      "paramsOnly": true,
+      "rule": "ranges 的行进 → rowData"
+    },
+    "sheet.mutation.set-worksheet-row-is-auto-height": {
+      "count": 215,
+      "paramsOnly": true,
+      "rule": "ranges 的行进 → rowData"
+    },
+    "sheet.mutation.set-filter-range": {
+      "count": 161,
+      "paramsOnly": true,
+      "rule": "filter range + 隐藏行（rowData）"
+    },
+    "sheet.mutation.move-columns": {
+      "count": 130,
+      "paramsOnly": true,
+      "rule": "移动列 = 全行 × [min(src,tgt).startCol, max(src,tgt).endCol]"
+    },
+    "sheet.mutation.remove-filter": {
+      "count": 21,
+      "paramsOnly": true,
+      "rule": "filter range + 隐藏行（rowData）"
+    },
+    "sheet.mutation.mark-dirty-filter-change": {
+      "count": 42,
+      "paramsOnly": true,
+      "rule": "filterRange 内部状态标记"
+    },
+    "sheet.mutation.insert-col": {
+      "count": 181,
+      "paramsOnly": true,
+      "rule": "插入列 = 全行 × [startColumn, 表尾)"
+    },
+    "data-validation.mutation.addRule": {
+      "count": 176,
+      "paramsOnly": true,
+      "rule": "数据验证规则（不改单元格值）"
+    },
+    "sheet.mutation.remove-rows": {
+      "count": 234,
+      "paramsOnly": true,
+      "rule": "删除行 = [startRow, 表尾) × 全列（坐标空间整体上移）"
+    },
+    "sheet.mutation.remove-col": {
+      "count": 188,
+      "paramsOnly": true,
+      "rule": "删除列 = 全行 × [startColumn, 表尾)"
+    },
+    "sheet.mutation.set-worksheet-col-width": {
+      "count": 154,
+      "paramsOnly": true,
+      "rule": "ranges 的列进 → columnData"
+    },
+    "sheet.mutation.move-rows": {
+      "count": 139,
+      "paramsOnly": true,
+      "rule": "移动行 = [min(src,tgt).startRow, max(src,tgt).endRow] × 全列"
+    },
+    "sheet.mutation.add-worksheet-merge": {
+      "count": 196,
+      "paramsOnly": true,
+      "rule": "merge ranges → mergeData + 区域内单元格（合并清边/恢复）"
+    },
+    "sheet.mutation.reorder-range": {
+      "count": 141,
+      "paramsOnly": true,
+      "rule": "排序 range 内全部单元格（行内重排）"
+    },
+    "sheet.mutation.insert-row": {
+      "count": 224,
+      "paramsOnly": true,
+      "rule": "插入行 = [startRow, 表尾) × 全列（坐标空间整体下移）"
+    },
+    "sheet.mutation.insert-sheet": {
+      "count": 254,
+      "paramsOnly": true,
+      "rule": "新表全区域 + book 级 sheetOrder/resources"
+    },
+    "sheet.mutation.move-range": {
+      "count": 189,
+      "paramsOnly": true,
+      "rule": "fromRange ∪ toRange（可跨表）"
+    },
+    "sheet.mutation.set-col-hidden": {
+      "count": 141,
+      "paramsOnly": true,
+      "rule": "ranges 的列进 → columnData.hidden"
+    },
+    "sheet.mutation.set-frozen": {
+      "count": 175,
+      "paramsOnly": true,
+      "rule": "sheet.freeze 字段"
+    },
+    "sheet.mutation.set-worksheet-order": {
+      "count": 151,
+      "paramsOnly": true,
+      "rule": "workbook.sheetOrder"
+    },
+    "sheet.mutation.remove-worksheet-merge": {
+      "count": 55,
+      "paramsOnly": true,
+      "rule": "merge ranges → mergeData + 区域内单元格（合并清边/恢复）"
+    },
+    "sheet.mutation.set-row-hidden": {
+      "count": 130,
+      "paramsOnly": true,
+      "rule": "ranges 的行进 → rowData.hidden"
+    },
+    "sheet.mutation.delete-conditional-rule": {
+      "count": 108,
+      "paramsOnly": true,
+      "rule": "条件格式规则（不改单元格值）"
+    },
+    "sheet.mutation.set-worksheet-name": {
+      "count": 131,
+      "paramsOnly": true,
+      "rule": "sheet.name"
+    },
+    "data-validation.mutation.updateRule": {
+      "count": 88,
+      "paramsOnly": true,
+      "rule": "数据验证规则（不改单元格值）"
+    },
+    "sheet.mutation.set-col-visible": {
+      "count": 15,
+      "paramsOnly": true,
+      "rule": "ranges 的列进 → columnData.hidden"
+    },
+    "sheet.mutation.add-conditional-rule": {
+      "count": 149,
+      "paramsOnly": true,
+      "rule": "条件格式规则（不改单元格值）"
+    },
+    "sheet.mutation.remove-sheet": {
+      "count": 97,
+      "paramsOnly": true,
+      "rule": "删除表 s1 → book 级结构字段"
+    },
+    "sheet.mutation.set-filter-criteria": {
+      "count": 28,
+      "paramsOnly": true,
+      "rule": "col 6 criteria + filteredOutRows(12) → rowData.hidden"
+    },
+    "data-validation.mutation.removeRule": {
+      "count": 34,
+      "paramsOnly": true,
+      "rule": "数据验证规则（不改单元格值）"
+    },
+    "sheet.mutation.set-row-visible": {
+      "count": 16,
+      "paramsOnly": true,
+      "rule": "ranges 的行进 → rowData.hidden"
+    },
+    "formula.mutation.remove-other-formula": {
+      "count": 14,
+      "paramsOnly": false,
+      "conservative": "params 只含公式 id/结果通知，无法映射到单元格 → 保守整表",
+      "rule": "保守整表"
+    }
+  },
+  "perOpType": {
+    "set-formula": {
+      "checked": 241,
+      "violations": 0
+    },
+    "set-row-height": {
+      "checked": 215,
+      "violations": 0
+    },
+    "clear-content": {
+      "checked": 229,
+      "violations": 0
+    },
+    "set-filter": {
+      "checked": 109,
+      "violations": 0
+    },
+    "move-cols": {
+      "checked": 130,
+      "violations": 0
+    },
+    "remove-filter": {
+      "checked": 16,
+      "violations": 0
+    },
+    "set-value-empty": {
+      "checked": 201,
+      "violations": 0
+    },
+    "insert-cols": {
+      "checked": 182,
+      "violations": 0
+    },
+    "add-dv": {
+      "checked": 157,
+      "violations": 0
+    },
+    "remove-rows": {
+      "checked": 235,
+      "violations": 0
+    },
+    "remove-cols": {
+      "checked": 188,
+      "violations": 0
+    },
+    "set-col-width": {
+      "checked": 154,
+      "violations": 0
+    },
+    "move-rows": {
+      "checked": 140,
+      "violations": 0
+    },
+    "merge": {
+      "checked": 193,
+      "violations": 0
+    },
+    "set-style": {
+      "checked": 324,
+      "violations": 0
+    },
+    "sort-range": {
+      "checked": 141,
+      "violations": 0
+    },
+    "insert-rows": {
+      "checked": 224,
+      "violations": 0
+    },
+    "insert-sheet": {
+      "checked": 136,
+      "violations": 0
+    },
+    "move-range": {
+      "checked": 189,
+      "violations": 0
+    },
+    "set-value-string": {
+      "checked": 364,
+      "violations": 0
+    },
+    "copy-sheet": {
+      "checked": 118,
+      "violations": 0
+    },
+    "set-value-number": {
+      "checked": 489,
+      "violations": 0
+    },
+    "autofill": {
+      "checked": 148,
+      "violations": 0
+    },
+    "hide-cols": {
+      "checked": 141,
+      "violations": 0
+    },
+    "cancel-frozen": {
+      "checked": 102,
+      "violations": 0
+    },
+    "move-sheet": {
+      "checked": 151,
+      "violations": 0
+    },
+    "clear-all": {
+      "checked": 133,
+      "violations": 0
+    },
+    "unmerge": {
+      "checked": 50,
+      "violations": 0
+    },
+    "hide-rows": {
+      "checked": 130,
+      "violations": 0
+    },
+    "delete-cf": {
+      "checked": 94,
+      "violations": 0
+    },
+    "set-value-boolean": {
+      "checked": 183,
+      "violations": 0
+    },
+    "rename-sheet": {
+      "checked": 131,
+      "violations": 0
+    },
+    "show-cols": {
+      "checked": 15,
+      "violations": 0
+    },
+    "add-cf": {
+      "checked": 125,
+      "violations": 0
+    },
+    "clear-format": {
+      "checked": 135,
+      "violations": 0
+    },
+    "set-frozen": {
+      "checked": 73,
+      "violations": 0
+    },
+    "remove-sheet": {
+      "checked": 97,
+      "violations": 0
+    },
+    "copy-down": {
+      "checked": 53,
+      "violations": 0
+    },
+    "set-filter-criteria": {
+      "checked": 26,
+      "violations": 0
+    },
+    "clear-dv": {
+      "checked": 23,
+      "violations": 0
+    },
+    "show-rows": {
+      "checked": 16,
+      "violations": 0
+    }
+  },
+  "violations": []
+}

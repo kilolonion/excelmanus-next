@@ -1,0 +1,8 @@
+packages:
+  - "packages/*"
+  - "packages/modules/*"
+  - "spikes/*"
+
+# peer 依赖改为显式声明（autoInstallPeers 会把 vite 的 optional peer
+# lightningcss —— MPL-2.0 许可证 —— 自动装进依赖树）
+autoInstallPeers: false

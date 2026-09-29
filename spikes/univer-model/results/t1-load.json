@@ -1,0 +1,356 @@
+{
+  "meta": {
+    "test": "T1-load",
+    "trials": 5,
+    "rssLimitMB": 1500,
+    "workerLimits": {
+      "maxOldGenerationSizeMb": 6144,
+      "maxYoungGenerationSizeMb": 512
+    },
+    "node": "v24.1.0",
+    "platform": "darwin/arm64",
+    "ts": "2026-09-29T04:51:02.334Z"
+  },
+  "specs": {
+    "a": {
+      "rows": 200000,
+      "cols": 30,
+      "cells": 6000000,
+      "loadMs": {
+        "n": 5,
+        "min": 1246,
+        "p50": 1268,
+        "p95": 1291,
+        "p99": 1291,
+        "max": 1291,
+        "mean": 1266
+      },
+      "createMs": {
+        "n": 5,
+        "min": 525,
+        "p50": 536,
+        "p95": 541,
+        "p99": 541,
+        "max": 541,
+        "mean": 534.2
+      },
+      "saveMs": {
+        "n": 5,
+        "min": 721,
+        "p50": 727,
+        "p95": 755,
+        "p99": 755,
+        "max": 755,
+        "mean": 731.6
+      },
+      "rssAfterMB": {
+        "n": 5,
+        "min": 1422,
+        "p50": 1462,
+        "p95": 1475,
+        "p99": 1475,
+        "max": 1475,
+        "mean": 1451.4
+      },
+      "heapAfterMB": {
+        "n": 5,
+        "min": 873,
+        "p50": 873,
+        "p95": 873,
+        "p99": 873,
+        "max": 873,
+        "mean": 873
+      },
+      "okCount": 5,
+      "errors": [],
+      "runs": [
+        {
+          "ok": true,
+          "genMs": 330,
+          "createMs": 536,
+          "saveMs": 755,
+          "loadMs": 1291,
+          "memBefore": {
+            "rss": 924,
+            "heapUsed": 467
+          },
+          "memAfter": {
+            "rss": 1422,
+            "heapUsed": 873
+          },
+          "sheetCount": 1,
+          "wallMs": 2105
+        },
+        {
+          "ok": true,
+          "genMs": 316,
+          "createMs": 541,
+          "saveMs": 727,
+          "loadMs": 1268,
+          "memBefore": {
+            "rss": 1422,
+            "heapUsed": 467
+          },
+          "memAfter": {
+            "rss": 1429,
+            "heapUsed": 873
+          },
+          "sheetCount": 1,
+          "wallMs": 2088
+        },
+        {
+          "ok": true,
+          "genMs": 308,
+          "createMs": 540,
+          "saveMs": 730,
+          "loadMs": 1271,
+          "memBefore": {
+            "rss": 1457,
+            "heapUsed": 467
+          },
+          "memAfter": {
+            "rss": 1462,
+            "heapUsed": 873
+          },
+          "sheetCount": 1,
+          "wallMs": 2110
+        },
+        {
+          "ok": true,
+          "genMs": 310,
+          "createMs": 525,
+          "saveMs": 721,
+          "loadMs": 1246,
+          "memBefore": {
+            "rss": 1464,
+            "heapUsed": 467
+          },
+          "memAfter": {
+            "rss": 1469,
+            "heapUsed": 873
+          },
+          "sheetCount": 1,
+          "wallMs": 2081
+        },
+        {
+          "ok": true,
+          "genMs": 290,
+          "createMs": 529,
+          "saveMs": 725,
+          "loadMs": 1254,
+          "memBefore": {
+            "rss": 1471,
+            "heapUsed": 467
+          },
+          "memAfter": {
+            "rss": 1475,
+            "heapUsed": 873
+          },
+          "sheetCount": 1,
+          "wallMs": 2024
+        }
+      ]
+    },
+    "b": {
+      "rows": 50000,
+      "cols": 20,
+      "cells": 1000000,
+      "loadMs": {
+        "n": 5,
+        "min": 236,
+        "p50": 238,
+        "p95": 241,
+        "p99": 241,
+        "max": 241,
+        "mean": 238.6
+      },
+      "createMs": {
+        "n": 5,
+        "min": 112,
+        "p50": 115,
+        "p95": 118,
+        "p99": 118,
+        "max": 118,
+        "mean": 115.6
+      },
+      "saveMs": {
+        "n": 5,
+        "min": 122,
+        "p50": 123,
+        "p95": 124,
+        "p99": 124,
+        "max": 124,
+        "mean": 122.8
+      },
+      "rssAfterMB": {
+        "n": 5,
+        "min": 1475,
+        "p50": 1476,
+        "p95": 1477,
+        "p99": 1477,
+        "max": 1477,
+        "mean": 1476
+      },
+      "heapAfterMB": {
+        "n": 5,
+        "min": 195,
+        "p50": 195,
+        "p95": 195,
+        "p99": 195,
+        "max": 195,
+        "mean": 195
+      },
+      "okCount": 5,
+      "errors": [],
+      "runs": [
+        {
+          "ok": true,
+          "genMs": 52,
+          "createMs": 112,
+          "saveMs": 124,
+          "loadMs": 236,
+          "memBefore": {
+            "rss": 1476,
+            "heapUsed": 118
+          },
+          "memAfter": {
+            "rss": 1477,
+            "heapUsed": 195
+          },
+          "sheetCount": 1,
+          "wallMs": 600
+        },
+        {
+          "ok": true,
+          "genMs": 52,
+          "createMs": 115,
+          "saveMs": 122,
+          "loadMs": 237,
+          "memBefore": {
+            "rss": 1475,
+            "heapUsed": 118
+          },
+          "memAfter": {
+            "rss": 1476,
+            "heapUsed": 195
+          },
+          "sheetCount": 1,
+          "wallMs": 601
+        },
+        {
+          "ok": true,
+          "genMs": 58,
+          "createMs": 118,
+          "saveMs": 122,
+          "loadMs": 241,
+          "memBefore": {
+            "rss": 1475,
+            "heapUsed": 118
+          },
+          "memAfter": {
+            "rss": 1476,
+            "heapUsed": 195
+          },
+          "sheetCount": 1,
+          "wallMs": 621
+        },
+        {
+          "ok": true,
+          "genMs": 81,
+          "createMs": 115,
+          "saveMs": 123,
+          "loadMs": 238,
+          "memBefore": {
+            "rss": 1475,
+            "heapUsed": 118
+          },
+          "memAfter": {
+            "rss": 1476,
+            "heapUsed": 195
+          },
+          "sheetCount": 1,
+          "wallMs": 625
+        },
+        {
+          "ok": true,
+          "genMs": 56,
+          "createMs": 118,
+          "saveMs": 123,
+          "loadMs": 241,
+          "memBefore": {
+            "rss": 1474,
+            "heapUsed": 118
+          },
+          "memAfter": {
+            "rss": 1475,
+            "heapUsed": 195
+          },
+          "sheetCount": 1,
+          "wallMs": 621
+        }
+      ]
+    }
+  },
+  "maxCells": {
+    "cols": 30,
+    "maxRowsOk": 270000,
+    "maxCells": 8100000,
+    "rssLimitMB": 1500,
+    "curve": [
+      {
+        "rows": 1020000,
+        "cells": 30600000,
+        "ok": false,
+        "error": "child: Command failed: /opt/homebrew/Cellar/node/24.1.0/bin/node --expose-gc src/worker-harness.ts {\"kind\":\"t1\",\"rows\":1020000,\"cols\":30,\"seed\":4242}\n(node:23375) ExperimentalWarning: Type Stripping is an experimental feature and might change at any time\n(Use `node --trace-warnings ...` to show where the warning was created)\n\n<--- Last few GCs --->\n\n[23375:0x75db40c000]    14726 ms: Mark-Compact (reduce) 4092.8 (4107.0) -> 4092.1 (4096.5) MB, pooled: 0 MB, 468.58 / 0.00 ms  (+ 294.7 ms in 60 steps since start of marking, biggest step 5.0 ms, walltime since start of marking 774 ms) (average mu = 0.241[23375:0x75db40c000]    15327 ms: Mark-Compact 4093.1 (4096.5) -> 4092.7 (4100.2) MB, pooled: 0 MB, 600.54 / 0.00 ms  (average mu = 0.141, current mu = 0.002) allocation failure; scavenge might not succeed\n\nFATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory\n----- Native stack trace -----\n\n 1: 0x100815630 node::OOMErrorHandler(char const*, v8::OOMDetails const&) [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n 2: 0x100943584 v8::Utils::ReportOOMFailure(v8::internal::Isolate*, char const*, v8::OOMDetails const&) [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n 3: 0x10094353c v8::internal::V8::FatalProcessOutOfMemory(v8::internal::Isolate*, char const*, v8::OOMDetails const&) [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n 4: 0x100b204fc v8::internal::Heap::stack() [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n 5: 0x100b22c3c v8::internal::Heap::OldGenerationConsumedBytes() const [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n 6: 0x100b22adc v8::internal::Heap::RecomputeLimits(v8::internal::GarbageCollector, v8::base::TimeTicks) [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n 7: 0x100b30468 v8::internal::Heap::CollectGarbage(v8::internal::AllocationSpace, v8::internal::GarbageCollectionReason, v8::GCCallbackFlags)::$_1::operator()() const [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n 8: 0x100b3010c void heap::base::Stack::SetMarkerAndCallbackImpl<v8::internal::Heap::CollectGarbage(v8::internal::AllocationSpace, v8::internal::GarbageCollectionReason, v8::GCCallbackFlags)::$_1>(heap::base::Stack*, void*, void const*) [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n 9: 0x101278980 PushAllRegistersAndIterateStack [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n10: 0x100b1eabc v8::internal::Heap::CollectGarbage(v8::internal::AllocationSpace, v8::internal::GarbageCollectionReason, v8::GCCallbackFlags) [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n11: 0x100b166c4 v8::internal::HeapAllocator::AllocateRawWithRetryOrFailSlowPath(int, v8::internal::AllocationType, v8::internal::AllocationOrigin, v8::internal::AllocationAlignment) [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n12: 0x100afe350 v8::internal::Factory::NewFillerObject(int, v8::internal::AllocationAlignment, v8::internal::AllocationType, v8::internal::AllocationOrigin) [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n13: 0x100e70f7c v8::internal::Runtime_AllocateInYoungGeneration(int, unsigned long*, v8::internal::Isolate*) [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n14: 0x101339f74 Builtins_CEntry_Return1_ArgvOnStack_NoBuiltinExit [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n15: 0x12d7c6edc \n16: 0x12d7c6af8 \n17: 0x12d7c76a8 \n18: 0x12d6cabc0 \n19: 0x12d6cabc0 \n20: 0x12d6cabc0 \n21: 0x10129cbec Builtins_InterpreterEntryTrampoline [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n22: 0x10129cbec Builtins_InterpreterEntryTrampoline [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n23: 0x10129cbec Builtins_InterpreterEntryTrampoline [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n24: 0x10129cbec Builtins_InterpreterEntryTrampoline [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n25: 0x10129cbec Builtins_InterpreterEntryTrampoline [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n26: 0x101346308 Builtins_AsyncModuleEvaluate [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n27: 0x10129a8cc Builtins_JSEntryTrampoline [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n28: 0x10129a570 Builtins_JSEntry [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n29: 0x100a78788 v8::internal::(anonymous namespace)::Invoke(v8::internal::Isolate*, v8::internal::(anonymous namespace)::InvokeParams const&) [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n30: 0x100a78e04 v8::internal::(anonymous namespace)::InvokeWithTryCatch(v8::internal::Isolate*, v8::internal::(anonymous namespace)::InvokeParams const&) [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n31: 0x100a78ea4 v8::internal::Execution::TryCall(v8::internal::Isolate*, v8::internal::DirectHandle<v8::internal::Object>, v8::internal::DirectHandle<v8::internal::Object>, v8::base::Vector<v8::internal::DirectHandle<v8::internal::Object> const>, v8::internal::Execution::MessageHandling, v8::internal::MaybeDirectHandle<v8::internal::Object>*) [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n32: 0x100dac86c v8::internal::SourceTextModule::ExecuteAsyncModule(v8::internal::Isolate*, v8::internal::DirectHandle<v8::internal::SourceTextModule>) [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n33: 0x100dac41c v8::internal::SourceTextModule::InnerModuleEvaluation(v8::internal::Isolate*, v8::internal::Handle<v8::internal::SourceTextModule>, v8::internal::ZoneForwardList<v8::internal::Handle<v8::internal::SourceTextModule>>*, unsigned int*) [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n34: 0x100dabe94 v8::internal::SourceTextModule::Evaluate(v8::internal::Isolate*, v8::internal::Handle<v8::internal::SourceTextModule>) [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n35: 0x100d71ff8 v8::internal::Module::Evaluate(v8::internal::Isolate*, v8::internal::Handle<v8::internal::Module>) [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n36: 0x100949170 v8::Module::Evaluate(v8::Local<v8::Context>) [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n37: 0x101aede44 node::loader::ModuleWrap::Evaluate(v8::FunctionCallbackInfo<v8::Value> const&) [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n38: 0x10129e818 Builtins_CallApiCallbackGeneric [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n39: 0x10129cbec Builtins_InterpreterEntryTrampoline [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n40: 0x1012db648 Builtins_AsyncFunctionAwaitResolveClosure [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n41: 0x1013b05f8 Builtins_PromiseFulfillReactionJob [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n42: 0x1012caa50 Builtins_RunMicrotasks [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n43: 0x10129a7b0 Builtins_JSRunMicrotasksEntry [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n44: 0x100a78758 v8::internal::(anonymous namespace)::Invoke(v8::internal::Isolate*, v8::internal::(anonymous namespace)::InvokeParams const&) [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n45: 0x100a78e04 v8::internal::(anonymous namespace)::InvokeWithTryCatch(v8::internal::Isolate*, v8::internal::(anonymous namespace)::InvokeParams const&) [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n46: 0x100a78ef4 v8::internal::Execution::TryRunMicrotasks(v8::internal::Isolate*, v8::internal::MicrotaskQueue*) [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n47: 0x100a9daf0 v8::internal::MicrotaskQueue::RunMicrotasks(v8::internal::Isolate*) [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n48: 0x100a9d90c v8::internal::MicrotaskQueue::PerformCheckpointInternal(v8::Isolate*) [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n49: 0x100768898 node::InternalCallbackScope::Close() [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n50: 0x10076872c node::InternalCallbackScope::~InternalCallbackScope() [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n51: 0x100817f94 node::fs::FileHandle::CloseReq::Resolve() [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n52: 0x10081df40 node::fs::FileHandle::ClosePromise()::$_0::__invoke(uv_fs_s*) [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n53: 0x10080fd3c node::MakeLibuvRequestCallback<uv_fs_s, void (*)(uv_fs_s*)>::Wrapper(uv_fs_s*) [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n54: 0x105c6ae0c uv__work_done [/opt/homebrew/Cellar/libuv/1.51.0/lib/libuv.1.dylib]\n55: 0x105c6e6bc uv__async_io [/opt/homebrew/Cellar/libuv/1.51.0/lib/libuv.1.dylib]\n56: 0x105c7ebd0 uv__io_poll [/opt/homebrew/Cellar/libuv/1.51.0/lib/libuv.1.dylib]\n57: 0x105c6eb58 uv_run [/opt/homebrew/Cellar/libuv/1.51.0/lib/libuv.1.dylib]\n58: 0x1007693ec node::SpinEventLoopInternal(node::Environment*) [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n59: 0x10083e044 node::NodeMainInstance::Run(node::ExitCode*, node::Environment*) [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n60: 0x10083ddd8 node::NodeMainInstance::Run() [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n61: 0x1007eb354 node::Start(int, char**) [/opt/homebrew/Cellar/node/24.1.0/bin/node]\n62: 0x198287e80 start [/usr/lib/dyld]\n "
+      },
+      {
+        "rows": 530000,
+        "cells": 15900000,
+        "ok": false,
+        "loadMs": 3512,
+        "rss": 2500,
+        "heap": 2244
+      },
+      {
+        "rows": 290000,
+        "cells": 8700000,
+        "ok": false,
+        "loadMs": 1933,
+        "rss": 1522,
+        "heap": 1247
+      },
+      {
+        "rows": 170000,
+        "cells": 5100000,
+        "ok": true,
+        "loadMs": 1125,
+        "rss": 1012,
+        "heap": 746
+      },
+      {
+        "rows": 230000,
+        "cells": 6900000,
+        "ok": true,
+        "loadMs": 1502,
+        "rss": 1250,
+        "heap": 996
+      },
+      {
+        "rows": 260000,
+        "cells": 7800000,
+        "ok": true,
+        "loadMs": 1696,
+        "rss": 1378,
+        "heap": 1123
+      },
+      {
+        "rows": 270000,
+        "cells": 8100000,
+        "ok": true,
+        "loadMs": 1756,
+        "rss": 1427,
+        "heap": 1165
+      }
+    ]
+  }
+}

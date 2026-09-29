@@ -1,0 +1,107 @@
+{
+  "cases": [
+    {
+      "seqIndex": 228,
+      "seed": 20261157,
+      "opIndex": 14,
+      "opType": "remove-cols",
+      "commandId": "sheet.command.remove-sheet",
+      "emittedMutations": [
+        "sheet.mutation.remove-sheet"
+      ],
+      "filterRelatedEmitted": [],
+      "perMode": {
+        "collab": {
+          "diffs": 0,
+          "sample": []
+        },
+        "plain": {
+          "diffs": 0,
+          "sample": []
+        },
+        "command": {
+          "diffs": 0,
+          "sample": []
+        },
+        "syncoff": {
+          "diffs": 0,
+          "sample": []
+        }
+      }
+    },
+    {
+      "seqIndex": 388,
+      "seed": 20261317,
+      "opIndex": 35,
+      "opType": "remove-rows",
+      "commandId": "sheet.command.insert-col-by-range",
+      "emittedMutations": [
+        "sheet.mutation.insert-col",
+        "sheet.mutation.set-filter-range",
+        "sheet.mutation.set-range-values",
+        "sheet.mutation.set-range-values",
+        "formula.mutation.set-formula-data",
+        "formula.mutation.set-array-formula-data"
+      ],
+      "filterRelatedEmitted": [
+        "sheet.mutation.set-filter-range"
+      ],
+      "perMode": {
+        "collab": {
+          "diffs": 1,
+          "sample": [
+            "resources.10.data"
+          ]
+        },
+        "plain": {
+          "diffs": 1,
+          "sample": [
+            "resources.10.data"
+          ]
+        },
+        "command": {
+          "diffs": 1,
+          "sample": [
+            "resources.10.data"
+          ]
+        },
+        "syncoff": {
+          "diffs": 1,
+          "sample": [
+            "resources.10.data"
+          ]
+        }
+      }
+    },
+    {
+      "seqIndex": 512,
+      "seed": 20261441,
+      "opIndex": 8,
+      "opType": "insert-cols",
+      "commandId": "sheet.command.set-row-height",
+      "emittedMutations": [
+        "sheet.mutation.set-worksheet-row-height",
+        "sheet.mutation.set-worksheet-row-is-auto-height"
+      ],
+      "filterRelatedEmitted": [],
+      "perMode": {
+        "collab": {
+          "diffs": 0,
+          "sample": []
+        },
+        "plain": {
+          "diffs": 0,
+          "sample": []
+        },
+        "command": {
+          "diffs": 0,
+          "sample": []
+        },
+        "syncoff": {
+          "diffs": 0,
+          "sample": []
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "name": "@excelmanus/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@excelmanus/protocol": "workspace:*",
+    "@excelmanus/core": "workspace:*",
+    "@excelmanus/kernel": "workspace:*",
+    "@excelmanus/models": "workspace:*",
+    "@excelmanus/sandbox": "workspace:*",
+    "@excelmanus/workbook": "workspace:*",
+    "@excelmanus/files": "workspace:*",
+    "@excelmanus/agents": "workspace:*",
+    "@excelmanus/memory": "workspace:*",
+    "@excelmanus/rules": "workspace:*",
+    "@excelmanus/skills": "workspace:*",
+    "@excelmanus/mcp": "workspace:*",
+    "@excelmanus/web": "workspace:*"
+  }
+}

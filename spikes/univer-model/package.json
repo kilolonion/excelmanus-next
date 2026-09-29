@@ -1,0 +1,31 @@
+{
+  "name": "@excelmanus-spike/univer-model",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "t1": "node --expose-gc src/t1-load.ts",
+    "t2": "node --expose-gc src/t2-latency.ts",
+    "t3": "node src/t3-replay.ts",
+    "t4": "node src/t4-writeset.ts",
+    "t5": "node src/t5-undo.ts"
+  },
+  "dependencies": {
+    "@univerjs/core": "1.0.2",
+    "@univerjs/engine-formula": "1.0.2",
+    "@univerjs/preset-sheets-node-core": "1.0.2",
+    "@univerjs/presets": "1.0.2",
+    "@univerjs/sheets": "1.0.2",
+    "@univerjs/sheets-conditional-formatting": "1.0.2",
+    "@univerjs/sheets-data-validation": "1.0.2",
+    "@univerjs/sheets-filter": "1.0.2",
+    "@univerjs/sheets-formula": "1.0.2",
+    "@univerjs/sheets-numfmt": "1.0.2",
+    "@univerjs/sheets-sort": "1.0.2",
+    "rxjs": "7.8.2"
+  }
+}

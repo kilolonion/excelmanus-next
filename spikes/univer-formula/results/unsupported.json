@@ -1,0 +1,133 @@
+{
+  "meta": {
+    "test": "A2-unsupported",
+    "node": "v24.1.0"
+  },
+  "registeredOfList": "50/56",
+  "registered": [
+    "LAMBDA",
+    "LET",
+    "MAP",
+    "REDUCE",
+    "SCAN",
+    "BYROW",
+    "BYCOL",
+    "MAKEARRAY",
+    "TEXTSPLIT",
+    "TEXTBEFORE",
+    "TEXTAFTER",
+    "VSTACK",
+    "HSTACK",
+    "TAKE",
+    "DROP",
+    "CHOOSECOLS",
+    "CHOOSEROWS",
+    "TOCOL",
+    "TOROW",
+    "WRAPROWS",
+    "GROUPBY",
+    "XIRR",
+    "XNPV",
+    "CELL",
+    "FORMULATEXT",
+    "ISFORMULA",
+    "SHEET",
+    "SHEETS",
+    "REGEXTEST",
+    "REGEXEXTRACT",
+    "REGEXREPLACE",
+    "IMAGE",
+    "STDEV.P",
+    "VAR.P",
+    "PERCENTILE.INC",
+    "RANK.EQ",
+    "MODE.SNGL",
+    "COUNTIFS",
+    "DSUM",
+    "DGET",
+    "FORECAST.LINEAR",
+    "TREND",
+    "LINEST",
+    "SUMSQ",
+    "SUMX2MY2",
+    "CONVERT",
+    "BASE",
+    "DECIMAL",
+    "ROMAN",
+    "ARABIC"
+  ],
+  "unregistered": [
+    "PIVOTBY",
+    "INFO",
+    "GETPIVOTDATA",
+    "WEBSERVICE",
+    "STOCKHISTORY",
+    "CUBEVALUE"
+  ],
+  "totalRegisteredNames": 516,
+  "probes": [
+    {
+      "formula": "=SUM(Data!A1:A10)+NOSUCH(1)+IF(A1>0,TEXTJOIN(\",\",1,\"a\"),XLOOKUP(1,B:B,C:C))",
+      "lexerFns": [
+        "SUM",
+        "NOSUCH",
+        "IF",
+        "TEXTJOIN",
+        "XLOOKUP"
+      ],
+      "regexFns": [
+        "SUM",
+        "NOSUCH",
+        "IF",
+        "TEXTJOIN",
+        "XLOOKUP"
+      ],
+      "unsupportedViaLexer": [
+        "NOSUCH"
+      ],
+      "unsupportedViaRegex": [
+        "NOSUCH"
+      ],
+      "equal": true
+    },
+    {
+      "formula": "=STDEV.P(Data!A1:A10)/POWER(2,3)",
+      "lexerFns": [
+        "STDEV.P",
+        "POWER"
+      ],
+      "regexFns": [
+        "STDEV.P",
+        "POWER"
+      ],
+      "unsupportedViaLexer": [],
+      "unsupportedViaRegex": [],
+      "equal": true
+    },
+    {
+      "formula": "=\"no func\" & CONCAT(\"x\")",
+      "lexerFns": [
+        "CONCAT"
+      ],
+      "regexFns": [
+        "CONCAT"
+      ],
+      "unsupportedViaLexer": [],
+      "unsupportedViaRegex": [],
+      "equal": true
+    },
+    {
+      "formula": "=SUMSQ(A1:B2)*MAP",
+      "lexerFns": [
+        "SUMSQ",
+        "MAP"
+      ],
+      "regexFns": [
+        "SUMSQ"
+      ],
+      "unsupportedViaLexer": [],
+      "unsupportedViaRegex": [],
+      "equal": false
+    }
+  ]
+}

@@ -1,0 +1,750 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta content="width=device-width, initial-scale=1.0" name="viewport"><meta content="web_dashboard" name="shell-type"><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet"><link href="https://fonts.googleapis.com" rel="preconnect"><link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"><link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&amp;family=Plus+Jakarta+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"><style>@layer base{html,body{margin:0;padding:0;}body{overscroll-behavior:none;}main>:first-child{margin-top:0!important;}main>:last-child{margin-bottom:0!important;}}::-webkit-scrollbar{width:6px;height:6px;}::-webkit-scrollbar-track{background:transparent;}::-webkit-scrollbar-thumb{background:#d0c4be;border-radius:4px;}::-webkit-scrollbar-thumb:hover{background:#7e7570;}</style><script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script><script id="tailwind-config">tailwind.config={darkMode:"class",theme:{extend:{colors:{"primary-fixed":"#e9e1dd","primary-fixed-dim":"#ccc5c2","primary":"#000000","on-tertiary-fixed-variant":"#005137","on-primary-fixed-variant":"#4a4643","surface-bright":"#f9f9f8","inverse-on-surface":"#f1f1f0","surface-tint":"#625d5b","on-surface-variant":"#4d4540","on-secondary-container":"#fffbff","surface-dim":"#dadad9","surface":"#f9f9f8","on-background":"#1a1c1c","tertiary-fixed":"#85f8c4","tertiary":"#000000","on-primary-container":"#888380","on-tertiary-fixed":"#002114","error-container":"#ffdad6","surface-variant":"#e2e2e2","secondary-fixed":"#e2dfff","background":"#f9f9f8","surface-container-lowest":"#ffffff","secondary-container":"#645efb","surface-container-highest":"#e2e2e2","outline-variant":"#d0c4be","secondary":"#4b41e1","surface-container-low":"#f4f4f3","error":"#ba1a1a","tertiary-container":"#002114","inverse-primary":"#ccc5c2","on-error":"#ffffff","on-secondary-fixed":"#0f0069","on-secondary-fixed-variant":"#3323cc","on-error-container":"#93000a","surface-container-high":"#e8e8e7","on-primary":"#ffffff","primary-container":"#1e1b19","tertiary-fixed-dim":"#68dba9","on-surface":"#1a1c1c","surface-container":"#eeeeed","on-secondary":"#ffffff","on-tertiary-container":"#069669","on-tertiary":"#ffffff","outline":"#7e7570","on-primary-fixed":"#1e1b19","inverse-surface":"#2f3130","secondary-fixed-dim":"#c3c0ff"},borderRadius:{DEFAULT:"0.25rem",lg:"0.5rem",xl:"0.75rem",full:"9999px"},spacing:{"margin-mobile":"0.75rem","space-xl":"2rem","space-lg":"1.25rem","space-md":"0.75rem","gutter-sm":"0.5rem","space-sm":"0.5rem",margin:"1.25rem",gutter:"1rem","space-xs":"0.25rem"},fontFamily:{"body-md":["Plus Jakarta Sans","sans-serif"],"body-lg":["Plus Jakarta Sans","sans-serif"],"headline-md":["Plus Jakarta Sans","sans-serif"],"label-md":["Plus Jakarta Sans","sans-serif"],"label-sm":["Plus Jakarta Sans","sans-serif"],"headline-lg":["Plus Jakarta Sans","sans-serif"],"code-formula":["JetBrains Mono","monospace"],"headline-xl":["Plus Jakarta Sans","sans-serif"],"body-sm":["Plus Jakarta Sans","sans-serif"],"headline-sm":["Plus Jakarta Sans","sans-serif"],"code-badge":["JetBrains Mono","monospace"],"code-cell":["JetBrains Mono","monospace"]},fontSize:{"body-md":["14px",{lineHeight:"20px",fontWeight:"400"}],"body-lg":["16px",{lineHeight:"24px",fontWeight:"400"}],"headline-md":["18px",{lineHeight:"24px",letterSpacing:"-0.01em",fontWeight:"600"}],"label-md":["12px",{lineHeight:"16px",letterSpacing:"0.01em",fontWeight:"500"}],"label-sm":["11px",{lineHeight:"14px",letterSpacing:"0.02em",fontWeight:"500"}],"headline-lg":["22px",{lineHeight:"28px",letterSpacing:"-0.015em",fontWeight:"600"}],"code-formula":["13px",{lineHeight:"18px",letterSpacing:"-0.01em",fontWeight:"500"}],"headline-xl":["28px",{lineHeight:"36px",letterSpacing:"-0.02em",fontWeight:"600"}],"body-sm":["13px",{lineHeight:"18px",fontWeight:"400"}],"headline-sm":["15px",{lineHeight:"20px",fontWeight:"600"}],"code-badge":["11px",{lineHeight:"14px",fontWeight:"500"}],"code-cell":["12px",{lineHeight:"16px",fontWeight:"400"}]}}}};</script></head><body class="bg-surface font-body-md text-on-surface antialiased selection:bg-secondary-fixed selection:text-on-secondary-fixed">
+<!-- Left Fixed Studio Sidebar -->
+<aside class="fixed left-0 top-0 h-full w-64 bg-surface-container-low z-50 flex flex-col justify-between border-r border-outline-variant/40 shadow-sm"><div class="flex flex-col"><div class="h-14 px-4 flex items-center justify-between border-b border-outline-variant/30">
+<div class="flex items-center gap-2">
+<div class="h-8 w-auto flex items-center"><img src="https://lh3.googleusercontent.com/aida/AEtjO1Uu9XJzKwYmyf8zGxVVLoZFGRYliffo7OiaMQ7XkzYuYFQIazWE0b2xfIId9lH185NewpXhUfjOo_8qSMf9U27abzl3CkvUctxCPE7gMMTuXlsv3XK8cwGzMuC-pP3_JMtZ63g0tmv_TYcf0A4xuvCupuo6SzVPaTy03Ws61nCpKx_GDXWO8bM9_VTdIjPbspazFq32Eyuu3xJVESeO_B9fEqSQoj6gaHT8U2-VCUK1ka8HfNwvTeqBAaFb" alt="ExcelManus Next" class="h-7 w-auto object-contain"></div>
+</div>
+</div>
+<div class="px-3 py-2.5">
+<div class="px-2.5 py-1.5 rounded-lg bg-surface-container/70 border border-outline-variant/30 flex items-center justify-between">
+<div class="flex items-center gap-1.5">
+<span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+<span class="font-label-sm text-label-sm text-on-surface-variant font-medium">工作区环境</span>
+</div>
+<span class="font-code-badge text-code-badge bg-secondary-fixed text-on-secondary-fixed px-1.5 py-0.5 rounded font-semibold">PROD-8</span>
+</div>
+</div>
+<nav class="flex flex-col px-2 space-y-1">
+<a aria-current="page" class="flex items-center justify-between px-3 py-2 transition-all bg-primary-container text-on-primary font-medium rounded-lg shadow-sm" data-path="workspace" href="#">
+<div class="flex items-center">
+<span class="material-symbols-outlined text-[18px] mr-2.5 text-tertiary-fixed">table_chart</span>
+<span class="text-body-sm font-medium">工作区 (Workspace)</span>
+</div>
+<span class="w-1.5 h-1.5 rounded-full bg-tertiary-fixed"></span>
+</a>
+<a class="flex items-center justify-between px-3 py-2 rounded-lg text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors font-body-sm text-body-sm" data-path="sessions" href="#">
+<div class="flex items-center">
+<span class="material-symbols-outlined text-[18px] mr-2.5">forum</span>
+<span class="">会话 (Sessions)</span>
+</div>
+<span class="font-code-badge text-[10px] text-on-surface-variant/70">12 组</span>
+</a>
+<a class="flex items-center justify-between px-3 py-2 rounded-lg text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors font-body-sm text-body-sm" data-path="agents-team" href="#">
+<div class="flex items-center">
+<span class="material-symbols-outlined text-[18px] mr-2.5 text-secondary">smart_toy</span>
+<span class="">代理团队 (Agents)</span>
+</div>
+<div class="flex items-center gap-1">
+<span class="inline-flex items-center justify-center px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-code-badge text-[10px] font-semibold">2 运行中</span>
+</div>
+</a>
+</nav></div>
+<div class="flex flex-col px-3 pb-3 gap-2">
+<div class="px-2.5 py-2 bg-surface-container/80 border border-outline-variant/40 rounded-lg flex flex-col gap-1.5">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-1.5">
+<span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+<span class="font-code-badge text-code-badge text-on-surface font-medium">WebSocket 已同步</span>
+</div>
+<span class="font-code-badge text-code-badge bg-surface-container-highest px-1.5 py-0.5 rounded text-on-surface-variant">rev: 58</span>
+</div>
+<div class="flex items-center justify-between text-[11px] text-on-surface-variant">
+<span class="">同步延迟: 18ms</span>
+<span class="text-tertiary-container font-medium">增量自动保存</span>
+</div>
+</div>
+<nav class="flex flex-col">
+<a class="flex items-center px-3 py-2 rounded-lg text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors font-body-sm text-body-sm" data-path="settings" href="#">
+<span class="material-symbols-outlined text-[18px] mr-2.5">settings</span>
+<span class="">设置 (Settings)</span>
+</a>
+</nav>
+</div>
+</aside>
+<!-- Top Fixed Header & Workbench Container -->
+<div class="pl-64">
+<header class="fixed top-0 left-64 right-0 h-14 bg-surface/95 backdrop-blur-md z-40 flex items-center justify-between px-space-lg border-b border-outline-variant/30">
+<div class="flex items-center gap-3">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-secondary text-[20px]">description</span>
+<span class="font-code-formula text-code-formula text-on-surface font-semibold tracking-tight">2026_Q3_销售汇总报表.xlsx</span>
+</div>
+<span class="font-code-badge text-code-badge text-on-surface-variant hidden lg:inline-flex items-center gap-1.5 bg-surface-container px-2.5 py-1 rounded-full border border-outline-variant/30">
+<span class="material-symbols-outlined text-[14px] text-tertiary-container">cloud_done</span>
+<span class="">已自动备份至 .excelmanus/backups</span>
+</span>
+<span class="font-code-badge text-code-badge bg-secondary-fixed/70 text-on-secondary-fixed px-2 py-0.5 rounded-full font-medium">权限模式: standard (修改前备份)</span>
+</div>
+<div class="flex items-center gap-3">
+<div class="flex items-center bg-surface-container rounded-lg px-2.5 py-1 gap-1.5 border border-outline-variant/30">
+<span class="material-symbols-outlined text-[16px] text-secondary">model_training</span>
+<span class="font-code-badge text-code-badge text-on-surface font-medium">Claude 3.7 Sonnet / DeepSeek R1</span>
+<span class="material-symbols-outlined text-[14px] text-on-surface-variant">arrow_drop_down</span>
+</div>
+<div class="flex items-center gap-1.5">
+<button class="h-8 px-2.5 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface-variant hover:text-on-surface font-label-sm text-label-sm flex items-center gap-1 transition-colors border border-outline-variant/30">
+<span class="material-symbols-outlined text-[16px]">terminal</span>
+<span class="">终端</span>
+</button>
+<button class="h-8 px-2.5 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface-variant hover:text-on-surface font-label-sm text-label-sm flex items-center gap-1 transition-colors border border-outline-variant/30">
+<span class="material-symbols-outlined text-[16px]">share</span>
+<span class="">分享</span>
+</button>
+</div>
+<div class="w-8 h-8 rounded-full bg-primary-container text-on-primary-container flex items-center justify-center font-bold text-xs ring-1 ring-outline-variant/40">
+        EM
+      </div>
+</div>
+</header>
+<main class="relative pt-14 w-full bg-surface min-h-screen">
+<!-- Main Workbench Split: Left 62% Spreadsheet | Right 38% Agent Studio -->
+<div class="flex flex-col xl:flex-row w-full h-[calc(100vh-3.5rem)] overflow-hidden">
+<!-- LEFT PANE: Spreadsheet Workbench (62%) -->
+<section class="flex flex-col w-full xl:w-[62%] h-full bg-surface-container-lowest border-r border-outline-variant/30 overflow-hidden">
+<!-- 1. Workbook Tab Bar (多工作簿标签与协同状态) -->
+<div class="h-10 px-3 bg-surface-container-low flex items-center justify-between select-none border-b border-outline-variant/30 flex-shrink-0">
+<div class="flex items-center gap-1 h-full pt-1.5">
+<!-- Active Workbook Tab -->
+<div class="group h-full px-3.5 bg-surface-container-lowest border-t-2 border-primary rounded-t-md flex items-center gap-2 shadow-[0_-1px_3px_rgba(0,0,0,0.02)] cursor-pointer">
+<span class="w-2 h-2 rounded-full bg-emerald-500 ring-2 ring-emerald-500/20"></span>
+<span class="font-code-formula text-code-formula text-on-surface font-semibold truncate max-w-[200px]">2026_Q3_销售汇总报表.xlsx</span>
+<span class="font-code-badge text-code-badge text-emerald-800 bg-emerald-100 px-1 rounded text-[10px] font-semibold">rev:58</span>
+<button class="opacity-0 group-hover:opacity-100 hover:text-error transition-opacity flex items-center ml-1 text-on-surface-variant">
+<span class="material-symbols-outlined text-[14px]">close</span>
+</button>
+</div>
+<!-- Inactive Tab -->
+<div class="h-full px-3 rounded-t-md flex items-center gap-2 text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors cursor-pointer border-t-2 border-transparent">
+<span class="material-symbols-outlined text-[15px] opacity-70">description</span>
+<span class="font-code-formula text-code-formula truncate max-w-[140px]">地区明细.csv</span>
+<button class="hover:text-error flex items-center opacity-60 hover:opacity-100">
+<span class="material-symbols-outlined text-[13px]">close</span>
+</button>
+</div>
+<!-- Add Tab Button -->
+<button class="w-7 h-7 ml-1 rounded-md text-on-surface-variant hover:bg-surface-container hover:text-on-surface flex items-center justify-center transition-colors" title="打开或新建工作簿">
+<span class="material-symbols-outlined text-[17px]">add</span>
+</button>
+</div>
+<div class="flex items-center gap-2">
+<span class="font-code-badge text-[11px] text-on-surface-variant flex items-center gap-1 bg-surface-container px-2 py-0.5 rounded">
+<span class="material-symbols-outlined text-[14px] text-emerald-700">lock_open</span>
+<span class="">协同模式: standard</span>
+</span>
+<div class="h-3.5 w-px bg-outline-variant/50 mx-0.5"></div>
+<button class="p-1 rounded hover:bg-surface-container text-on-surface-variant hover:text-on-surface" title="表格缩放">
+<span class="material-symbols-outlined text-[16px]">zoom_in</span>
+</button>
+<button class="p-1 rounded hover:bg-surface-container text-on-surface-variant hover:text-on-surface" title="全屏视窗">
+<span class="material-symbols-outlined text-[16px]">fullscreen</span>
+</button>
+</div>
+</div>
+<!-- 2. Minimalist Modern Formula Bar (精确对齐) -->
+<div class="h-10 px-3 bg-surface-container-low flex items-center gap-2 select-none border-b border-outline-variant/30 flex-shrink-0 z-20">
+<!-- Name Box Dropdown -->
+<div class="relative flex items-center bg-surface-container-lowest border border-outline-variant/50 rounded-md px-2.5 py-1 shadow-xs min-w-[130px] justify-between cursor-pointer hover:border-outline">
+<span class="font-code-formula text-code-formula text-on-surface font-semibold tracking-tight">Sheet1!C2:C15</span>
+<span class="material-symbols-outlined text-[14px] text-on-surface-variant ml-1">arrow_drop_down</span>
+</div>
+<div class="h-4 w-px bg-outline-variant/60"></div>
+<!-- Formula Input Area -->
+<div class="flex items-center gap-2 flex-1 bg-surface-container-lowest border border-outline-variant/50 rounded-md px-2.5 py-1 shadow-xs focus-within:border-secondary focus-within:ring-1 focus-within:ring-secondary/20 transition-all">
+<span class="font-code-formula text-code-formula text-on-surface-variant font-bold italic select-none">fx</span>
+<div class="h-3.5 w-px bg-outline-variant/40"></div>
+<input class="w-full bg-transparent border-none outline-none font-code-formula text-code-formula text-on-surface tracking-tight p-0" placeholder="输入公式或数值..." spellcheck="false" type="text" value="=DATEVALUE(TEXT(A2,&quot;yyyy-mm-dd&quot;))">
+<button class="hover:text-error flex items-center text-on-surface-variant" title="清空公式">
+<span class="material-symbols-outlined text-[14px]">cancel</span>
+</button>
+</div>
+<!-- Quick Action Chip: Ask Agent -->
+<button class="h-7 px-3 rounded-full bg-secondary text-white hover:bg-secondary/90 transition-colors flex items-center gap-1.5 font-label-sm text-label-sm shadow-xs cursor-pointer flex-shrink-0">
+<span class="material-symbols-outlined text-[14px]">magic_button</span>
+<span class="font-medium">问代理 (Ask Agent)</span>
+</button>
+</div>
+<!-- 3. Spreadsheet Univer-Style Canvas (严谨网格与分层浮层) -->
+<div class="relative flex-1 overflow-auto bg-surface-container-lowest select-none">
+<div class="min-w-[820px] inline-block">
+<!-- Column Headers (Univer Style) -->
+<div class="sticky top-0 z-20 flex bg-surface-container font-code-badge text-code-badge text-on-surface-variant border-b border-stone-300">
+<div class="w-12 h-7 bg-surface-container flex items-center justify-center font-code-cell text-code-cell text-on-surface-variant border-r border-stone-200 flex-shrink-0">
+<span class="material-symbols-outlined text-[13px] text-outline">tune</span>
+</div>
+<div class="w-32 h-7 px-2.5 flex items-center justify-between border-r border-stone-200">
+<span class="">A · 订单编号</span>
+<span class="material-symbols-outlined text-[11px] opacity-40">unfold_more</span>
+</div>
+<div class="w-44 h-7 px-2.5 flex items-center justify-between border-r border-stone-200">
+<span class="">B · 客户名称</span>
+<span class="material-symbols-outlined text-[11px] opacity-40">unfold_more</span>
+</div>
+<!-- Column C (Target Focus Column) -->
+<div class="w-40 h-7 px-2.5 flex items-center justify-between border-r border-stone-200 bg-secondary/10 text-secondary font-semibold">
+<span class="flex items-center gap-1">C · 销售日期</span>
+<span class="w-1.5 h-1.5 rounded-full bg-secondary"></span>
+</div>
+<div class="w-36 h-7 px-2.5 flex items-center justify-between border-r border-stone-200">
+<span class="">D · 产品品类</span>
+<span class="material-symbols-outlined text-[11px] opacity-40">unfold_more</span>
+</div>
+<div class="w-20 h-7 px-2.5 flex items-center justify-end border-r border-stone-200">
+<span class="">E · 销量</span>
+</div>
+<div class="w-28 h-7 px-2.5 flex items-center justify-end border-r border-stone-200">
+<span class="">F · 单价(元)</span>
+</div>
+<div class="w-36 h-7 px-2.5 flex items-center justify-end">
+<span class="">G · 销售额(含税)</span>
+</div>
+</div>
+<!-- Spreadsheet Rows Grid Container (Rows 1 to 18) -->
+<div class="relative flex flex-col font-code-cell text-code-cell">
+<!-- OVERLAY LAYER 1: Agent Planned Modification Range C2:C15 (Amber Dashed Highlight) -->
+<!-- Starts at Row 2 (offset 28px from top), Column C (12px + 128px + 176px = 316px, w: 160px, h: 392px) -->
+<div class="absolute top-[28px] left-[304px] w-[160px] h-[392px] pointer-events-none z-10 border-2 border-dashed border-amber-500 bg-amber-500/5 rounded-xs">
+<!-- Planning Badge -->
+<div class="absolute -top-3.5 left-2 bg-amber-500 text-white px-2 py-0.5 rounded-full font-label-sm text-[10px] tracking-tight flex items-center gap-1 shadow-sm font-medium">
+<span class="material-symbols-outlined text-[11px]">edit_calendar</span>
+<span class="">计划修改：yyyy-mm-dd (待确认)</span>
+</div>
+<!-- Interactive Diff Popover Anchored specifically over C4 (Row 4 is offset 56px inside overlay) -->
+<div class="absolute top-[58px] left-[102%] ml-1.5 w-64 bg-surface-container-lowest text-on-surface border border-outline-variant/60 rounded-lg p-2.5 shadow-lg pointer-events-auto z-30">
+<div class="flex items-center justify-between mb-1 pb-1 border-b border-outline-variant/30">
+<span class="font-code-badge text-[11px] font-semibold text-secondary">C4 变更预检</span>
+<span class="font-code-badge text-[10px] text-amber-600 bg-amber-50 px-1 rounded">待审阅 3/17</span>
+</div>
+<div class="font-body-sm text-[11px] text-on-surface-variant space-y-1">
+<div class="flex items-center justify-between">
+<span class="">修改前原值:</span>
+<span class="font-code-formula line-through text-error">"2026/08/12"</span>
+</div>
+<div class="flex items-center justify-between font-semibold">
+<span class="">规范后建议:</span>
+<span class="font-code-formula text-emerald-600">"2026-08-12"</span>
+</div>
+</div>
+</div>
+<!-- Selection Handle at Bottom Right -->
+<div class="absolute -bottom-1 -right-1 w-2.5 h-2.5 bg-amber-600 border border-white"></div>
+</div>
+<!-- OVERLAY LAYER 2: Read Activity Hint on Column G (Subtle Streaming Glow) -->
+<div class="absolute top-[28px] left-[708px] w-[144px] h-[392px] pointer-events-none z-10 border border-secondary/40 bg-secondary/5 rounded-xs">
+<div class="absolute -top-3 right-1 bg-secondary text-white px-1.5 py-0.2 rounded-full font-label-sm text-[9px] tracking-tight flex items-center gap-1 shadow-xs">
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+<span class="">代理读取中</span>
+</div>
+</div>
+<!-- Row 1 -->
+<div class="flex h-7 hover:bg-stone-50 transition-colors border-b border-stone-200">
+<div class="w-12 h-7 bg-stone-100 flex items-center justify-center text-stone-500 font-code-badge text-code-badge border-r border-stone-200 flex-shrink-0">1</div>
+<div class="w-32 px-2.5 py-1 border-r border-stone-200 text-stone-800">ORD-2026-901</div>
+<div class="w-44 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">华东数字科技有限公司</div>
+<div class="w-40 px-2.5 py-1 border-r border-stone-200 text-stone-800">2026-07-01</div>
+<div class="w-36 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">企业云中台</div>
+<div class="w-20 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800">12</div>
+<div class="w-28 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800 relative bg-emerald-50/60">
+<span class="">¥ 12,800.00</span>
+<span class="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-emerald-500" title="上轮修订改动"></span>
+</div>
+<div class="w-36 px-2.5 py-1 text-right text-stone-900 font-medium">¥ 162,560.00</div>
+</div>
+<!-- Row 2 -->
+<div class="flex h-7 hover:bg-stone-50 transition-colors border-b border-stone-200">
+<div class="w-12 h-7 bg-stone-100 flex items-center justify-center text-stone-500 font-code-badge text-code-badge border-r border-stone-200 flex-shrink-0">2</div>
+<div class="w-32 px-2.5 py-1 border-r border-stone-200 text-stone-800">ORD-2026-902</div>
+<div class="w-44 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">万邦物流智能物流网</div>
+<div class="w-40 px-2.5 py-1 border-r border-stone-200 bg-amber-50 text-amber-900 font-medium">2026-07-04</div>
+<div class="w-36 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">边缘网关硬件</div>
+<div class="w-20 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800">45</div>
+<div class="w-28 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800 relative bg-emerald-50/60">
+<span class="">¥ 2,450.00</span>
+<span class="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+</div>
+<div class="w-36 px-2.5 py-1 text-right text-stone-900 font-medium">¥ 116,865.00</div>
+</div>
+<!-- Row 3 -->
+<div class="flex h-7 hover:bg-stone-50 transition-colors border-b border-stone-200">
+<div class="w-12 h-7 bg-stone-100 flex items-center justify-center text-stone-500 font-code-badge text-code-badge border-r border-stone-200 flex-shrink-0">3</div>
+<div class="w-32 px-2.5 py-1 border-r border-stone-200 text-stone-800">ORD-2026-903</div>
+<div class="w-44 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">苏州明略信息咨询</div>
+<div class="w-40 px-2.5 py-1 border-r border-stone-200 bg-amber-50 text-amber-900">2026-07-09</div>
+<div class="w-36 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">安全审计套件</div>
+<div class="w-20 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800">8</div>
+<div class="w-28 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800 relative bg-emerald-50/60">
+<span class="">¥ 38,000.00</span>
+<span class="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+</div>
+<div class="w-36 px-2.5 py-1 text-right text-stone-900 font-medium">¥ 322,240.00</div>
+</div>
+<!-- Row 4 (Selected Row with Focused Diff) -->
+<div class="flex h-7 bg-secondary/5 transition-colors border-b border-stone-200">
+<div class="w-12 h-7 bg-secondary/20 text-secondary flex items-center justify-center font-code-badge text-code-badge font-bold border-r border-stone-200 flex-shrink-0">4</div>
+<div class="w-32 px-2.5 py-1 border-r border-stone-200 text-stone-800">ORD-2026-904</div>
+<div class="w-44 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">宏达制造集团</div>
+<div class="w-40 px-2.5 py-1 border-r border-stone-200 bg-amber-100/80 font-bold text-amber-900 flex items-center justify-between">
+<span class="">2026-08-12</span>
+<span class="w-1.5 h-1.5 rounded-full bg-amber-600"></span>
+</div>
+<div class="w-36 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">MES生产看板</div>
+<div class="w-20 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800">2</div>
+<div class="w-28 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800 relative bg-emerald-50/60">
+<span class="">¥ 84,000.00</span>
+<span class="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+</div>
+<div class="w-36 px-2.5 py-1 text-right text-stone-900 font-semibold">¥ 178,080.00</div>
+</div>
+<!-- Row 5 (Null Value Highlight) -->
+<div class="flex h-7 hover:bg-stone-50 transition-colors border-b border-stone-200">
+<div class="w-12 h-7 bg-stone-100 flex items-center justify-center text-stone-500 font-code-badge text-code-badge border-r border-stone-200 flex-shrink-0">5</div>
+<div class="w-32 px-2.5 py-1 border-r border-stone-200 text-stone-800">ORD-2026-905</div>
+<div class="w-44 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">杭州新零售矩阵</div>
+<div class="w-40 px-2.5 py-1 border-r border-stone-200 bg-yellow-100 text-amber-800 font-code-formula italic flex items-center gap-1">
+<span class="material-symbols-outlined text-[13px] text-amber-600">warning</span>
+<span class="">[空值待标黄]</span>
+</div>
+<div class="w-36 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">会员裂变插件</div>
+<div class="w-20 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800">60</div>
+<div class="w-28 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800 relative bg-emerald-50/60">
+<span class="">¥ 890.00</span>
+<span class="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+</div>
+<div class="w-36 px-2.5 py-1 text-right text-stone-900 font-medium">¥ 56,604.00</div>
+</div>
+<!-- Rows 6 to 15 -->
+<div class="flex h-7 hover:bg-stone-50 transition-colors border-b border-stone-200">
+<div class="w-12 h-7 bg-stone-100 flex items-center justify-center text-stone-500 font-code-badge text-code-badge border-r border-stone-200 flex-shrink-0">6</div>
+<div class="w-32 px-2.5 py-1 border-r border-stone-200 text-stone-800">ORD-2026-906</div>
+<div class="w-44 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">宁波港通国际贸易</div>
+<div class="w-40 px-2.5 py-1 border-r border-stone-200 bg-amber-50 text-amber-900">2026-08-15</div>
+<div class="w-36 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">清关通关API</div>
+<div class="w-20 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800">100</div>
+<div class="w-28 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800">¥ 150.00</div>
+<div class="w-36 px-2.5 py-1 text-right text-stone-900 font-medium">¥ 15,900.00</div>
+</div>
+<div class="flex h-7 hover:bg-stone-50 transition-colors border-b border-stone-200">
+<div class="w-12 h-7 bg-stone-100 flex items-center justify-center text-stone-500 font-code-badge text-code-badge border-r border-stone-200 flex-shrink-0">7</div>
+<div class="w-32 px-2.5 py-1 border-r border-stone-200 text-stone-800">ORD-2026-907</div>
+<div class="w-44 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">上海盛安生物医药</div>
+<div class="w-40 px-2.5 py-1 border-r border-stone-200 bg-amber-50 text-amber-900">2026-08-20</div>
+<div class="w-36 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">实验质控系统</div>
+<div class="w-20 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800">3</div>
+<div class="w-28 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800">¥ 68,000.00</div>
+<div class="w-36 px-2.5 py-1 text-right text-stone-900 font-medium">¥ 216,240.00</div>
+</div>
+<div class="flex h-7 hover:bg-stone-50 transition-colors border-b border-stone-200">
+<div class="w-12 h-7 bg-stone-100 flex items-center justify-center text-stone-500 font-code-badge text-code-badge border-r border-stone-200 flex-shrink-0">8</div>
+<div class="w-32 px-2.5 py-1 border-r border-stone-200 text-stone-800">ORD-2026-908</div>
+<div class="w-44 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">无锡微纳传感技术</div>
+<div class="w-40 px-2.5 py-1 border-r border-stone-200 bg-amber-50 text-amber-900">2026-08-25</div>
+<div class="w-36 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">晶圆数据校准</div>
+<div class="w-20 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800">15</div>
+<div class="w-28 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800">¥ 9,200.00</div>
+<div class="w-36 px-2.5 py-1 text-right text-stone-900 font-medium">¥ 146,280.00</div>
+</div>
+<div class="flex h-7 hover:bg-stone-50 transition-colors border-b border-stone-200">
+<div class="w-12 h-7 bg-stone-100 flex items-center justify-center text-stone-500 font-code-badge text-code-badge border-r border-stone-200 flex-shrink-0">9</div>
+<div class="w-32 px-2.5 py-1 border-r border-stone-200 text-stone-800">ORD-2026-909</div>
+<div class="w-44 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">南京智行车联科技</div>
+<div class="w-40 px-2.5 py-1 border-r border-stone-200 bg-amber-50 text-amber-900">2026-08-29</div>
+<div class="w-36 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">V2X仿真模块</div>
+<div class="w-20 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800">5</div>
+<div class="w-28 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800">¥ 44,000.00</div>
+<div class="w-36 px-2.5 py-1 text-right text-stone-900 font-medium">¥ 233,200.00</div>
+</div>
+<div class="flex h-7 hover:bg-stone-50 transition-colors border-b border-stone-200">
+<div class="w-12 h-7 bg-stone-100 flex items-center justify-center text-stone-500 font-code-badge text-code-badge border-r border-stone-200 flex-shrink-0">10</div>
+<div class="w-32 px-2.5 py-1 border-r border-stone-200 text-stone-800">ORD-2026-910</div>
+<div class="w-44 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">合肥科大智能创新</div>
+<div class="w-40 px-2.5 py-1 border-r border-stone-200 bg-amber-50 text-amber-900">2026-09-02</div>
+<div class="w-36 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">视觉巡检算法</div>
+<div class="w-20 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800">20</div>
+<div class="w-28 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800">¥ 7,500.00</div>
+<div class="w-36 px-2.5 py-1 text-right text-stone-900 font-medium">¥ 159,000.00</div>
+</div>
+<div class="flex h-7 hover:bg-stone-50 transition-colors border-b border-stone-200">
+<div class="w-12 h-7 bg-stone-100 flex items-center justify-center text-stone-500 font-code-badge text-code-badge border-r border-stone-200 flex-shrink-0">11</div>
+<div class="w-32 px-2.5 py-1 border-r border-stone-200 text-stone-800">ORD-2026-911</div>
+<div class="w-44 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">嘉兴未来制造基地</div>
+<div class="w-40 px-2.5 py-1 border-r border-stone-200 bg-amber-50 text-amber-900">2026-09-05</div>
+<div class="w-36 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">柔性流水线排产</div>
+<div class="w-20 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800">1</div>
+<div class="w-28 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800">¥ 120,000.00</div>
+<div class="w-36 px-2.5 py-1 text-right text-stone-900 font-medium">¥ 127,200.00</div>
+</div>
+<div class="flex h-7 hover:bg-stone-50 transition-colors border-b border-stone-200">
+<div class="w-12 h-7 bg-stone-100 flex items-center justify-center text-stone-500 font-code-badge text-code-badge border-r border-stone-200 flex-shrink-0">12</div>
+<div class="w-32 px-2.5 py-1 border-r border-stone-200 text-stone-800">ORD-2026-912</div>
+<div class="w-44 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">常州能源存储研究院</div>
+<div class="w-40 px-2.5 py-1 border-r border-stone-200 bg-amber-50 text-amber-900">2026-09-11</div>
+<div class="w-36 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">BMS电池模拟器</div>
+<div class="w-20 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800">6</div>
+<div class="w-28 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800">¥ 32,000.00</div>
+<div class="w-36 px-2.5 py-1 text-right text-stone-900 font-medium">¥ 203,520.00</div>
+</div>
+<div class="flex h-7 hover:bg-stone-50 transition-colors border-b border-stone-200">
+<div class="w-12 h-7 bg-stone-100 flex items-center justify-center text-stone-500 font-code-badge text-code-badge border-r border-stone-200 flex-shrink-0">13</div>
+<div class="w-32 px-2.5 py-1 border-r border-stone-200 text-stone-800">ORD-2026-913</div>
+<div class="w-44 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">温州民营金融外包</div>
+<div class="w-40 px-2.5 py-1 border-r border-stone-200 bg-amber-50 text-amber-900">2026-09-18</div>
+<div class="w-36 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">风控评分模型</div>
+<div class="w-20 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800">4</div>
+<div class="w-28 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800">¥ 55,000.00</div>
+<div class="w-36 px-2.5 py-1 text-right text-stone-900 font-medium">¥ 233,200.00</div>
+</div>
+<div class="flex h-7 hover:bg-stone-50 transition-colors border-b border-stone-200">
+<div class="w-12 h-7 bg-stone-100 flex items-center justify-center text-stone-500 font-code-badge text-code-badge border-r border-stone-200 flex-shrink-0">14</div>
+<div class="w-32 px-2.5 py-1 border-r border-stone-200 text-stone-800">ORD-2026-914</div>
+<div class="w-44 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">绍兴精细化工自动化</div>
+<div class="w-40 px-2.5 py-1 border-r border-stone-200 bg-amber-50 text-amber-900">2026-09-22</div>
+<div class="w-36 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">配方安全中台</div>
+<div class="w-20 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800">8</div>
+<div class="w-28 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800">¥ 28,000.00</div>
+<div class="w-36 px-2.5 py-1 text-right text-stone-900 font-medium">¥ 237,440.00</div>
+</div>
+<div class="flex h-7 hover:bg-stone-50 transition-colors border-b border-stone-200">
+<div class="w-12 h-7 bg-stone-100 flex items-center justify-center text-stone-500 font-code-badge text-code-badge border-r border-stone-200 flex-shrink-0">15</div>
+<div class="w-32 px-2.5 py-1 border-r border-stone-200 text-stone-800">ORD-2026-915</div>
+<div class="w-44 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">金华跨境电商供应链</div>
+<div class="w-40 px-2.5 py-1 border-r border-stone-200 bg-amber-50 text-amber-900">2026-09-27</div>
+<div class="w-36 px-2.5 py-1 border-r border-stone-200 text-stone-800 truncate">多语言客服Bot</div>
+<div class="w-20 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800">50</div>
+<div class="w-28 px-2.5 py-1 border-r border-stone-200 text-right text-stone-800">¥ 1,800.00</div>
+<div class="w-36 px-2.5 py-1 text-right text-stone-900 font-medium">¥ 95,400.00</div>
+</div>
+<!-- Blank Empty Canvas Rows 16 to 18 for complete layout stability -->
+<div class="flex h-7 border-b border-stone-100 text-stone-400">
+<div class="w-12 h-7 bg-stone-50 flex items-center justify-center font-code-badge text-code-badge border-r border-stone-200 flex-shrink-0">16</div>
+<div class="w-32 px-2.5 py-1 border-r border-stone-100"></div><div class="w-44 px-2.5 py-1 border-r border-stone-100"></div><div class="w-40 px-2.5 py-1 border-r border-stone-100"></div><div class="w-36 px-2.5 py-1 border-r border-stone-100"></div><div class="w-20 px-2.5 py-1 border-r border-stone-100"></div><div class="w-28 px-2.5 py-1 border-r border-stone-100"></div><div class="w-36 px-2.5 py-1"></div>
+</div>
+<div class="flex h-7 border-b border-stone-100 text-stone-400">
+<div class="w-12 h-7 bg-stone-50 flex items-center justify-center font-code-badge text-code-badge border-r border-stone-200 flex-shrink-0">17</div>
+<div class="w-32 px-2.5 py-1 border-r border-stone-100"></div><div class="w-44 px-2.5 py-1 border-r border-stone-100"></div><div class="w-40 px-2.5 py-1 border-r border-stone-100"></div><div class="w-36 px-2.5 py-1 border-r border-stone-100"></div><div class="w-20 px-2.5 py-1 border-r border-stone-100"></div><div class="w-28 px-2.5 py-1 border-r border-stone-100"></div><div class="w-36 px-2.5 py-1"></div>
+</div>
+<div class="flex h-7 border-b border-stone-100 text-stone-400">
+<div class="w-12 h-7 bg-stone-50 flex items-center justify-center font-code-badge text-code-badge border-r border-stone-200 flex-shrink-0">18</div>
+<div class="w-32 px-2.5 py-1 border-r border-stone-100"></div><div class="w-44 px-2.5 py-1 border-r border-stone-100"></div><div class="w-40 px-2.5 py-1 border-r border-stone-100"></div><div class="w-36 px-2.5 py-1 border-r border-stone-100"></div><div class="w-20 px-2.5 py-1 border-r border-stone-100"></div><div class="w-28 px-2.5 py-1 border-r border-stone-100"></div><div class="w-36 px-2.5 py-1"></div>
+</div>
+</div>
+</div>
+</div>
+<!-- 4. Bottom Sheet Tabs & Live Calculation Status Bar -->
+<div class="h-9 px-3 bg-surface-container-low flex items-center justify-between select-none border-t border-outline-variant/30 flex-shrink-0 text-on-surface-variant font-body-sm text-body-sm">
+<div class="flex items-center gap-1.5 h-full">
+<!-- Active Sheet Tab -->
+<div class="h-6 px-3 bg-surface-container-lowest text-on-surface font-medium rounded shadow-xs flex items-center gap-1.5 cursor-pointer border border-outline-variant/40">
+<span class="w-2 h-2 rounded-full bg-emerald-600"></span>
+<span class="">销售总览</span>
+</div>
+<!-- Inactive Sheets -->
+<div class="h-6 px-2.5 text-on-surface-variant hover:bg-surface-container hover:text-on-surface rounded flex items-center gap-1 cursor-pointer transition-colors text-xs">
+<span class="">华东分公司</span>
+</div>
+<div class="h-6 px-2.5 text-on-surface-variant hover:bg-surface-container hover:text-on-surface rounded flex items-center gap-1 cursor-pointer transition-colors text-xs">
+<span class="">华南分公司</span>
+</div>
+<div class="h-6 px-2.5 text-on-surface-variant hover:bg-surface-container hover:text-on-surface rounded flex items-center gap-1 cursor-pointer transition-colors text-xs">
+<span class="">汇总图表</span>
+</div>
+<button class="w-5 h-5 rounded hover:bg-surface-container text-on-surface-variant hover:text-on-surface flex items-center justify-center" title="新建工作表">
+<span class="material-symbols-outlined text-[15px]">add</span>
+</button>
+</div>
+<div class="flex items-center gap-3">
+<!-- Follow Agent Switch -->
+<label class="flex items-center gap-1.5 cursor-pointer select-none text-[11px] font-code-badge bg-surface-container px-2 py-0.5 rounded border border-outline-variant/30">
+<span class="w-1.5 h-1.5 rounded-full bg-secondary animate-pulse"></span>
+<span class="">跟随代理 (Follow Agent)</span>
+<input checked="" class="w-3 h-3 text-secondary rounded focus:ring-0 cursor-pointer" type="checkbox">
+</label>
+<div class="h-3 w-px bg-outline-variant/60"></div>
+<div class="flex items-center gap-2 font-code-badge text-[11px]">
+<span class="">计数: 14</span>
+<span class="text-outline-variant">·</span>
+<span class="font-medium text-on-surface">求和: ¥ 2,084,709.00</span>
+</div>
+</div>
+</div>
+<!-- 5. Bottom Change Navigation Bar (变更导航与安全替换) -->
+<div class="h-10 px-3 bg-surface-container flex items-center justify-between select-none border-t border-outline-variant/40 flex-shrink-0">
+<div class="flex items-center gap-3">
+<div class="flex items-center bg-surface-container-lowest border border-outline-variant/50 rounded-md px-2 py-1 shadow-xs">
+<span class="font-label-sm text-label-sm font-semibold text-on-surface">本轮改动 3 / 17</span>
+<div class="flex items-center ml-2 gap-1 text-on-surface-variant">
+<button class="hover:text-on-surface hover:bg-surface-container p-0.5 rounded flex items-center" title="上一项改动">
+<span class="material-symbols-outlined text-[14px]">chevron_left</span>
+</button>
+<button class="hover:text-on-surface hover:bg-surface-container p-0.5 rounded flex items-center" title="下一项改动">
+<span class="material-symbols-outlined text-[14px]">chevron_right</span>
+</button>
+</div>
+</div>
+<!-- Diff Capsule Preview -->
+<div class="hidden sm:flex items-center gap-2 font-code-formula text-[11px] bg-surface-container-lowest border border-outline-variant/40 px-2.5 py-1 rounded shadow-xs">
+<span class="font-semibold text-on-surface">选中 C4</span>
+<span class="line-through text-error">"2026/08/12"</span>
+<span class="material-symbols-outlined text-[12px] text-on-surface-variant">arrow_forward</span>
+<span class="text-emerald-700 font-semibold">"2026-08-12"</span>
+</div>
+</div>
+<div class="flex items-center gap-2">
+<button class="px-2.5 py-1 rounded-md bg-surface-container-lowest border border-outline-variant/50 text-on-surface font-label-sm text-label-sm hover:bg-surface-container hover:border-outline transition-colors flex items-center gap-1 shadow-xs">
+<span class="material-symbols-outlined text-[14px] text-secondary">my_location</span>
+<span class="">定位到表格单元格</span>
+</button>
+<button class="px-2.5 py-1 rounded-md bg-error-container text-on-error-container font-label-sm text-label-sm hover:opacity-90 transition-opacity flex items-center gap-1 shadow-xs">
+<span class="material-symbols-outlined text-[14px]">restore</span>
+<span class="">用备份替换当前文件</span>
+</button>
+</div>
+</div>
+</section>
+<!-- RIGHT PANE: Deep AI Agent Conversation Panel (38%) -->
+<aside class="flex flex-col w-full xl:w-[38%] h-full bg-surface-container-low overflow-hidden">
+<!-- 1. AI Studio Session Header -->
+<div class="h-14 px-4 bg-surface-container flex items-center justify-between flex-shrink-0 border-b border-outline-variant/30 z-10">
+<div class="flex flex-col min-w-0 pr-2">
+<div class="flex items-center gap-2">
+<span class="font-headline-sm text-headline-sm text-on-surface truncate font-semibold">2026_Q3_销售规范与核算</span>
+<button class="hover:text-secondary text-on-surface-variant transition-colors" title="重命名会话">
+<span class="material-symbols-outlined text-[15px]">edit</span>
+</button>
+</div>
+<div class="flex items-center gap-2 mt-0.5">
+<span class="inline-flex items-center gap-1 px-1.5 py-0.2 bg-secondary-fixed text-on-secondary-fixed rounded-full font-code-badge text-[10px]">
+<span class="w-1.5 h-1.5 rounded-full bg-secondary"></span>
+<span class="">Claude 3.7 Sonnet (Thinking)</span>
+</span>
+<span class="font-code-badge text-code-badge text-on-surface-variant">会话 ID: ses_882a1</span>
+</div>
+</div>
+<!-- Token Occupancy & Compact Action -->
+<div class="flex items-center gap-2.5 flex-shrink-0">
+<div class="flex flex-col items-end">
+<span class="font-code-badge text-[10px] text-on-surface-variant font-medium">34.2k / 200k (17%)</span>
+<div class="w-20 h-1.5 bg-surface-container-highest rounded-full overflow-hidden mt-0.5">
+<div class="h-full bg-secondary rounded-full" style="width: 17%"></div>
+</div>
+</div>
+<button class="h-7 px-2 rounded-md bg-surface-container-lowest border border-outline-variant/40 hover:bg-surface-container-high text-on-surface font-code-badge text-code-badge flex items-center gap-1 transition-colors shadow-xs" title="压缩上下文以节省 Token">
+<span class="material-symbols-outlined text-[14px]">compress</span>
+<span class="">/compact</span>
+</button>
+</div>
+</div>
+<!-- 2. Message Conversation Stream -->
+<div class="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+<!-- Turn 1: User Request -->
+<div class="flex flex-col items-end gap-1.5">
+<div class="flex items-center gap-1.5">
+<span class="font-code-badge text-[11px] text-on-surface-variant">执行用户 · 14:32</span>
+<div class="w-5 h-5 rounded-full bg-primary text-on-primary flex items-center justify-center font-label-sm text-[10px] font-bold">
+                U
+              </div>
+</div>
+<div class="max-w-[92%] bg-surface-container-highest rounded-2xl rounded-tr-xs p-3.5 shadow-xs text-on-surface border border-outline-variant/30">
+<p class="font-body-md text-body-md leading-relaxed">
+                把 C 列的日期格式统一成 yyyy-mm-dd，空值标黄，并核算各地区含税销售额。
+              </p>
+<div class="flex flex-wrap gap-1.5 mt-2.5 pt-2 border-t border-outline-variant/20">
+<span class="inline-flex items-center gap-1 font-code-badge text-code-badge bg-surface-container-lowest border border-outline-variant/30 px-2 py-0.5 rounded text-on-surface">
+<span class="material-symbols-outlined text-[13px] text-secondary">push_pin</span>
+<span class="">销售.xlsx · Sheet1!C2:C15</span>
+</span>
+<span class="inline-flex items-center gap-1 font-code-badge text-code-badge bg-surface-container-lowest border border-outline-variant/30 px-2 py-0.5 rounded text-on-surface">
+<span class="material-symbols-outlined text-[13px] text-tertiary-container">alternate_email</span>
+<span class="">2026_Q3_销售汇总报表.xlsx</span>
+</span>
+</div>
+<div class="mt-2 flex items-center justify-end gap-1 text-[10px] font-code-badge text-emerald-700">
+<span class="material-symbols-outlined text-[12px]">done_all</span>
+<span class="">派发策略: 已生效 (Applied)</span>
+</div>
+</div>
+</div>
+<!-- Turn 2: Agent Response Flow -->
+<div class="flex flex-col items-start gap-2.5">
+<div class="flex items-center gap-2">
+<div class="w-6 h-6 rounded-full bg-secondary text-on-secondary flex items-center justify-center shadow-xs">
+<span class="material-symbols-outlined text-[14px]">smart_toy</span>
+</div>
+<span class="font-headline-sm text-body-sm font-semibold text-on-surface">ExcelManus Agent</span>
+<span class="font-code-badge text-[10px] text-on-surface-variant">刚刚</span>
+</div>
+<!-- A. Deep Thinking Collapsible Block -->
+<div class="w-full bg-surface-container rounded-xl p-2.5 border border-outline-variant/30">
+<details class="group cursor-pointer">
+<summary class="flex items-center justify-between list-none text-on-surface-variant font-label-sm text-label-sm">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-[16px] text-secondary group-open:rotate-90 transition-transform">chevron_right</span>
+<span class="font-medium text-on-surface">思考了 4.2 秒</span>
+</div>
+<span class="font-code-badge text-[10px] bg-surface-container-highest px-1.5 py-0.5 rounded text-on-surface-variant">DeepSeek R1 Engine</span>
+</summary>
+<div class="mt-2.5 pt-2 border-t border-outline-variant/30 font-code-formula text-[12px] text-on-surface-variant leading-relaxed space-y-1.5 pl-6">
+<p class="">1. 分析表头结构：发现列 C 为“销售日期”，混杂格式例如 2026/08/12 与纯文本 2026-07-01；</p>
+<p class="">2. 检索到行 5 存在空单元格 (Row 5, Col 3)，命中“空值标黄”规则；</p>
+<p class="">3. 计划生成变更方案 ChangeSet，先调用 <code>workbook_read</code> 校验单元格当前类型；</p>
+<p class="">4. 准备调用 <code>workbook_edit</code> (dryRun) 并提出交互确认卡，等待用户批准写入。</p>
+</div>
+</details>
+</div>
+<!-- B. Tool Card 1: workbook_read -->
+<div class="w-full bg-surface-container-lowest rounded-xl p-3 border border-outline-variant/30 shadow-xs">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2">
+<span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+<span class="font-code-formula text-code-formula font-semibold text-on-surface">workbook_read</span>
+<span class="font-code-badge text-[11px] bg-secondary-fixed text-on-secondary-fixed px-1.5 py-0.5 rounded">Sheet1!C1:C15</span>
+</div>
+<div class="flex items-center gap-1 text-emerald-700 font-code-badge text-[11px] font-medium">
+<span class="material-symbols-outlined text-[14px]">check_circle</span>
+<span class="">ok (120ms)</span>
+</div>
+</div>
+<div class="mt-2 text-on-surface-variant font-body-sm text-[12px] bg-surface-container-low p-2 rounded-lg flex items-center justify-between border border-outline-variant/20">
+<span class="">读取 15 行样本，覆盖率 100%，当前文档修订 rev: 57</span>
+<span class="font-code-badge text-on-surface font-medium">14 条记录 / 1 空值</span>
+</div>
+</div>
+<!-- C. Interactive Question Card: range_confirm (遵循 02-interaction.md) -->
+<div class="w-full bg-surface-container-lowest rounded-xl p-4 shadow-sm border border-secondary/30 ring-1 ring-secondary/20">
+<div class="flex items-center justify-between pb-2 border-b border-outline-variant/20">
+<div class="flex items-center gap-2 text-secondary font-headline-sm text-body-sm font-semibold">
+<span class="material-symbols-outlined text-[18px]">verified_user</span>
+<span class="">区域操作确认 (Target Range Verification)</span>
+</div>
+<span class="font-code-badge text-[10px] bg-secondary-fixed/50 text-secondary px-1.5 py-0.5 rounded">Ask User · range_confirm</span>
+</div>
+<p class="font-body-md text-body-md text-on-surface mt-2.5 leading-normal">
+                已识别到待格式化数据区为 <code class="font-code-formula text-secondary bg-secondary-fixed/50 px-1.5 py-0.5 rounded font-semibold">Sheet1!C2:C15</code>，拟执行日期规范化 (<span class="font-code-badge text-code-badge">yyyy-mm-dd</span>) 并对空单元格执行填充高亮。请确认目标范围：
+              </p>
+<!-- Option Action Cluster -->
+<div class="flex flex-wrap gap-2 mt-3.5">
+<button class="px-3.5 py-1.5 rounded-lg bg-primary text-on-primary font-label-md text-label-md hover:bg-neutral-800 transition-colors flex items-center gap-1.5 shadow-xs font-semibold cursor-pointer">
+<span class="material-symbols-outlined text-[16px] text-tertiary-fixed">check</span>
+<span class="">确认此区域 (Sheet1!C2:C15)</span>
+</button>
+<button class="px-3 py-1.5 rounded-lg bg-surface-container text-on-surface font-label-md text-label-md hover:bg-surface-container-high transition-colors flex items-center gap-1.5 border border-outline-variant/30">
+<span class="material-symbols-outlined text-[16px] text-on-surface-variant">crop_free</span>
+<span class="">重新在表格上框选</span>
+</button>
+<button class="px-3 py-1.5 rounded-lg bg-surface-container-low text-on-surface-variant hover:text-error transition-colors font-label-md text-label-md">
+                  取消
+                </button>
+</div>
+<div class="mt-3 pt-2.5 border-t border-outline-variant/30 flex items-center gap-1.5 text-on-surface-variant font-code-badge text-[11px]">
+<span class="material-symbols-outlined text-[14px] text-emerald-700">info</span>
+<span class="">此确认结果将绑定至修订号 rev: 57，写入前系统将自动备份原文件至 .excelmanus/backups/</span>
+</div>
+</div>
+<!-- D. Real-time Change Summary Badge Card -->
+<div class="w-full bg-emerald-50/70 border border-emerald-200/80 rounded-xl p-3 flex items-start gap-2.5 text-emerald-900 shadow-xs">
+<span class="material-symbols-outlined text-[20px] text-emerald-700 mt-0.5">dataset</span>
+<div class="flex flex-col">
+<span class="font-headline-sm text-body-sm font-semibold text-emerald-800">文档修订 rev: 58 预备就绪</span>
+<p class="font-body-sm text-body-sm mt-0.5 text-emerald-900/80">
+                  涉及 1 个工作表 · 14 个单元格统一日期 · 1 个单元格样式填充 · 已创建修改前增量备份快照。
+                </p>
+</div>
+</div>
+</div>
+</div>
+<!-- 3. Sticky Pending Interaction Bar (待处理交互条) -->
+<div class="px-4 py-2.5 bg-neutral-900 text-white shadow-lg flex-shrink-0 z-20 border-t border-neutral-700">
+<div class="flex flex-col gap-2">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2">
+<span class="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
+<span class="font-label-md text-label-md font-semibold text-amber-200">待确认操作</span>
+<span class="font-code-formula text-[12px] text-neutral-300 truncate max-w-[280px]">销售汇总报表.xlsx · Sheet1!C2:C15</span>
+<span class="font-code-badge text-[10px] bg-neutral-800 text-amber-300 px-1.5 py-0.5 rounded border border-neutral-700">14 处变更</span>
+</div>
+<button class="text-neutral-400 hover:text-white" title="预览全部待改动单元格">
+<span class="material-symbols-outlined text-[16px]">visibility</span>
+</button>
+</div>
+<div class="flex items-center gap-2">
+<button class="flex-1 py-1.5 rounded-lg bg-emerald-500 text-neutral-950 font-label-md text-label-md font-semibold hover:bg-emerald-400 transition-colors flex items-center justify-center gap-1 shadow-xs cursor-pointer">
+<span class="material-symbols-outlined text-[16px]">task_alt</span>
+<span class="">批准写入</span>
+</button>
+<button class="px-3 py-1.5 rounded-lg bg-neutral-800 text-neutral-200 hover:bg-neutral-700 font-label-md text-label-md transition-colors flex items-center gap-1 border border-neutral-700">
+<span class="material-symbols-outlined text-[15px]">block</span>
+<span class="">拒绝 (附理由)</span>
+</button>
+<button class="px-3 py-1.5 rounded-lg bg-neutral-800 text-neutral-300 hover:bg-neutral-700 font-label-md text-label-md transition-colors whitespace-nowrap border border-neutral-700">
+                本会话同类自动批准
+              </button>
+</div>
+</div>
+</div>
+<!-- 4. Smart Input Box & Multi-Mode Dispatch Bar -->
+<div class="p-3 bg-surface-container flex flex-col gap-2 flex-shrink-0 border-t border-outline-variant/30">
+<div class="bg-surface-container-lowest rounded-xl p-2.5 shadow-xs border border-outline-variant/40 flex flex-col gap-2 focus-within:border-outline transition-all">
+<!-- Context attachment pills (可移除/钉住) -->
+<div class="flex items-center gap-1.5 flex-wrap">
+<span class="inline-flex items-center gap-1 bg-surface-container px-2 py-0.5 rounded-md font-code-badge text-[11px] text-on-surface border border-outline-variant/30">
+<span class="material-symbols-outlined text-[12px] text-secondary">push_pin</span>
+<span class="">Sheet1!C2:C15</span>
+<button class="hover:text-error flex items-center ml-0.5"><span class="material-symbols-outlined text-[12px]">close</span></button>
+</span>
+<span class="inline-flex items-center gap-1 bg-surface-container px-2 py-0.5 rounded-md font-code-badge text-[11px] text-on-surface border border-outline-variant/30">
+<span class="material-symbols-outlined text-[12px] text-emerald-700">description</span>
+<span class="">2026_Q3_销售汇总报表.xlsx</span>
+<button class="hover:text-error flex items-center ml-0.5"><span class="material-symbols-outlined text-[12px]">close</span></button>
+</span>
+<button class="h-5 px-2 rounded-md bg-surface-container hover:bg-surface-container-high text-on-surface-variant font-code-badge text-[10px] flex items-center gap-1 transition-colors">
+<span class="material-symbols-outlined text-[12px]">add</span>
+<span class="">引用</span>
+</button>
+</div>
+<!-- Prompt Text Area -->
+<textarea class="w-full bg-transparent border-none outline-none resize-none font-body-md text-body-md text-on-surface placeholder:text-outline p-0 focus:ring-0" placeholder="向代理发送指令，输入 @ 引用文件或区域，/ 查看技能与命令..." rows="2"></textarea>
+<!-- Input Action & Segmented Dispatch Toolbar -->
+<div class="flex items-center justify-between pt-1.5 border-t border-outline-variant/20">
+<div class="flex items-center gap-1">
+<button class="p-1 rounded text-on-surface-variant hover:text-on-surface hover:bg-surface-container transition-colors" title="上传附件或数据字典">
+<span class="material-symbols-outlined text-[18px]">attach_file</span>
+</button>
+<button class="p-1 rounded text-on-surface-variant hover:text-on-surface hover:bg-surface-container transition-colors" title="工作区对象搜索 (@)">
+<span class="material-symbols-outlined text-[18px]">alternate_email</span>
+</button>
+<button class="p-1 rounded text-on-surface-variant hover:text-on-surface hover:bg-surface-container transition-colors" title="预置技能命令 (/)">
+<span class="material-symbols-outlined text-[18px]">terminal</span>
+</button>
+</div>
+<!-- Dispatch Control Group -->
+<div class="flex items-center gap-1.5">
+<!-- Dispatch Mode Selector (Steer / Interrupt / Queue) -->
+<div class="relative inline-flex items-center bg-surface-container hover:bg-surface-container-high border border-outline-variant/40 rounded-lg px-2 py-1 text-on-surface font-label-sm text-label-sm cursor-pointer transition-colors">
+<span class="">引导 (Steer)</span>
+<span class="material-symbols-outlined text-[14px] ml-0.5 text-on-surface-variant">expand_more</span>
+</div>
+<!-- Emergency Interrupt Button -->
+<button class="px-2 py-1 rounded-lg text-error hover:bg-error-container hover:text-on-error-container transition-colors font-label-sm text-label-sm flex items-center gap-0.5 border border-error/20" title="强制停止代理操作">
+<span class="material-symbols-outlined text-[14px]">stop_circle</span>
+<span class="">停止</span>
+</button>
+<!-- Send Button -->
+<button class="px-3.5 py-1 rounded-lg bg-primary text-on-primary hover:bg-neutral-800 transition-colors font-label-sm text-label-sm flex items-center gap-1.5 shadow-xs font-semibold cursor-pointer">
+<span class="">发送</span>
+<span class="material-symbols-outlined text-[14px]">arrow_upward</span>
+</button>
+</div>
+</div>
+</div>
+<!-- Keymap & Status Hints -->
+<div class="flex items-center justify-between px-1 text-on-surface-variant font-code-badge text-[10px]">
+<span class="">Enter 发送 · Shift+Enter 换行</span>
+<span class="">代理运行中按 Esc 中断</span>
+</div>
+</div>
+</aside>
+</div>
+</main>
+</div>
+
+
+</body></html>

@@ -1,0 +1,324 @@
+{
+  "meta": {
+    "test": "T5b-perop",
+    "seqs": 15,
+    "cases": 413,
+    "elapsedMs": 1606
+  },
+  "perOp": {
+    "move-rows": {
+      "total": 6,
+      "mutated": 6,
+      "hasInverse": 6,
+      "restored": 1,
+      "failed": 5,
+      "examples": [
+        "seq0 op0 inv=2 applyFail=false diffs=[{\"path\":\"sheets.s1.cellData.0.7\",\"a\":{\"v\":993}}]",
+        "seq9 op5 inv=2 applyFail=false diffs=[{\"path\":\"sheets.s1.cellData.18.6\",\"a\":{\"v\":\"txt_s1_18_6\"}}]",
+        "seq10 op8 inv=2 applyFail=false diffs=[{\"path\":\"sheets.s1.cellData.3.11\",\"a\":{\"v\":159}},{\"path\":\"sheets.s1.cellData.8.1\",\"a\":{\"v\":595}},{\"path\":\"sheets.s1.cellData.9.9\",\"a\":{\"v\":304}}]"
+      ]
+    },
+    "set-value-empty": {
+      "total": 6,
+      "mutated": 6,
+      "hasInverse": 6,
+      "restored": 6,
+      "failed": 0,
+      "examples": []
+    },
+    "insert-rows": {
+      "total": 14,
+      "mutated": 14,
+      "hasInverse": 14,
+      "restored": 14,
+      "failed": 0,
+      "examples": []
+    },
+    "remove-rows": {
+      "total": 20,
+      "mutated": 20,
+      "hasInverse": 20,
+      "restored": 19,
+      "failed": 1,
+      "examples": [
+        "seq2 op26 inv=3 applyFail=false diffs=[{\"path\":\"sheets.s1.cellData.4.11.v\",\"a\":\"txt_s1_4_11\"},{\"path\":\"sheets.s1.cellData.4.11.f\",\"b\":\"=A1+B1\"},{\"path\":\"sheets.s1.cellData.8.10.v\",\"a\":\"txt_s1_8_10\"}]"
+      ]
+    },
+    "merge": {
+      "total": 12,
+      "mutated": 12,
+      "hasInverse": 12,
+      "restored": 12,
+      "failed": 0,
+      "examples": []
+    },
+    "set-style": {
+      "total": 16,
+      "mutated": 16,
+      "hasInverse": 16,
+      "restored": 16,
+      "failed": 0,
+      "examples": []
+    },
+    "hide-cols": {
+      "total": 16,
+      "mutated": 16,
+      "hasInverse": 16,
+      "restored": 16,
+      "failed": 0,
+      "examples": []
+    },
+    "clear-all": {
+      "total": 10,
+      "mutated": 10,
+      "hasInverse": 10,
+      "restored": 10,
+      "failed": 0,
+      "examples": []
+    },
+    "add-dv": {
+      "total": 12,
+      "mutated": 12,
+      "hasInverse": 12,
+      "restored": 12,
+      "failed": 0,
+      "examples": []
+    },
+    "set-col-width": {
+      "total": 16,
+      "mutated": 16,
+      "hasInverse": 15,
+      "restored": 16,
+      "failed": 0,
+      "examples": []
+    },
+    "sort-range": {
+      "total": 11,
+      "mutated": 11,
+      "hasInverse": 11,
+      "restored": 11,
+      "failed": 0,
+      "examples": []
+    },
+    "set-value-string": {
+      "total": 25,
+      "mutated": 25,
+      "hasInverse": 25,
+      "restored": 25,
+      "failed": 0,
+      "examples": []
+    },
+    "set-value-number": {
+      "total": 26,
+      "mutated": 26,
+      "hasInverse": 26,
+      "restored": 26,
+      "failed": 0,
+      "examples": []
+    },
+    "move-sheet": {
+      "total": 6,
+      "mutated": 6,
+      "hasInverse": 6,
+      "restored": 6,
+      "failed": 0,
+      "examples": []
+    },
+    "copy-down": {
+      "total": 6,
+      "mutated": 6,
+      "hasInverse": 6,
+      "restored": 6,
+      "failed": 0,
+      "examples": []
+    },
+    "copy-sheet": {
+      "total": 8,
+      "mutated": 8,
+      "hasInverse": 8,
+      "restored": 8,
+      "failed": 0,
+      "examples": []
+    },
+    "insert-sheet": {
+      "total": 15,
+      "mutated": 15,
+      "hasInverse": 15,
+      "restored": 15,
+      "failed": 0,
+      "examples": []
+    },
+    "remove-cols": {
+      "total": 9,
+      "mutated": 9,
+      "hasInverse": 9,
+      "restored": 9,
+      "failed": 0,
+      "examples": []
+    },
+    "autofill": {
+      "total": 7,
+      "mutated": 7,
+      "hasInverse": 7,
+      "restored": 7,
+      "failed": 0,
+      "examples": []
+    },
+    "rename-sheet": {
+      "total": 10,
+      "mutated": 10,
+      "hasInverse": 10,
+      "restored": 10,
+      "failed": 0,
+      "examples": []
+    },
+    "add-cf": {
+      "total": 7,
+      "mutated": 7,
+      "hasInverse": 7,
+      "restored": 7,
+      "failed": 0,
+      "examples": []
+    },
+    "set-row-height": {
+      "total": 13,
+      "mutated": 13,
+      "hasInverse": 13,
+      "restored": 13,
+      "failed": 0,
+      "examples": []
+    },
+    "clear-format": {
+      "total": 14,
+      "mutated": 14,
+      "hasInverse": 14,
+      "restored": 14,
+      "failed": 0,
+      "examples": []
+    },
+    "move-range": {
+      "total": 10,
+      "mutated": 10,
+      "hasInverse": 10,
+      "restored": 10,
+      "failed": 0,
+      "examples": []
+    },
+    "set-value-boolean": {
+      "total": 15,
+      "mutated": 15,
+      "hasInverse": 15,
+      "restored": 15,
+      "failed": 0,
+      "examples": []
+    },
+    "set-frozen": {
+      "total": 10,
+      "mutated": 10,
+      "hasInverse": 10,
+      "restored": 10,
+      "failed": 0,
+      "examples": []
+    },
+    "hide-rows": {
+      "total": 13,
+      "mutated": 13,
+      "hasInverse": 13,
+      "restored": 13,
+      "failed": 0,
+      "examples": []
+    },
+    "clear-content": {
+      "total": 17,
+      "mutated": 17,
+      "hasInverse": 17,
+      "restored": 17,
+      "failed": 0,
+      "examples": []
+    },
+    "remove-sheet": {
+      "total": 9,
+      "mutated": 9,
+      "hasInverse": 9,
+      "restored": 9,
+      "failed": 0,
+      "examples": []
+    },
+    "set-formula": {
+      "total": 19,
+      "mutated": 19,
+      "hasInverse": 19,
+      "restored": 19,
+      "failed": 0,
+      "examples": []
+    },
+    "move-cols": {
+      "total": 6,
+      "mutated": 6,
+      "hasInverse": 6,
+      "restored": 3,
+      "failed": 3,
+      "examples": [
+        "seq3 op25 inv=2 applyFail=false diffs=[{\"path\":\"sheets.s1.cellData.4.6\",\"a\":{\"v\":\"txt_s1_4_6\"}},{\"path\":\"sheets.s1.cellData.5.6\",\"a\":{\"v\":634}},{\"path\":\"sheets.s1.cellData.11.6\",\"a\":{\"v\":662}}]",
+        "seq7 op1 inv=2 applyFail=false diffs=[{\"path\":\"sheets.s1.cellData.6.4\",\"a\":{\"v\":\"txt_s1_6_4\"}},{\"path\":\"sheets.s1.cellData.8.4\",\"a\":{\"v\":\"txt_s1_8_4\"}},{\"path\":\"sheets.s1.cellData.12.4\",\"a\":{\"v\":\"txt_s1_12_4\"}}]",
+        "seq11 op42 inv=2 applyFail=false diffs=[{\"path\":\"sheets.s3.cellData.1.1\",\"a\":{\"v\":\"txt_s3_1_1\"}},{\"path\":\"sheets.s3.cellData.2.0\",\"a\":{\"v\":425}},{\"path\":\"sheets.s3.cellData.6.1\",\"a\":{\"v\":617}}]"
+      ]
+    },
+    "show-cols": {
+      "total": 2,
+      "mutated": 2,
+      "hasInverse": 2,
+      "restored": 0,
+      "failed": 2,
+      "examples": [
+        "seq3 op36 inv=2 applyFail=false diffs=[{\"path\":\"sheets.s1.columnData.0\",\"b\":{\"hd\":1}}]",
+        "seq13 op22 inv=2 applyFail=false diffs=[{\"path\":\"sheets.s1.columnData.5\",\"b\":{\"hd\":1}},{\"path\":\"sheets.s1.columnData.6\",\"b\":{\"hd\":1}}]"
+      ]
+    },
+    "delete-cf": {
+      "total": 5,
+      "mutated": 5,
+      "hasInverse": 0,
+      "restored": 5,
+      "failed": 0,
+      "examples": []
+    },
+    "insert-cols": {
+      "total": 11,
+      "mutated": 11,
+      "hasInverse": 11,
+      "restored": 11,
+      "failed": 0,
+      "examples": []
+    },
+    "set-filter": {
+      "total": 6,
+      "mutated": 6,
+      "hasInverse": 6,
+      "restored": 6,
+      "failed": 0,
+      "examples": []
+    },
+    "cancel-frozen": {
+      "total": 4,
+      "mutated": 4,
+      "hasInverse": 4,
+      "restored": 4,
+      "failed": 0,
+      "examples": []
+    },
+    "show-rows": {
+      "total": 1,
+      "mutated": 1,
+      "hasInverse": 1,
+      "restored": 0,
+      "failed": 1,
+      "examples": [
+        "seq11 op34 inv=2 applyFail=false diffs=[{\"path\":\"sheets.s1.rowData.0\",\"b\":{\"hd\":1}},{\"path\":\"sheets.s1.rowData.1\",\"b\":{\"hd\":1}},{\"path\":\"sheets.s1.rowData.2\",\"b\":{\"hd\":1}}]"
+      ]
+    }
+  },
+  "invApplyFail": {
+    "move-cols:sheet.mutation.move-columns:Invalid move operation": 1
+  }
+}

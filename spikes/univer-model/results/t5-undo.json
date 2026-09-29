@@ -1,0 +1,2930 @@
+{
+  "meta": {
+    "test": "T5-undo",
+    "sequences": 200,
+    "baseSeed": 55110033,
+    "node": "v24.1.0",
+    "ts": "2026-09-29T04:46:43.813Z",
+    "elapsedMs": 4143
+  },
+  "summary": {
+    "sequencesRestored": 106,
+    "sequencesTotal": 200,
+    "restoreRate": 0.53,
+    "totalOps": 6856,
+    "opsWithUndoItem": 5998,
+    "captureMsTotal": 87.25379800001906,
+    "applyMsTotal": 529.366953000002,
+    "inverseBytesTotal": 8936774,
+    "failedInverseOps": 13
+  },
+  "perOpType": {
+    "clear-all": {
+      "total": 129,
+      "withUndoItem": 129,
+      "mutated": 129
+    },
+    "set-value-number": {
+      "total": 439,
+      "withUndoItem": 439,
+      "mutated": 439
+    },
+    "remove-sheet": {
+      "total": 89,
+      "withUndoItem": 86,
+      "mutated": 86
+    },
+    "move-range": {
+      "total": 161,
+      "withUndoItem": 160,
+      "mutated": 160
+    },
+    "insert-rows": {
+      "total": 230,
+      "withUndoItem": 227,
+      "mutated": 227
+    },
+    "move-cols": {
+      "total": 145,
+      "withUndoItem": 130,
+      "mutated": 130
+    },
+    "set-row-height": {
+      "total": 194,
+      "withUndoItem": 194,
+      "mutated": 194
+    },
+    "set-frozen": {
+      "total": 108,
+      "withUndoItem": 108,
+      "mutated": 108
+    },
+    "insert-cols": {
+      "total": 198,
+      "withUndoItem": 185,
+      "mutated": 185
+    },
+    "autofill": {
+      "total": 124,
+      "withUndoItem": 124,
+      "mutated": 124
+    },
+    "set-style": {
+      "total": 311,
+      "withUndoItem": 311,
+      "mutated": 311
+    },
+    "show-rows": {
+      "total": 146,
+      "withUndoItem": 11,
+      "mutated": 11
+    },
+    "copy-down": {
+      "total": 95,
+      "withUndoItem": 58,
+      "mutated": 58
+    },
+    "move-rows": {
+      "total": 132,
+      "withUndoItem": 125,
+      "mutated": 125
+    },
+    "set-value-empty": {
+      "total": 184,
+      "withUndoItem": 184,
+      "mutated": 184
+    },
+    "rename-sheet": {
+      "total": 131,
+      "withUndoItem": 131,
+      "mutated": 131
+    },
+    "clear-format": {
+      "total": 141,
+      "withUndoItem": 141,
+      "mutated": 141
+    },
+    "set-value-boolean": {
+      "total": 189,
+      "withUndoItem": 189,
+      "mutated": 189
+    },
+    "remove-cols": {
+      "total": 195,
+      "withUndoItem": 194,
+      "mutated": 194
+    },
+    "set-value-string": {
+      "total": 380,
+      "withUndoItem": 380,
+      "mutated": 380
+    },
+    "move-sheet": {
+      "total": 147,
+      "withUndoItem": 147,
+      "mutated": 147
+    },
+    "set-formula": {
+      "total": 223,
+      "withUndoItem": 223,
+      "mutated": 223
+    },
+    "sort-range": {
+      "total": 145,
+      "withUndoItem": 145,
+      "mutated": 145
+    },
+    "clear-content": {
+      "total": 193,
+      "withUndoItem": 193,
+      "mutated": 193
+    },
+    "unmerge": {
+      "total": 203,
+      "withUndoItem": 61,
+      "mutated": 61
+    },
+    "add-dv": {
+      "total": 148,
+      "withUndoItem": 148,
+      "mutated": 148
+    },
+    "show-cols": {
+      "total": 148,
+      "withUndoItem": 11,
+      "mutated": 11
+    },
+    "clear-dv": {
+      "total": 115,
+      "withUndoItem": 20,
+      "mutated": 20
+    },
+    "set-filter": {
+      "total": 144,
+      "withUndoItem": 127,
+      "mutated": 127
+    },
+    "cancel-frozen": {
+      "total": 81,
+      "withUndoItem": 81,
+      "mutated": 81
+    },
+    "add-cf": {
+      "total": 136,
+      "withUndoItem": 136,
+      "mutated": 136
+    },
+    "remove-rows": {
+      "total": 251,
+      "withUndoItem": 251,
+      "mutated": 251
+    },
+    "hide-rows": {
+      "total": 133,
+      "withUndoItem": 133,
+      "mutated": 133
+    },
+    "merge": {
+      "total": 210,
+      "withUndoItem": 210,
+      "mutated": 210
+    },
+    "insert-sheet": {
+      "total": 142,
+      "withUndoItem": 142,
+      "mutated": 142
+    },
+    "remove-filter": {
+      "total": 85,
+      "withUndoItem": 16,
+      "mutated": 16
+    },
+    "set-filter-criteria": {
+      "total": 132,
+      "withUndoItem": 35,
+      "mutated": 35
+    },
+    "set-col-width": {
+      "total": 173,
+      "withUndoItem": 173,
+      "mutated": 173
+    },
+    "copy-sheet": {
+      "total": 97,
+      "withUndoItem": 97,
+      "mutated": 97
+    },
+    "hide-cols": {
+      "total": 143,
+      "withUndoItem": 143,
+      "mutated": 143
+    },
+    "delete-cf": {
+      "total": 86,
+      "withUndoItem": 0,
+      "mutated": 86
+    }
+  },
+  "failures": [
+    {
+      "seq": 0,
+      "seed": 55110033,
+      "restored": false,
+      "diffCount": 26,
+      "appliedInverse": 54,
+      "failedInverse": 1,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s2.cellData.65.2",
+          "a": {
+            "v": 669
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.66.4",
+          "a": {
+            "v": "txt_s2_66_4"
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.67.2",
+          "a": {
+            "v": 721
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.70.1",
+          "a": {
+            "v": 166
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.70.6",
+          "a": {
+            "v": "txt_s2_70_6"
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.70.7",
+          "a": {
+            "v": 1,
+            "t": 3
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.71.4",
+          "a": {
+            "v": "txt_s2_71_4"
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.71.8",
+          "a": {
+            "v": 1,
+            "t": 3
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.72.1",
+          "a": {
+            "v": 296
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.72.5",
+          "a": {
+            "v": 0,
+            "t": 3
+          }
+        }
+      ]
+    },
+    {
+      "seq": 3,
+      "seed": 55110036,
+      "restored": false,
+      "diffCount": 25,
+      "appliedInverse": 75,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s3.cellData.8.0",
+          "a": {
+            "v": 616
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.11.6",
+          "a": {
+            "v": "txt_s3_11_6"
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.11.10",
+          "a": {
+            "v": 594
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.13.4",
+          "a": {
+            "v": "txt_s3_13_4"
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.13.6",
+          "a": {
+            "v": 498
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.15.9",
+          "a": {
+            "v": 272
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.16.6",
+          "a": {
+            "v": "txt_s3_16_6"
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.17.2",
+          "a": {
+            "v": "txt_s3_17_2"
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.20.8",
+          "a": {
+            "v": 0,
+            "t": 3
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.22.0",
+          "a": {
+            "v": "txt_s3_22_0"
+          }
+        }
+      ]
+    },
+    {
+      "seq": 6,
+      "seed": 55110039,
+      "restored": false,
+      "diffCount": 57,
+      "appliedInverse": 63,
+      "failedInverse": 0,
+      "suspects": [
+        {
+          "opIndex": 6,
+          "opType": "delete-cf"
+        }
+      ],
+      "diffs": [
+        {
+          "path": "sheets.s2.cellData.12.7",
+          "a": {
+            "v": 917
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.13.8",
+          "a": {
+            "v": 1,
+            "t": 3
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.17.8",
+          "a": {
+            "v": 240
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.18.6",
+          "a": {
+            "v": "txt_s2_18_6"
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.19.5",
+          "a": {
+            "v": "txt_s2_19_5"
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.20.2",
+          "a": {
+            "v": 1,
+            "t": 3
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.21.6",
+          "a": {
+            "v": 664
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.22.1",
+          "a": {
+            "v": 965
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.23.3",
+          "a": {
+            "v": 288
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.24.10",
+          "a": {
+            "v": "txt_s2_24_10"
+          }
+        }
+      ]
+    },
+    {
+      "seq": 7,
+      "seed": 55110040,
+      "restored": false,
+      "diffCount": 36,
+      "appliedInverse": 70,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s1.cellData.55.4",
+          "a": {
+            "v": 0,
+            "t": 3
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.56.7",
+          "a": {
+            "v": 962
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.58.3",
+          "a": {
+            "v": "txt_s1_58_3"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.58.9",
+          "a": {
+            "v": 471
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.60.10",
+          "a": {
+            "v": 50
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.63.5",
+          "a": {
+            "v": "txt_s1_63_5"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.63.10",
+          "a": {
+            "v": "txt_s1_63_10"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.64.4",
+          "a": {
+            "v": "txt_s1_64_4"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.67.1",
+          "a": {
+            "v": "txt_s1_67_1"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.67.9",
+          "a": {
+            "v": 974
+          }
+        }
+      ]
+    },
+    {
+      "seq": 8,
+      "seed": 55110041,
+      "restored": false,
+      "diffCount": 17,
+      "appliedInverse": 56,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s1.cellData.47.1",
+          "a": {
+            "v": 957
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.49.9",
+          "a": {
+            "v": "txt_s1_49_9"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.51.9",
+          "a": {
+            "v": 0,
+            "t": 3
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.57.5",
+          "a": {
+            "v": "txt_s1_57_5"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.58.11",
+          "a": {
+            "v": 171
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.59.6",
+          "a": {
+            "v": 0,
+            "t": 3
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.59.7",
+          "a": {
+            "v": 881
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.60.9",
+          "a": {
+            "v": 68
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.61.4",
+          "a": {
+            "v": 530
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.61.10",
+          "a": {
+            "v": 332
+          }
+        }
+      ]
+    },
+    {
+      "seq": 9,
+      "seed": 55110042,
+      "restored": false,
+      "diffCount": 20,
+      "appliedInverse": 59,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s1.cellData.53.11",
+          "a": {
+            "v": "txt_s1_53_11"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.57.4",
+          "a": {
+            "v": 309
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.59.7",
+          "a": {
+            "v": 32
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.60.0",
+          "a": {
+            "v": "txt_s1_60_0"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.62.10",
+          "a": {
+            "v": "txt_s1_62_10"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.63.9",
+          "a": {
+            "v": "txt_s1_63_9"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.64.5",
+          "a": {
+            "v": 726
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.67.0",
+          "a": {
+            "v": 570
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.67.6",
+          "a": {
+            "v": "txt_s1_67_6"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.69.4",
+          "a": {
+            "v": "txt_s1_69_4"
+          }
+        }
+      ]
+    },
+    {
+      "seq": 12,
+      "seed": 55110045,
+      "restored": false,
+      "diffCount": 15,
+      "appliedInverse": 62,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s1.cellData.50.10",
+          "a": {
+            "v": 951
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.54.1",
+          "a": {
+            "v": 812
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.54.11",
+          "a": {
+            "v": "txt_s1_54_11"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.56.2",
+          "a": {
+            "v": "txt_s1_56_2"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.57.3",
+          "a": {
+            "v": 0,
+            "t": 3
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.57.8",
+          "a": {
+            "v": "txt_s1_57_8"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.60.0",
+          "a": {
+            "v": "txt_s1_60_0"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.60.2",
+          "a": {
+            "v": "txt_s1_60_2"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.61.1",
+          "a": {
+            "v": "txt_s1_61_1"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.61.3",
+          "a": {
+            "v": 187
+          }
+        }
+      ]
+    },
+    {
+      "seq": 13,
+      "seed": 55110046,
+      "restored": false,
+      "diffCount": 18,
+      "appliedInverse": 53,
+      "failedInverse": 0,
+      "suspects": [
+        {
+          "opIndex": 3,
+          "opType": "delete-cf"
+        }
+      ],
+      "diffs": [
+        {
+          "path": "sheets.s1.cellData.5.1",
+          "a": {
+            "v": "txt_s1_5_1"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.7.2",
+          "a": {
+            "v": 214
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.8.0",
+          "a": {
+            "v": 873
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.9.3",
+          "a": {
+            "v": 174
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.10.2",
+          "a": {
+            "v": "txt_s1_10_2"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.20.0",
+          "a": {
+            "v": "txt_s1_20_0"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.39.1",
+          "a": {
+            "v": 1,
+            "t": 3
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.40.0",
+          "a": {
+            "v": "txt_s1_40_0"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.41.2",
+          "a": {
+            "v": 290
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.42.0",
+          "a": {
+            "v": "txt_s1_42_0"
+          }
+        }
+      ]
+    },
+    {
+      "seq": 19,
+      "seed": 55110052,
+      "restored": false,
+      "diffCount": 36,
+      "appliedInverse": 41,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s1.cellData.4.2",
+          "a": {
+            "v": "txt_s1_4_2"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.4.6",
+          "a": {
+            "v": "txt_s1_4_6"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.6.5",
+          "a": {
+            "v": 282
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.9.6",
+          "a": {
+            "v": "txt_s1_9_6"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.13.1",
+          "a": {
+            "v": 749
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.15.3",
+          "a": {
+            "v": "txt_s1_15_3"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.15.7",
+          "a": {
+            "v": 582
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.16.1",
+          "a": {
+            "v": "txt_s1_16_1"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.19.7",
+          "a": {
+            "v": "txt_s1_19_7"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.26.1",
+          "a": {
+            "v": 521
+          }
+        }
+      ]
+    },
+    {
+      "seq": 20,
+      "seed": 55110053,
+      "restored": false,
+      "diffCount": 4,
+      "appliedInverse": 53,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s2.rowData.46",
+          "b": {
+            "hd": 1
+          }
+        },
+        {
+          "path": "sheets.s2.rowData.47",
+          "b": {
+            "hd": 1
+          }
+        },
+        {
+          "path": "sheets.s2.rowData.48",
+          "b": {
+            "hd": 1
+          }
+        },
+        {
+          "path": "sheets.s2.rowData.49",
+          "b": {
+            "hd": 1
+          }
+        }
+      ]
+    },
+    {
+      "seq": 21,
+      "seed": 55110054,
+      "restored": false,
+      "diffCount": 72,
+      "appliedInverse": 67,
+      "failedInverse": 0,
+      "suspects": [
+        {
+          "opIndex": 22,
+          "opType": "delete-cf"
+        }
+      ],
+      "diffs": [
+        {
+          "path": "sheets.s1.cellData.3.3",
+          "a": {
+            "v": 844
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.4.2",
+          "a": {
+            "v": 152
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.4.7",
+          "a": {
+            "v": 980
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.9.9",
+          "a": {
+            "v": 0,
+            "t": 3
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.11.8",
+          "a": {
+            "v": 0,
+            "t": 3
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.13.11",
+          "a": {
+            "v": 368
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.15.3",
+          "a": {
+            "v": 854
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.17.4",
+          "a": {
+            "v": 946
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.17.10",
+          "a": {
+            "v": 789
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.18.5",
+          "a": {
+            "v": 73
+          }
+        }
+      ]
+    },
+    {
+      "seq": 22,
+      "seed": 55110055,
+      "restored": false,
+      "diffCount": 22,
+      "appliedInverse": 44,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s2.cellData.10.9",
+          "a": {
+            "v": 767
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.15.7",
+          "a": {
+            "v": 732
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.15.10",
+          "a": {
+            "v": 75
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.17.2",
+          "a": {
+            "v": 661
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.17.7",
+          "a": {
+            "v": 915
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.20.5",
+          "a": {
+            "v": "txt_s2_20_5"
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.20.11",
+          "a": {
+            "v": 225
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.21.9",
+          "a": {
+            "v": "txt_s2_21_9"
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.22.6",
+          "a": {
+            "v": 198
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.26.9",
+          "a": {
+            "v": 80
+          }
+        }
+      ]
+    },
+    {
+      "seq": 23,
+      "seed": 55110056,
+      "restored": false,
+      "diffCount": 14,
+      "appliedInverse": 49,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s1.cellData.0.4",
+          "a": {
+            "v": 394
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.10.4",
+          "a": {
+            "v": 717
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.13.4",
+          "a": {
+            "v": 782
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.14.6",
+          "a": {
+            "v": "txt_s1_14_6"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.16.6",
+          "a": {
+            "v": "txt_s1_16_6"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.30.4",
+          "a": {
+            "v": 615
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.41.6",
+          "a": {
+            "v": 938
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.42.5",
+          "a": {
+            "v": "txt_s1_42_5"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.45.5",
+          "a": {
+            "v": 223
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.66.5",
+          "a": {
+            "v": 697
+          }
+        }
+      ]
+    },
+    {
+      "seq": 24,
+      "seed": 55110057,
+      "restored": false,
+      "diffCount": 8,
+      "appliedInverse": 38,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s3.cellData.21.2",
+          "a": {
+            "v": 214
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.21.5",
+          "a": {
+            "v": 555
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.23.6",
+          "a": {
+            "v": 843
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.24.4",
+          "a": {
+            "v": "txt_s3_24_4"
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.24.10",
+          "a": {
+            "v": "txt_s3_24_10"
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.25.7",
+          "a": {
+            "v": 216
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.27.9",
+          "a": {
+            "v": "txt_s3_27_9"
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.29.1",
+          "a": {
+            "v": 982
+          }
+        }
+      ]
+    },
+    {
+      "seq": 25,
+      "seed": 55110058,
+      "restored": false,
+      "diffCount": 32,
+      "appliedInverse": 45,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s1.cellData.7.2",
+          "a": {
+            "v": 885
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.7.7",
+          "a": {
+            "v": "txt_s1_7_7"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.18.4",
+          "a": {
+            "v": "txt_s1_18_4"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.21.3",
+          "a": {
+            "v": 89
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.22.6",
+          "a": {
+            "v": 0,
+            "t": 3
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.28.2",
+          "a": {
+            "v": "txt_s1_28_2"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.30.5",
+          "a": {
+            "v": "txt_s1_30_5"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.32.5",
+          "a": {
+            "v": "txt_s1_32_5"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.35.4",
+          "a": {
+            "v": 389
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.36.5",
+          "a": {
+            "v": 690
+          }
+        }
+      ]
+    },
+    {
+      "seq": 26,
+      "seed": 55110059,
+      "restored": false,
+      "diffCount": 4,
+      "appliedInverse": 62,
+      "failedInverse": 0,
+      "suspects": [
+        {
+          "opIndex": 25,
+          "opType": "delete-cf"
+        }
+      ],
+      "diffs": [
+        {
+          "path": "sheets.s2.cellData.29.11",
+          "a": {
+            "v": "txt_s2_29_11"
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.30.7",
+          "a": {
+            "v": 840
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.33.7",
+          "a": {
+            "v": 619
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.34.9",
+          "a": {
+            "v": 512
+          }
+        }
+      ]
+    },
+    {
+      "seq": 28,
+      "seed": 55110061,
+      "restored": false,
+      "diffCount": 61,
+      "appliedInverse": 80,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s1.cellData.0.4",
+          "a": {
+            "v": 428
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.1.6",
+          "a": {
+            "v": 567
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.4.5",
+          "a": {
+            "v": 1,
+            "t": 3
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.4.9",
+          "a": {
+            "v": "txt_s1_4_9"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.12.4",
+          "a": {
+            "v": "txt_s1_12_4"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.13.6",
+          "a": {
+            "v": 244
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.18.5",
+          "a": {
+            "v": "txt_s1_18_5"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.18.9",
+          "a": {
+            "v": 121
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.20.9",
+          "a": {
+            "v": "txt_s1_20_9"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.27.3",
+          "a": {
+            "v": 1,
+            "t": 3
+          }
+        }
+      ]
+    },
+    {
+      "seq": 29,
+      "seed": 55110062,
+      "restored": false,
+      "diffCount": 9,
+      "appliedInverse": 52,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s3.cellData.1.2",
+          "a": {
+            "v": 585
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.4.0",
+          "a": {
+            "v": 1,
+            "t": 3
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.8.2",
+          "a": {
+            "v": 633
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.27.0",
+          "a": {
+            "v": "txt_s3_27_0"
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.53.2",
+          "a": {
+            "v": "txt_s3_53_2"
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.56.0",
+          "a": {
+            "v": "txt_s3_56_0"
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.76.2",
+          "a": {
+            "v": 206
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.79.2",
+          "a": {
+            "v": "txt_s3_79_2"
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.85.2",
+          "a": {
+            "v": 942
+          }
+        }
+      ]
+    },
+    {
+      "seq": 31,
+      "seed": 55110064,
+      "restored": false,
+      "diffCount": 2,
+      "appliedInverse": 45,
+      "failedInverse": 0,
+      "suspects": [
+        {
+          "opIndex": 19,
+          "opType": "delete-cf"
+        }
+      ],
+      "diffs": [
+        {
+          "path": "sheets.s2.rowData.21",
+          "b": {
+            "h": 23,
+            "ia": 0
+          }
+        },
+        {
+          "path": "sheets.s2.rowData.22",
+          "b": {
+            "h": 23,
+            "ia": 0
+          }
+        }
+      ]
+    },
+    {
+      "seq": 33,
+      "seed": 55110066,
+      "restored": false,
+      "diffCount": 15,
+      "appliedInverse": 51,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s2.cellData.3.10",
+          "a": {
+            "v": "txt_s2_3_10"
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.10.11",
+          "a": {
+            "v": 622
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.11.11",
+          "a": {
+            "v": 838
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.13.10",
+          "a": {
+            "v": "txt_s2_13_10"
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.21.10",
+          "a": {
+            "v": 354
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.39.11",
+          "a": {
+            "v": "txt_s2_39_11"
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.43.10",
+          "a": {
+            "v": "txt_s2_43_10"
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.48.10",
+          "a": {
+            "v": 721
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.55.10",
+          "a": {
+            "v": "txt_s2_55_10"
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.58.11",
+          "a": {
+            "v": 583
+          }
+        }
+      ]
+    },
+    {
+      "seq": 36,
+      "seed": 55110069,
+      "restored": false,
+      "diffCount": 20,
+      "appliedInverse": 61,
+      "failedInverse": 0,
+      "suspects": [
+        {
+          "opIndex": 9,
+          "opType": "delete-cf"
+        },
+        {
+          "opIndex": 45,
+          "opType": "delete-cf"
+        }
+      ],
+      "diffs": [
+        {
+          "path": "sheets.s1.cellData.7.9",
+          "a": {
+            "v": "txt_s1_7_9"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.10.1",
+          "a": {
+            "v": 6
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.10.9",
+          "a": {
+            "v": "txt_s1_10_9"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.11.2",
+          "a": {
+            "v": 475
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.11.5",
+          "a": {
+            "v": "txt_s1_11_5"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.11.7",
+          "a": {
+            "v": 0,
+            "t": 3
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.12.1",
+          "a": {
+            "v": "txt_s1_12_1"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.14.4",
+          "a": {
+            "v": "txt_s1_14_4"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.17.0",
+          "a": {
+            "v": 127
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.17.2",
+          "a": {
+            "v": 975
+          }
+        }
+      ]
+    },
+    {
+      "seq": 41,
+      "seed": 55110074,
+      "restored": false,
+      "diffCount": 8,
+      "appliedInverse": 74,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s2.cellData.1.3",
+          "a": {
+            "v": 524
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.22.4",
+          "a": {
+            "v": "txt_s2_22_4"
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.24.4",
+          "a": {
+            "v": 1,
+            "t": 3
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.26.4",
+          "a": {
+            "v": 907
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.33.4",
+          "a": {
+            "v": 738
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.52.4",
+          "a": {
+            "v": "txt_s2_52_4"
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.66.4",
+          "a": {
+            "v": 673
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.83.4",
+          "a": {
+            "v": 0,
+            "t": 3
+          }
+        }
+      ]
+    },
+    {
+      "seq": 42,
+      "seed": 55110075,
+      "restored": false,
+      "diffCount": 11,
+      "appliedInverse": 30,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s1.cellData.9.7",
+          "a": {
+            "v": 79
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.12.1",
+          "a": {
+            "v": "txt_s1_12_1"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.14.3",
+          "a": {
+            "v": 469
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.16.9",
+          "a": {
+            "v": 158
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.23.0",
+          "a": {
+            "v": 359
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.24.1",
+          "a": {
+            "v": 652
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.24.5",
+          "a": {
+            "v": "txt_s1_24_5"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.24.8",
+          "a": {
+            "v": 612
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.25.7",
+          "a": {
+            "v": 109
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.28.3",
+          "a": {
+            "v": 911
+          }
+        }
+      ]
+    },
+    {
+      "seq": 43,
+      "seed": 55110076,
+      "restored": false,
+      "diffCount": 46,
+      "appliedInverse": 65,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s2.cellData.4.5",
+          "a": {
+            "v": "txt_s2_4_5"
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.4.8",
+          "a": {
+            "v": 1,
+            "t": 3
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.5.6",
+          "a": {
+            "v": 897
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.7.8",
+          "a": {
+            "v": 618
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.20.2",
+          "a": {
+            "v": "txt_s2_20_2"
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.27.3",
+          "a": {
+            "v": "txt_s2_27_3"
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.32.5",
+          "a": {
+            "v": 572
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.33.2",
+          "a": {
+            "v": "txt_s2_33_2"
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.37.3",
+          "a": {
+            "v": "txt_s2_37_3"
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.39.2",
+          "a": {
+            "v": 822
+          }
+        }
+      ]
+    },
+    {
+      "seq": 44,
+      "seed": 55110077,
+      "restored": false,
+      "diffCount": 19,
+      "appliedInverse": 35,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s1.cellData.57.6",
+          "a": {
+            "v": 522
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.63.5",
+          "a": {
+            "v": 832
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.63.7",
+          "a": {
+            "v": 151
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.65.11",
+          "a": {
+            "v": 109
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.66.7",
+          "a": {
+            "v": 1,
+            "t": 3
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.68.6",
+          "a": {
+            "v": 591
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.69.4",
+          "a": {
+            "v": 460
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.69.7",
+          "a": {
+            "v": 179
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.79.7",
+          "a": {
+            "v": 913
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.79.9",
+          "a": {
+            "v": "txt_s1_79_9"
+          }
+        }
+      ]
+    },
+    {
+      "seq": 45,
+      "seed": 55110078,
+      "restored": false,
+      "diffCount": 86,
+      "appliedInverse": 43,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s1.cellData.26.6",
+          "a": {
+            "v": 387
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.28.2",
+          "a": {
+            "v": 1,
+            "t": 3
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.30.8",
+          "a": {
+            "v": "txt_s1_30_8"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.31.1",
+          "a": {
+            "v": 59
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.31.6",
+          "a": {
+            "v": 742
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.31.10",
+          "a": {
+            "v": "txt_s1_31_10"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.34.10",
+          "a": {
+            "v": 430
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.38.6",
+          "a": {
+            "v": 299
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.39.7",
+          "a": {
+            "v": 713
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.40.9",
+          "a": {
+            "v": "txt_s1_40_9"
+          }
+        }
+      ]
+    },
+    {
+      "seq": 46,
+      "seed": 55110079,
+      "restored": false,
+      "diffCount": 15,
+      "appliedInverse": 31,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s1.cellData.5.5",
+          "a": {
+            "v": 1,
+            "t": 3
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.10.6",
+          "a": {
+            "v": 478
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.11.7",
+          "a": {
+            "v": 0,
+            "t": 3
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.13.5",
+          "a": {
+            "v": 212
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.15.7",
+          "a": {
+            "v": 810
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.23.6",
+          "a": {
+            "v": 589
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.28.5",
+          "a": {
+            "v": 999
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.34.5",
+          "a": {
+            "v": 0,
+            "t": 3
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.35.6",
+          "a": {
+            "v": "txt_s1_35_6"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.36.7",
+          "a": {
+            "v": "txt_s1_36_7"
+          }
+        }
+      ]
+    },
+    {
+      "seq": 50,
+      "seed": 55110083,
+      "restored": false,
+      "diffCount": 38,
+      "appliedInverse": 37,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s1.cellData.4.2",
+          "a": {
+            "v": 0,
+            "t": 3
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.10.2",
+          "a": {
+            "v": "txt_s1_10_2"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.13.3",
+          "a": {
+            "v": "txt_s1_13_3"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.16.2",
+          "a": {
+            "v": "txt_s1_16_2"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.16.3",
+          "a": {
+            "v": 413
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.17.0",
+          "a": {
+            "v": 611
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.17.11",
+          "a": {
+            "v": 1,
+            "t": 3
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.18.1",
+          "a": {
+            "v": 612
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.18.6",
+          "a": {
+            "v": 204
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.23.8",
+          "a": {
+            "v": 899
+          }
+        }
+      ]
+    },
+    {
+      "seq": 53,
+      "seed": 55110086,
+      "restored": false,
+      "diffCount": 22,
+      "appliedInverse": 34,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s1.cellData.6.4",
+          "a": {
+            "v": 249
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.9.3",
+          "a": {
+            "v": 598
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.11.1",
+          "a": {
+            "v": 45
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.14.2",
+          "a": {
+            "v": 141
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.17.1",
+          "a": {
+            "v": "txt_s1_17_1"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.22.2",
+          "a": {
+            "v": 221
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.22.4",
+          "a": {
+            "v": "txt_s1_22_4"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.33.4",
+          "a": {
+            "v": 953
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.35.1",
+          "a": {
+            "v": 703
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.36.4",
+          "a": {
+            "v": 810
+          }
+        }
+      ]
+    },
+    {
+      "seq": 55,
+      "seed": 55110088,
+      "restored": false,
+      "diffCount": 8,
+      "appliedInverse": 76,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s2.cellData.75.10",
+          "a": {
+            "v": 746
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.77.6",
+          "a": {
+            "v": 422
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.78.3",
+          "a": {
+            "v": 801
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.79.0",
+          "a": {
+            "v": "txt_s2_79_0"
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.80.6",
+          "a": {
+            "v": 239
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.80.9",
+          "a": {
+            "v": "txt_s2_80_9"
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.81.0",
+          "a": {
+            "v": 0,
+            "t": 3
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.82.8",
+          "a": {
+            "v": "txt_s2_82_8"
+          }
+        }
+      ]
+    },
+    {
+      "seq": 57,
+      "seed": 55110090,
+      "restored": false,
+      "diffCount": 50,
+      "appliedInverse": 60,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s1.cellData.17.7",
+          "a": {
+            "v": "txt_s1_17_7"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.18.6",
+          "a": {
+            "v": 705
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.19.7",
+          "a": {
+            "v": "txt_s1_19_7"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.21.7",
+          "a": {
+            "v": "txt_s1_21_7"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.22.4",
+          "a": {
+            "v": 893
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.50.9",
+          "a": {
+            "v": "txt_s2_50_9"
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.52.4",
+          "a": {
+            "v": 813
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.55.1",
+          "a": {
+            "v": 975
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.59.1",
+          "a": {
+            "v": 379
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.59.6",
+          "a": {
+            "v": 511
+          }
+        }
+      ]
+    },
+    {
+      "seq": 58,
+      "seed": 55110091,
+      "restored": false,
+      "diffCount": 51,
+      "appliedInverse": 68,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s1.cellData.1.9",
+          "a": {
+            "v": 925
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.2.3",
+          "a": {
+            "v": 756
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.4.4",
+          "a": {
+            "v": 627
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.4.9",
+          "a": {
+            "v": 1,
+            "t": 3
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.6.7",
+          "a": {
+            "v": "txt_s1_6_7"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.8.8",
+          "a": {
+            "v": 152
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.10.7",
+          "a": {
+            "v": 857
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.19.5",
+          "a": {
+            "v": "txt_s1_19_5"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.20.9",
+          "a": {
+            "v": 199
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.21.10",
+          "a": {
+            "v": 546
+          }
+        }
+      ]
+    },
+    {
+      "seq": 61,
+      "seed": 55110094,
+      "restored": false,
+      "diffCount": 29,
+      "appliedInverse": 38,
+      "failedInverse": 0,
+      "suspects": [
+        {
+          "opIndex": 17,
+          "opType": "delete-cf"
+        },
+        {
+          "opIndex": 21,
+          "opType": "delete-cf"
+        }
+      ],
+      "diffs": [
+        {
+          "path": "sheets.s2.cellData.43.9",
+          "a": {
+            "v": "txt_s2_43_9"
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.46.0",
+          "a": {
+            "v": 456
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.48.5",
+          "a": {
+            "v": 120
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.49.4",
+          "a": {
+            "v": 740
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.49.11",
+          "a": {
+            "v": 327
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.50.2",
+          "a": {
+            "v": 397
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.53.11",
+          "a": {
+            "v": 842
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.55.3",
+          "a": {
+            "v": 353
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.55.7",
+          "a": {
+            "v": "txt_s2_55_7"
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.58.0",
+          "a": {
+            "v": 0,
+            "t": 3
+          }
+        }
+      ]
+    },
+    {
+      "seq": 62,
+      "seed": 55110095,
+      "restored": false,
+      "diffCount": 15,
+      "appliedInverse": 34,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s2.cellData.55.4",
+          "a": {
+            "v": 962
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.55.5",
+          "a": {
+            "v": "txt_s2_55_5"
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.56.0",
+          "a": {
+            "v": 750
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.58.8",
+          "a": {
+            "v": "txt_s2_58_8"
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.60.7",
+          "a": {
+            "v": 848
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.65.3",
+          "a": {
+            "v": 907
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.66.5",
+          "a": {
+            "v": 591
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.68.1",
+          "a": {
+            "v": 769
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.70.5",
+          "a": {
+            "v": 960
+          }
+        },
+        {
+          "path": "sheets.s2.cellData.72.6",
+          "a": {
+            "v": 594
+          }
+        }
+      ]
+    },
+    {
+      "seq": 65,
+      "seed": 55110098,
+      "restored": false,
+      "diffCount": 4,
+      "appliedInverse": 70,
+      "failedInverse": 0,
+      "suspects": [
+        {
+          "opIndex": 25,
+          "opType": "delete-cf"
+        }
+      ],
+      "diffs": [
+        {
+          "path": "sheets.s1.cellData.16.3",
+          "a": {
+            "v": 34
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.19.4",
+          "a": {
+            "v": 251
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.19.11",
+          "a": {
+            "v": 0,
+            "t": 3
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.24.6",
+          "a": {
+            "v": "txt_s1_24_6"
+          }
+        }
+      ]
+    },
+    {
+      "seq": 66,
+      "seed": 55110099,
+      "restored": false,
+      "diffCount": 27,
+      "appliedInverse": 28,
+      "failedInverse": 0,
+      "suspects": [
+        {
+          "opIndex": 3,
+          "opType": "delete-cf"
+        },
+        {
+          "opIndex": 6,
+          "opType": "delete-cf"
+        }
+      ],
+      "diffs": [
+        {
+          "path": "sheets.s1.cellData.25.8",
+          "a": {
+            "v": "txt_s1_25_8"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.30.1",
+          "a": {
+            "v": 141
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.36.7",
+          "a": {
+            "v": "txt_s1_36_7"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.37.8",
+          "a": {
+            "v": 312
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.37.9",
+          "a": {
+            "v": 981
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.39.0",
+          "a": {
+            "v": 817
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.39.6",
+          "a": {
+            "v": "txt_s1_39_6"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.39.8",
+          "a": {
+            "v": 723
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.41.8",
+          "a": {
+            "v": 679
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.42.10",
+          "a": {
+            "v": 788
+          }
+        }
+      ]
+    },
+    {
+      "seq": 67,
+      "seed": 55110100,
+      "restored": false,
+      "diffCount": 18,
+      "appliedInverse": 57,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s1.cellData.0.7",
+          "a": {
+            "v": 586
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.16.9",
+          "a": {
+            "v": 690
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.22.9",
+          "a": {
+            "v": "txt_s1_22_9"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.23.9",
+          "a": {
+            "v": 320
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.28.0",
+          "a": {
+            "v": 848
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.29.6",
+          "a": {
+            "v": "txt_s1_29_6"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.32.8",
+          "a": {
+            "v": 988
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.36.8",
+          "a": {
+            "v": "txt_s1_36_8"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.38.7",
+          "a": {
+            "v": "txt_s1_38_7"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.42.7",
+          "a": {
+            "v": "txt_s1_42_7"
+          }
+        }
+      ]
+    },
+    {
+      "seq": 68,
+      "seed": 55110101,
+      "restored": false,
+      "diffCount": 38,
+      "appliedInverse": 49,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s1.cellData.0.9",
+          "a": {
+            "v": 86
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.8.9",
+          "a": {
+            "v": "txt_s1_8_9"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.11.6",
+          "a": {
+            "v": 714
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.12.7",
+          "a": {
+            "v": "txt_s1_12_7"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.20.5",
+          "a": {
+            "v": 449
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.20.10",
+          "a": {
+            "v": 92
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.22.9",
+          "a": {
+            "v": "txt_s1_22_9"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.25.8",
+          "a": {
+            "v": 367
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.33.9",
+          "a": {
+            "v": 709
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.35.8",
+          "a": {
+            "v": 222
+          }
+        }
+      ]
+    },
+    {
+      "seq": 69,
+      "seed": 55110102,
+      "restored": false,
+      "diffCount": 3,
+      "appliedInverse": 77,
+      "failedInverse": 0,
+      "suspects": [
+        {
+          "opIndex": 26,
+          "opType": "delete-cf"
+        },
+        {
+          "opIndex": 40,
+          "opType": "delete-cf"
+        }
+      ],
+      "diffs": [
+        {
+          "path": "sheets.s1.cellData.70.11",
+          "a": {
+            "v": 733
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.72.6",
+          "a": {
+            "v": "txt_s1_72_6"
+          }
+        },
+        {
+          "path": "sheets.s1.cellData.72.9",
+          "a": {
+            "v": 169
+          }
+        }
+      ]
+    },
+    {
+      "seq": 71,
+      "seed": 55110104,
+      "restored": false,
+      "diffCount": 41,
+      "appliedInverse": 28,
+      "failedInverse": 0,
+      "suspects": [],
+      "diffs": [
+        {
+          "path": "sheets.s3.cellData.24.3",
+          "a": {
+            "v": 102
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.24.7",
+          "a": {
+            "v": "txt_s3_24_7"
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.25.1",
+          "a": {
+            "v": 208
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.27.10",
+          "a": {
+            "v": 432
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.31.10",
+          "a": {
+            "v": "txt_s3_31_10"
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.34.6",
+          "a": {
+            "v": 363
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.39.0",
+          "a": {
+            "v": 436
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.39.6",
+          "a": {
+            "v": 857
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.39.7",
+          "a": {
+            "v": 52
+          }
+        },
+        {
+          "path": "sheets.s3.cellData.42.2",
+          "a": {
+            "v": "txt_s3_42_2"
+          }
+        }
+      ]
+    }
+  ]
+}
