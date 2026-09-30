@@ -57,3 +57,4 @@
 - 依赖版本策略注意：`autoInstallPeers: false`（防止 vite 的 optional peer `lightningcss` MPL-2.0 被自动装入）；typescript 锁定 6.0.3 而非 7.x（depcruise 18 只支持 TS <7 转译器）。
 - M0 已按 ADR 0001–0006 收口；M1 主要纵切已提交为 `af250b6`。2026-09-30 构建、安全与交互修复见 `docs/acceptance/m1-repair.md`；最终工作树尚未验收。
 - M2a 有并行未提交实现，不作为 M1 已验收证据。保留工作树中的并行改动与未提交 spike，不按旧进度重复实施 M0。
+- M3 实现完成（派发三策略、中断恢复、上下文压缩、run_script 沙箱、具名迁移、stop-all），2026-09-30 验收见 `docs/acceptance/m3.md`；场景 8/10/12 为"部分"（浏览器实机与真实模型行为未验证），全部改动未提交。

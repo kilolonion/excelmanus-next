@@ -51,6 +51,15 @@ export class SyncClient {
     this.ws = null;
   }
 
+  /** 向当前连接发送一条已经通过 protocol 校验的同步消息。
+   * 断线时返回 false；调用方不会自动重发用户编辑（11 §3.4）。
+   */
+  send(message: unknown): boolean {
+    if (this.ws?.readyState !== WebSocket.OPEN) return false;
+    this.ws.send(JSON.stringify(message));
+    return true;
+  }
+
   private async connect(): Promise<void> {
     if (this.closed) return;
     try {

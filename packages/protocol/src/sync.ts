@@ -123,6 +123,12 @@ export const DocRejectMsg = z.strictObject({
   clientOpId: z.string(),
   conflict: z.unknown(),
 });
+export const DocCheckpointMsg = z.strictObject({
+  type: z.literal("doc.checkpoint"),
+  docId: z.string(),
+  checkpointRev: z.int().nonnegative(),
+  error: z.string().optional(),
+});
 export const DocReloadMsg = z.strictObject({
   type: z.literal("doc.reload"),
   docId: z.string(),
@@ -154,6 +160,7 @@ export const ServerMessage = z.discriminatedUnion("type", [
   DocAckMsg,
   DocRejectMsg,
   DocReloadMsg,
+  DocCheckpointMsg,
   PresenceStateMsg,
   AppEventMsg,
   PingMsg,

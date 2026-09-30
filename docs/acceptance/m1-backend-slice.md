@@ -97,6 +97,8 @@ turn.completed → usage.updated   （20 recs / 144 deltas）
 
 ## 已知问题 / 限制
 
+下列依赖说明记录初始实现的判断。2026-09-30 已纠正 DOMPurify 的双许可误判，并接入官方 React SWC 插件；现状与验证边界见 [ADR 0008](../decisions/0008-permissive-dependency-reuse.md) 和 [依赖复用记录](dependency-reuse.md)。
+
 - vite 锁定 7.3.6：vite 8 把 lightningcss（MPL-2.0）列为硬依赖，@vitejs/plugin-react
   5/6 的 babel 链会引入 caniuse-lite（CC-BY-4.0），均被许可证门禁拒绝；当前用
   esbuild JSX，无 Fast Refresh。

@@ -19,6 +19,7 @@
     "@univerjs/preset-sheets-core": "1.0.2",
     "@univerjs/presets": "1.0.2",
     "@univerjs/sheets": "1.0.2",
+    "dompurify": "3.4.15",
     "marked": "18.0.13",
     "react": "19.3.0",
     "react-dom": "19.3.0",
@@ -26,8 +27,10 @@
     "zustand": "5.0.15"
   },
   "devDependencies": {
+    "@swc/core": "1.16.2",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react-swc": "4.3.3",
     "vite": "7.3.6"
   }
 }

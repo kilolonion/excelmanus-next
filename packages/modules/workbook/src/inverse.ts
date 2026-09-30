@@ -7,7 +7,7 @@ import type { DocMutation } from "./engine.ts";
 
 type P = Record<string, unknown>;
 type R = { startRow: number; endRow: number; startColumn: number; endColumn: number };
-type Snap = {
+export type Snap = {
   sheets?: Record<string, P>;
   sheetOrder?: string[];
   styles?: Record<string, unknown>;
@@ -164,7 +164,7 @@ function dataRestores(preSnap: Snap, postSnap: Snap, unitId: string): DocMutatio
   // 单元格：恢复 pre 值；post 有 pre 无的键显式写 null（set-range-values 的
   // null 语义是删除该键/清空单元格）。
   for (const [sid, cells] of changed.cells) {
-    if (!preSheets[sid]) continue; // 被删 sheet 已由 insert-sheet 整体恢复
+    if (!preSheets[sid] || !postSheets[sid]) continue; // 表集合差由结构逆对/快照恢复处理
     const preCD = (preSheets[sid]?.cellData ?? {}) as Record<string, Record<string, unknown>>;
     const postCD = (postSheets[sid]?.cellData ?? {}) as Record<string, Record<string, unknown>>;
     const cellValue: Record<string, Record<string, unknown>> = {};
@@ -439,4 +439,56 @@ export function reconcile(preSnap: Snap, currentSnap: Snap, unitId: string): Doc
     ...dataRestores(preSnap, currentSnap, unitId),
     ...resourceRestores(preSnap, currentSnap, unitId),
   ];
+}
+
+/**
+ * 快照型 inverse 的还原 mutation（revert 用）：表集合差按结构逆对处理
+ * （被删表整表恢复、被建表删除），数据/资源差异走 reconcile。
+ */
+export function snapshotRestoreMutations(
+  preSnap: Snap,
+  currentSnap: Snap,
+  unitId: string,
+): DocMutation[] {
+  const out: DocMutation[] = [];
+  const preSheets = (preSnap.sheets ?? {}) as Record<string, P>;
+  const postSheets = (currentSnap.sheets ?? {}) as Record<string, P>;
+  // 先删掉修订新建的表（释放可能撞名的表名），再整体恢复被删的表
+  for (const sid of Object.keys(postSheets)) {
+    if (!(sid in preSheets)) {
+      out.push(
+        mut(M.removeSheet, {
+          unitId,
+          subUnitId: sid,
+          subUnitName: postSheets[sid]?.name,
+        }),
+      );
+    }
+  }
+  for (const [sid, sheet] of Object.entries(preSheets)) {
+    if (!(sid in postSheets)) {
+      const idx = (preSnap.sheetOrder ?? []).indexOf(sid);
+      const styleIds = new Set<string>();
+      const walk = (n: unknown) => {
+        if (!n || typeof n !== "object") return;
+        const o = n as P;
+        if (typeof o.s === "string") styleIds.add(o.s);
+        for (const v of Object.values(o)) walk(v);
+      };
+      walk(sheet);
+      const styles: Record<string, unknown> = {};
+      for (const id of styleIds)
+        if (preSnap.styles && id in preSnap.styles) styles[id] = preSnap.styles[id];
+      out.push(
+        mut(M.insertSheet, {
+          unitId,
+          index: idx >= 0 ? idx : 0,
+          sheet: JSON.parse(JSON.stringify(sheet)),
+          styles,
+        }),
+      );
+    }
+  }
+  out.push(...reconcile(preSnap, currentSnap, unitId));
+  return out;
 }

@@ -3,7 +3,7 @@
 // 快照定影：createWorkbook 前深拷贝；对外 snapshot() 一律返回 getSnapshot 深拷贝。
 // 冲突检测：baseRev 之后的写集 ∩（变换后的读集 ∪ 写集），结构操作按 03 §6.1 变换。
 
-import { readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { extname } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import {
@@ -18,10 +18,19 @@ import {
   type StructuralOp,
   transformRange,
 } from "@excelmanus/core";
-import { PathSafetyError, resolveWorkspacePath } from "@excelmanus/kernel";
-import type { DocKind } from "@excelmanus/protocol";
+import {
+  atomicWrite,
+  BackupService,
+  FileOperationError,
+  type Migration,
+  PathSafetyError,
+  resolveWorkspacePath,
+  sha256,
+} from "@excelmanus/kernel";
+import type { DocKind, FileIntentMeta, ToolResult } from "@excelmanus/protocol";
 import type { IWorkbookData, IWorksheetData } from "@univerjs/core";
-import { importCsv } from "./csv.ts";
+import { assertWritable, exportXlsx, minimalXlsx, verifyXlsx } from "./checkpoint.ts";
+import { exportCsv, importCsv } from "./csv.ts";
 import {
   type Booted,
   bootUniver,
@@ -30,7 +39,7 @@ import {
   ENGINE_VERSION,
   MutationCapture,
 } from "./engine.ts";
-import { makeInverse, reconcile } from "./inverse.ts";
+import { makeInverse, type Snap, snapshotRestoreMutations } from "./inverse.ts";
 import {
   type ChangeOp,
   type CompiledOps,
@@ -54,6 +63,8 @@ export interface DocumentMeta {
   kind: DocKind;
   rev: number;
   createdAt: string;
+  checkpointRev?: number;
+  checkpointError?: string;
 }
 
 export class DocNotFoundError extends Error {
@@ -70,7 +81,9 @@ export class UnsupportedDocError extends Error {
   }
 }
 
-export const DOCUMENTS_MIGRATION = `
+export const DOCUMENTS_MIGRATION: Migration = {
+  id: "workbook/documents",
+  sql: `
 CREATE TABLE documents (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL,
@@ -81,10 +94,13 @@ CREATE TABLE documents (
   last_opened_at TEXT NOT NULL,
   UNIQUE (workspace_id, path)
 );
-`;
+`,
+};
 
 /** M2a：修订跟踪 + 追加型文档操作日志（不改已有迁移）。 */
-export const DOC_OPS_MIGRATION = `
+export const DOC_OPS_MIGRATION: Migration = {
+  id: "workbook/doc-ops",
+  sql: `
 ALTER TABLE documents ADD COLUMN head_rev INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE documents ADD COLUMN checkpoint_rev INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE documents ADD COLUMN engine_version TEXT NOT NULL DEFAULT '${ENGINE_VERSION}';
@@ -104,14 +120,26 @@ CREATE TABLE doc_ops (
   PRIMARY KEY (doc_id, rev)
 );
 CREATE INDEX doc_ops_tool_call ON doc_ops(tool_call_id);
-`;
+`,
+};
+
+export const CHECKPOINT_MIGRATION: Migration = {
+  id: "workbook/doc-checkpoints",
+  sql: `
+ALTER TABLE documents ADD COLUMN checkpoint_hash TEXT;
+ALTER TABLE documents ADD COLUMN checkpoint_snapshot TEXT;
+CREATE TABLE doc_checkpoints (
+  doc_id TEXT PRIMARY KEY, rev INTEGER NOT NULL, hash TEXT NOT NULL, snapshot TEXT NOT NULL
+);
+`,
+};
 
 export interface DocWriteSet {
   ranges: RangeRef[];
   structural: StructuralOp[];
 }
 
-export type SubmitSourceKind = "user" | "agent" | "script" | "engine";
+export type SubmitSourceKind = "user" | "agent" | "script" | "engine" | "external";
 
 export interface SubmitSource {
   kind: SubmitSourceKind;
@@ -155,11 +183,18 @@ export interface SubmitOk {
   mutations: DocMutation[];
   formulas: string[];
   preview?: PreviewRegion[];
+  backupPath?: string;
 }
 
 export interface SubmitFail {
   ok: false;
-  code: "VERSION_CONFLICT" | "LIMIT_EXCEEDED" | "DOC_NOT_FOUND" | "BAD_OPERATION";
+  code:
+    | "VERSION_CONFLICT"
+    | "LIMIT_EXCEEDED"
+    | "DOC_NOT_FOUND"
+    | "BAD_OPERATION"
+    | "UNSUPPORTED_FEATURE"
+    | "INTERNAL";
   message: string;
   conflicts?: ConflictDetail[];
 }
@@ -191,6 +226,12 @@ interface DocEntry {
   live: LiveDoc;
   /** 文档 actor 串行队列：所有提交/读快照经它排队。 */
   tail: Promise<unknown>;
+  workspaceRoot: string;
+  checkpointSnapshot: IWorkbookData;
+  checkpointHash: string;
+  checkpointRev: number;
+  timer?: ReturnType<typeof setTimeout>;
+  paused?: boolean;
 }
 
 interface DocRow {
@@ -202,6 +243,8 @@ interface DocRow {
   head_rev: number;
   checkpoint_rev: number;
   engine_version: string;
+  checkpoint_hash: string | null;
+  checkpoint_snapshot: string | null;
   created_at: string;
   last_opened_at: string;
 }
@@ -235,8 +278,14 @@ export class DocumentService {
     | ((docId: string, rev: number, source: string, mutations: DocMutation[]) => void)
     | undefined;
 
-  constructor(db: DatabaseSync) {
+  private readonly backups: BackupService;
+  private watchTimer?: ReturnType<typeof setInterval>;
+  private closing = false;
+  onCheckpoint: ((docId: string, rev: number, error?: string) => void) | undefined;
+
+  constructor(db: DatabaseSync, backups = new BackupService(db)) {
     this.db = db;
+    this.backups = backups;
   }
 
   // ---------- 打开 / 恢复 ----------
@@ -266,6 +315,11 @@ export class DocumentService {
     const existing = this.db
       .prepare("SELECT * FROM documents WHERE workspace_id = ? AND path = ?")
       .get(workspaceId, rel) as DocRow | undefined;
+    const cached = existing ? await this.docs.get(existing.id) : undefined;
+    if (cached) {
+      await this.enqueue(cached, () => this.checkExternal(cached));
+      return { meta: cached.meta, imported: cached.imported };
+    }
     const now = nowIso();
     let docId: string;
     let headRev: number;
@@ -287,6 +341,33 @@ export class DocumentService {
         )
         .run(docId, workspaceId, rel, kind, ENGINE_VERSION, now, now);
     }
+    const hash = sha256(bytes);
+    const pending = this.db.prepare("SELECT * FROM doc_checkpoints WHERE doc_id=?").get(docId) as
+      | { rev: number; hash: string; snapshot: string }
+      | undefined;
+    let savedSnapshot = existing?.checkpoint_snapshot;
+    let savedHash = existing?.checkpoint_hash;
+    if (pending?.hash === hash) {
+      checkpointRev = pending.rev;
+      savedSnapshot = pending.snapshot;
+      savedHash = hash;
+      this.db
+        .prepare(
+          "UPDATE documents SET checkpoint_rev=?, checkpoint_hash=?, checkpoint_snapshot=? WHERE id=?",
+        )
+        .run(checkpointRev, hash, savedSnapshot, docId);
+      this.db.prepare("DELETE FROM doc_checkpoints WHERE doc_id=?").run(docId);
+    }
+    if (savedHash && savedHash !== hash && headRev > checkpointRev)
+      throw new FileOperationError("VERSION_CONFLICT", "外部文件与未写回日志冲突，已暂停写回");
+    if (savedHash === hash && savedSnapshot) {
+      const snap = JSON.parse(savedSnapshot) as IWorkbookData;
+      this.remapPreservation(imported, snap);
+      imported.snapshot = snap;
+    }
+    this.db
+      .prepare("UPDATE documents SET checkpoint_hash=COALESCE(checkpoint_hash,?) WHERE id=?")
+      .run(hash, docId);
     const entry = await this.materialize(
       docId,
       workspaceId,
@@ -295,9 +376,20 @@ export class DocumentService {
       imported,
       checkpointRev,
       headRev,
-      now,
+      existing?.created_at ?? now,
+      workspaceRoot,
+      hash,
     );
-    return { meta: entry.meta, imported };
+    if (savedHash && savedHash !== hash && headRev === checkpointRev)
+      await this.enqueue(entry, () => this.reloadExternal(entry, bytes));
+    if (headRev > checkpointRev && !entry.paused) {
+      try {
+        await this.enqueue(entry, () => this.doCheckpoint(entry));
+      } catch {
+        this.schedule(entry, 5000);
+      }
+    }
+    return { meta: entry.meta, imported: entry.imported };
   }
 
   /** 建活实例：快照定影（深拷贝）→ createWorkbook → 重放 checkpoint 之后的 doc_ops。 */
@@ -310,6 +402,8 @@ export class DocumentService {
     checkpointRev: number,
     headRev: number,
     createdAt: string,
+    workspaceRoot: string,
+    hash: string,
   ): Promise<DocEntry> {
     const pending = this.docs.get(docId);
     if (pending) return pending;
@@ -318,14 +412,20 @@ export class DocumentService {
       const snapshot = JSON.parse(JSON.stringify(imported.snapshot)) as IWorkbookData;
       const book = createBook(boot, snapshot);
       const capture = new MutationCapture(boot);
+      const checkpointSnapshot = structuredClone(book.workbook.save());
       const ops = this.opsAfter(docId, checkpointRev);
       for (const op of ops) {
         for (const m of op.mutations) {
           const params = JSON.parse(JSON.stringify(m.params ?? {})) as object;
           try {
-            await boot.executeCommand(m.id, params, { fromCollab: true });
+            if (!(await boot.executeCommand(m.id, params, { fromCollab: true })))
+              throw new Error("回放失败");
           } catch {
-            // 重放单条失败：跳过该条（日志已持久化，尽力恢复到最近一致状态）
+            await boot.dispose();
+            throw new FileOperationError(
+              "INTERNAL",
+              `文档日志回放失败（rev ${op.rev}），未写回文件`,
+            );
           }
         }
       }
@@ -334,18 +434,40 @@ export class DocumentService {
         imported,
         live: { boot, capture, unitId: book.unitId, save: book.workbook.save },
         tail: Promise.resolve(),
+        workspaceRoot,
+        checkpointSnapshot,
+        checkpointHash: hash,
+        checkpointRev,
       };
+      entry.meta.checkpointRev = checkpointRev;
       this.metas.set(docId, entry.meta);
+      if (!this.watchTimer) {
+        this.watchTimer = setInterval(() => {
+          for (const task of this.docs.values())
+            void task.then((e) => this.enqueue(e, () => this.checkExternal(e))).catch(() => {});
+        }, 1000);
+        this.watchTimer.unref();
+      }
       return entry;
     })();
     this.docs.set(docId, task);
+    task.catch(() => {
+      this.docs.delete(docId);
+    });
     return task;
   }
 
   /** 拿活文档；未在内存时按 documents 行从工作区重新导入并重放。 */
   async entry(docId: string, workspaceRoot: string): Promise<DocEntry> {
     const hit = await this.docs.get(docId);
-    if (hit) return hit;
+    if (hit) {
+      if (
+        resolveWorkspacePath(workspaceRoot, ".").abs !==
+        resolveWorkspacePath(hit.workspaceRoot, ".").abs
+      )
+        throw new PathSafetyError("OUT_OF_WORKSPACE", "文档不属于当前工作区");
+      return hit;
+    }
     const row = this.db.prepare("SELECT * FROM documents WHERE id = ?").get(docId) as
       | DocRow
       | undefined;
@@ -367,10 +489,10 @@ export class DocumentService {
     workspaceRoot: string,
   ): Promise<{ meta: DocumentMeta; snapshot: IWorkbookData }> {
     return this.entry(docId, workspaceRoot).then((e) =>
-      this.enqueue(e, () => ({
-        meta: { ...e.meta },
-        snapshot: structuredClone(e.live.save()),
-      })),
+      this.enqueue(e, async () => {
+        await this.checkExternal(e);
+        return { meta: { ...e.meta }, snapshot: structuredClone(e.live.save()) };
+      }),
     );
   }
 
@@ -406,12 +528,74 @@ export class DocumentService {
     }));
   }
 
+  recoverFiles(meta: FileIntentMeta | undefined): ToolResult {
+    return this.backups.recover(meta);
+  }
+
   /** 04 §8.2 恢复钩子：该 tool_call_id 是否已提交成修订。 */
   committedByToolCall(toolCallId: string): { docId: string; rev: number } | undefined {
     const row = this.db
       .prepare("SELECT doc_id, rev FROM doc_ops WHERE tool_call_id = ? ORDER BY rev LIMIT 1")
       .get(toolCallId) as { doc_id: string; rev: number } | undefined;
     return row ? { docId: row.doc_id, rev: row.rev } : undefined;
+  }
+
+  /** 该 tool_call_id 提交过的全部修订（run_script 发布失败回滚按逆序回放）。 */
+  committedByToolCallAll(toolCallId: string): Array<{ docId: string; rev: number }> {
+    const rows = this.db
+      .prepare("SELECT doc_id, rev FROM doc_ops WHERE tool_call_id = ? ORDER BY rev")
+      .all(toolCallId) as Array<{ doc_id: string; rev: number }>;
+    return rows.map((r) => ({ docId: r.doc_id, rev: r.rev }));
+  }
+
+  /**
+   * 回退一个已提交修订（03 §6.3 批次回退）：该 rev 的 inverse 作为新修订提交，
+   * 与普通写入走同一条路径（doc_ops 记录 + 广播 + script 来源自动备份）。
+   * mutations 型直接回放；needsSnapshot 型用落库的 preSnap 经
+   * snapshotRestoreMutations 重建还原 mutation。baseRev 取当前 head —
+   * 回退是有意的整体撤销，不与 baseRev 之后的并发修订做冲突检查。
+   */
+  async revert(
+    docId: string,
+    workspaceRoot: string,
+    rev: number,
+    source: SubmitSource,
+    sessionId?: string,
+    toolCallId?: string,
+  ): Promise<SubmitResult> {
+    const row = this.db
+      .prepare("SELECT inverse FROM doc_ops WHERE doc_id = ? AND rev = ?")
+      .get(docId, rev) as { inverse: string } | undefined;
+    if (!row) return { ok: false, code: "DOC_NOT_FOUND", message: "修订不存在" };
+    let inv: { mutations?: DocMutation[]; snapshot?: unknown };
+    try {
+      inv = JSON.parse(row.inverse) as typeof inv;
+    } catch {
+      return { ok: false, code: "INTERNAL", message: "inverse 记录损坏" };
+    }
+    const entry = await this.entry(docId, workspaceRoot);
+    return this.enqueue(entry, () => {
+      const mutations =
+        inv.mutations ??
+        (inv.snapshot !== undefined
+          ? snapshotRestoreMutations(
+              inv.snapshot as Snap,
+              entry.live.save() as Snap,
+              entry.live.unitId,
+            )
+          : undefined);
+      if (mutations === undefined) {
+        return { ok: false, code: "UNSUPPORTED_FEATURE", message: "该修订没有可回放的逆操作" };
+      }
+      return this.doSubmit(entry, {
+        baseRev: entry.meta.rev,
+        readSet: [],
+        source,
+        sessionId,
+        toolCallId,
+        mutations,
+      });
+    });
   }
 
   meta(docId: string): DocumentMeta | undefined {
@@ -433,15 +617,24 @@ export class DocumentService {
         }
         return {
           ok: false,
-          code: "BAD_OPERATION",
-          message: e instanceof Error ? e.message : String(e),
+          code: e instanceof FileOperationError ? (e.code as SubmitFail["code"]) : "BAD_OPERATION",
+          message: e instanceof FileOperationError ? e.message : "文档操作失败",
         };
       });
   }
 
   private async doSubmit(entry: DocEntry, batch: SubmitBatch): Promise<SubmitResult> {
+    await this.checkExternal(entry);
+    if (entry.paused)
+      return {
+        ok: false,
+        code: "VERSION_CONFLICT",
+        message: "文件被外部修改且有未写回修订，已暂停写入",
+      };
     const { live, meta } = entry;
     const head = meta.rev;
+    if (!Number.isInteger(batch.baseRev) || batch.baseRev < 0 || batch.baseRev > head)
+      return { ok: false, code: "VERSION_CONFLICT", message: "baseRev 不在当前修订范围" };
 
     // ---- 0. baseRev 之后的结构操作先把本次写入坐标平移到当前快照 ----
     const history = this.opsAfter(meta.id, batch.baseRev).filter((r) => r.rev <= head);
@@ -555,6 +748,20 @@ export class DocumentService {
       };
     }
 
+    assertWritable(entry.imported, writeSet.ranges, opsIn, mutations, live.save());
+    let backupPath: string | undefined;
+    if (!batch.dryRun && (batch.source.kind === "agent" || batch.source.kind === "script")) {
+      const bound = this.backups.bind({
+        workspaceId: meta.workspaceId,
+        workspaceRoot: entry.workspaceRoot,
+        sessionId: batch.sessionId ?? batch.source.id,
+        agentId: batch.source.id,
+      });
+      if (bound.needsBackup(meta.path) && meta.rev > entry.checkpointRev)
+        await this.doCheckpoint(entry);
+      backupPath = bound.ensureBackup(meta.path)?.backupPath;
+    }
+
     // ---- 4. dryRun 且含需快照回滚的操作：不应用，只回写集 ----
     const declaredNeedsSnapshot =
       compiled?.needsSnapshot === true ||
@@ -575,7 +782,7 @@ export class DocumentService {
     }
 
     // ---- 5. 应用（同步命令窗口内捕获 mutation） ----
-    const preSnap = live.save();
+    const preSnap = structuredClone(live.save());
     const emitted: DocMutation[] = [];
     let execError: string | undefined;
     const execInWindow = async (id: string, params: unknown, fromCollab: boolean) => {
@@ -620,18 +827,48 @@ export class DocumentService {
       execError ??= "命令执行失败";
     }
     if (execError !== undefined) {
-      // 尽力回滚已应用部分
-      try {
-        const post = live.save();
-        const inv = makeInverse(preSnap, post, emitted, live.unitId).inverse;
-        for (const m of inv) await live.boot.executeCommand(m.id, m.params, { fromCollab: true });
-      } catch {
-        // 回滚失败：文档留在已应用部分状态，错误照常上报
-      }
+      await this.restore(entry, preSnap);
       return { ok: false, code: "BAD_OPERATION", message: execError };
     }
 
     const postSnap = live.save();
+    try {
+      if (entry.imported.csv) {
+        for (const [id, sheet] of Object.entries(postSnap.sheets)) {
+          const before = preSnap.sheets[id];
+          if (
+            !before ||
+            ["mergeData", "freeze", "columnData"].some(
+              (k) =>
+                JSON.stringify(sheet[k as keyof IWorksheetData]) !==
+                JSON.stringify(before[k as keyof IWorksheetData]),
+            )
+          )
+            throw new FileOperationError("UNSUPPORTED_FEATURE", "CSV 不支持格式编辑");
+          for (const [r, row] of Object.entries(sheet.cellData ?? {}))
+            for (const [c, cell] of Object.entries(row ?? {})) {
+              const v = cell as { s?: unknown; f?: unknown };
+              if (
+                v.f ||
+                JSON.stringify(v.s) !== JSON.stringify(before.cellData?.[Number(r)]?.[Number(c)]?.s)
+              )
+                throw new FileOperationError(
+                  "UNSUPPORTED_FEATURE",
+                  "CSV 不支持公式或样式，请另存为 xlsx",
+                );
+            }
+        }
+        exportCsv(postSnap, entry.imported.csv);
+      } else exportXlsx(entry.imported, postSnap, entry.checkpointSnapshot);
+    } catch (e) {
+      await this.restore(entry, preSnap);
+      return {
+        ok: false,
+        code:
+          e instanceof FileOperationError ? (e.code as SubmitFail["code"]) : "UNSUPPORTED_FEATURE",
+        message: e instanceof FileOperationError ? e.message : "无法保证保真写回",
+      };
+    }
     // 实际发射的结构操作补入写集（含引擎生成的真实 sheet id）
     const emittedDerived = deriveWriteSetAll(emitted);
     const structural = mergeStructural(
@@ -650,26 +887,17 @@ export class DocumentService {
     const inverseMutations = needsSnapshot
       ? undefined
       : makeInverse(preSnap, postSnap, emitted, live.unitId).inverse;
+    // 快照型（remove-sheet/move-range 等结构操作）把 preSnap 存进 inverse 列，
+    // 供 revert 用 snapshotRestoreMutations 重建还原 mutation
     const inverse = needsSnapshot
-      ? { needsSnapshot: true as const }
+      ? { needsSnapshot: true as const, snapshot: preSnap }
       : { mutations: inverseMutations };
     const formulas = compiled !== undefined ? compiled.formulas : collectFormulas(entry, emitted);
 
     // ---- 6. dryRun：读预览 → 逆操作回滚；不写日志不广播 ----
     if (batch.dryRun) {
       const preview = readPreview(finalWriteSet, postSnap);
-      try {
-        if (inverseMutations !== undefined) {
-          for (const m of inverseMutations) {
-            await live.boot.executeCommand(m.id, m.params, { fromCollab: true });
-          }
-          for (const m of reconcile(preSnap, live.save(), live.unitId)) {
-            await live.boot.executeCommand(m.id, m.params, { fromCollab: true });
-          }
-        }
-      } catch {
-        // 回滚尽力而为；dryRun 不污染修订号
-      }
+      await this.restore(entry, preSnap);
       return {
         ok: true,
         docId: meta.id,
@@ -709,16 +937,18 @@ export class DocumentService {
         .prepare("UPDATE documents SET head_rev = ?, rev = ? WHERE id = ?")
         .run(rev, rev, meta.id);
       this.db.exec("COMMIT");
-    } catch (e) {
+    } catch (_e) {
       this.db.exec("ROLLBACK");
+      await this.restore(entry, preSnap);
       return {
         ok: false,
         code: "BAD_OPERATION",
-        message: e instanceof Error ? e.message : String(e),
+        message: "文档日志提交失败，修改已回滚",
       };
     }
     meta.rev = rev;
     this.onRevision?.(meta.id, rev, `${batch.source.kind}:${batch.source.id}`, emitted);
+    this.schedule(entry, batch.source.kind === "user" ? 2000 : 1000);
     return {
       ok: true,
       docId: meta.id,
@@ -727,6 +957,7 @@ export class DocumentService {
       writeSet: finalWriteSet,
       mutations: emitted,
       formulas,
+      ...(backupPath ? { backupPath } : {}),
     };
   }
 
@@ -797,6 +1028,315 @@ export class DocumentService {
       }
     }
     return undefined;
+  }
+
+  private remapPreservation(imported: ImportedWorkbook, snapshot: IWorkbookData): void {
+    if (!imported.preservation) return;
+    const refs = imported.preservation.sheetParts;
+    imported.preservation.sheetParts = Object.fromEntries(
+      snapshot.sheetOrder
+        .map((id, i) => [id, refs[imported.snapshot.sheetOrder[i] ?? ""]])
+        .filter((x) => x[1] !== undefined),
+    ) as typeof refs;
+  }
+
+  private async restore(entry: DocEntry, snapshot: IWorkbookData): Promise<void> {
+    await entry.live.boot.dispose();
+    const boot = bootUniver();
+    const book = createBook(boot, structuredClone(snapshot));
+    entry.live = {
+      boot,
+      capture: new MutationCapture(boot),
+      unitId: book.unitId,
+      save: book.workbook.save,
+    };
+  }
+
+  private schedule(entry: DocEntry, delay: number): void {
+    if (this.closing || entry.paused) return;
+    clearTimeout(entry.timer);
+    entry.timer = setTimeout(() => {
+      entry.timer = undefined;
+      void this.enqueue(entry, () => this.doCheckpoint(entry)).catch(() => {
+        this.schedule(entry, 5000);
+      });
+    }, delay);
+    entry.timer.unref();
+  }
+
+  async checkpoint(docId: string, root: string): Promise<void> {
+    const entry = await this.entry(docId, root);
+    await this.enqueue(entry, () => this.doCheckpoint(entry));
+  }
+
+  private async doCheckpoint(entry: DocEntry): Promise<void> {
+    clearTimeout(entry.timer);
+    try {
+      await this.checkExternal(entry);
+      if (entry.paused)
+        throw new FileOperationError("VERSION_CONFLICT", "外部修改与未写回修订冲突，已暂停写回");
+      if (entry.meta.rev === entry.checkpointRev) return;
+      const snapshot = structuredClone(entry.live.save());
+      const bytes = entry.imported.csv
+        ? exportCsv(snapshot, entry.imported.csv)
+        : exportXlsx(entry.imported, snapshot, entry.checkpointSnapshot);
+      const hash = sha256(bytes);
+      const saved = JSON.stringify(snapshot);
+      // Durable publication intent closes the rename/SQLite crash window.
+      this.db
+        .prepare(
+          "INSERT INTO doc_checkpoints VALUES (?,?,?,?) ON CONFLICT(doc_id) DO UPDATE SET rev=excluded.rev,hash=excluded.hash,snapshot=excluded.snapshot",
+        )
+        .run(entry.meta.id, entry.meta.rev, hash, saved);
+      const nextImported = entry.imported.csv
+        ? importCsv(bytes, entry.meta.path)
+        : importXlsx(bytes, entry.meta.path);
+      this.remapPreservation(nextImported, snapshot);
+      atomicWrite(entry.workspaceRoot, entry.meta.path, bytes, entry.checkpointHash, (back) => {
+        if (!entry.imported.csv) verifyXlsx(back, snapshot);
+        else if (sha256(back) !== hash)
+          throw new FileOperationError("INTERNAL", "CSV 回读校验失败");
+      });
+      this.db.exec("BEGIN IMMEDIATE");
+      try {
+        this.db
+          .prepare(
+            "UPDATE documents SET checkpoint_rev=?, checkpoint_hash=?, checkpoint_snapshot=? WHERE id=?",
+          )
+          .run(entry.meta.rev, hash, saved, entry.meta.id);
+        this.db.prepare("DELETE FROM doc_checkpoints WHERE doc_id=?").run(entry.meta.id);
+        this.db.exec("COMMIT");
+      } catch (e) {
+        this.db.exec("ROLLBACK");
+        throw e;
+      }
+      nextImported.snapshot = snapshot;
+      entry.imported = nextImported;
+      entry.checkpointSnapshot = snapshot;
+      entry.checkpointHash = hash;
+      entry.checkpointRev = entry.meta.rev;
+      entry.meta.checkpointRev = entry.checkpointRev;
+      delete entry.meta.checkpointError;
+      this.onCheckpoint?.(entry.meta.id, entry.checkpointRev);
+    } catch (e) {
+      entry.meta.checkpointError =
+        e instanceof FileOperationError ? e.message : "写回失败，文档日志已保留，将重试";
+      this.onCheckpoint?.(entry.meta.id, entry.checkpointRev, entry.meta.checkpointError);
+      throw e;
+    }
+  }
+
+  private async checkExternal(entry: DocEntry): Promise<void> {
+    const { abs } = resolveWorkspacePath(entry.workspaceRoot, entry.meta.path);
+    let bytes: Uint8Array;
+    try {
+      bytes = readFileSync(abs);
+    } catch {
+      entry.paused = true;
+      entry.meta.checkpointError = "源文件无法读取，已暂停写回";
+      this.onCheckpoint?.(entry.meta.id, entry.checkpointRev, entry.meta.checkpointError);
+      return;
+    }
+    const hash = sha256(bytes);
+    if (hash === entry.checkpointHash) return;
+    const pending = this.db
+      .prepare("SELECT * FROM doc_checkpoints WHERE doc_id=?")
+      .get(entry.meta.id) as { rev: number; hash: string; snapshot: string } | undefined;
+    if (pending?.hash === hash && pending.rev === entry.meta.rev) {
+      // The publication succeeded but the checkpoint metadata transaction was interrupted.
+      this.db
+        .prepare(
+          "UPDATE documents SET checkpoint_rev=?,checkpoint_hash=?,checkpoint_snapshot=? WHERE id=?",
+        )
+        .run(pending.rev, hash, pending.snapshot, entry.meta.id);
+      this.db.prepare("DELETE FROM doc_checkpoints WHERE doc_id=?").run(entry.meta.id);
+      const imported =
+        entry.meta.kind === "csv"
+          ? importCsv(bytes, entry.meta.path)
+          : importXlsx(bytes, entry.meta.path);
+      const snapshot = JSON.parse(pending.snapshot) as IWorkbookData;
+      this.remapPreservation(imported, snapshot);
+      imported.snapshot = snapshot;
+      entry.imported = imported;
+      entry.checkpointSnapshot = snapshot;
+      entry.checkpointHash = hash;
+      entry.checkpointRev = pending.rev;
+      entry.meta.checkpointRev = pending.rev;
+      return;
+    }
+    if (entry.meta.rev > entry.checkpointRev) {
+      entry.paused = true;
+      entry.meta.checkpointError = "外部文件与未写回修订冲突，已暂停写回";
+      clearTimeout(entry.timer);
+      this.onCheckpoint?.(entry.meta.id, entry.checkpointRev, entry.meta.checkpointError);
+      return;
+    }
+    await this.reloadExternal(entry, bytes);
+  }
+
+  private async reloadExternal(entry: DocEntry, bytes: Uint8Array): Promise<void> {
+    const imported =
+      entry.meta.kind === "csv"
+        ? importCsv(bytes, entry.meta.path)
+        : importXlsx(bytes, entry.meta.path);
+    const snapshot = imported.snapshot;
+    const rev = entry.meta.rev + 1;
+    const hash = sha256(bytes);
+    const ranges = [{ sheetId: "*", r0: 0, c0: 0, r1: MAX_R, c1: MAX_C }];
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db
+        .prepare("INSERT INTO doc_ops VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+        .run(
+          entry.meta.id,
+          rev,
+          entry.meta.rev,
+          "external",
+          "file",
+          null,
+          null,
+          JSON.stringify({ ranges, structural: [] }),
+          "[]",
+          JSON.stringify({ needsSnapshot: true }),
+          nowIso(),
+        );
+      this.db
+        .prepare(
+          "UPDATE documents SET rev=?, head_rev=?, checkpoint_rev=?, checkpoint_hash=?, checkpoint_snapshot=? WHERE id=?",
+        )
+        .run(rev, rev, rev, hash, JSON.stringify(snapshot), entry.meta.id);
+      this.db.exec("COMMIT");
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
+    }
+    await this.restore(entry, snapshot);
+    entry.imported = imported;
+    entry.checkpointSnapshot = structuredClone(entry.live.save());
+    entry.checkpointHash = hash;
+    entry.checkpointRev = rev;
+    entry.meta.rev = rev;
+    entry.meta.checkpointRev = rev;
+    delete entry.meta.checkpointError;
+    this.onRevision?.(entry.meta.id, rev, "external:file", []);
+  }
+
+  async create(
+    workspaceId: string,
+    root: string,
+    path: string,
+    sessionId: string,
+    agentId: string,
+    sheetName = "Sheet1",
+  ): Promise<OpenedDoc> {
+    const { abs } = resolveWorkspacePath(root, path);
+    if (existsSync(abs)) throw new FileOperationError("VERSION_CONFLICT", "新工作簿路径已存在");
+    if (extname(path).toLowerCase() !== ".xlsx")
+      throw new FileOperationError("INVALID_ARGUMENT", "新建工作簿必须使用 .xlsx");
+    const snapshot: IWorkbookData = {
+      id: newId("wbk"),
+      name: path,
+      appVersion: ENGINE_VERSION,
+      locale: "zh-CN" as never,
+      styles: {},
+      sheetOrder: ["s0"],
+      sheets: { s0: { id: "s0", name: sheetName, rowCount: 1000, columnCount: 26, cellData: {} } },
+    };
+    atomicWrite(root, path, minimalXlsx(snapshot), null);
+    this.backups.bind({ workspaceId, workspaceRoot: root, sessionId, agentId }).markCreated(path);
+    return this.open(workspaceId, root, path);
+  }
+
+  async previewCreate(ops: ChangeOp[]): Promise<ToolResult> {
+    const boot = bootUniver();
+    try {
+      const snapshot: IWorkbookData = {
+        id: "preview",
+        name: "preview.xlsx",
+        appVersion: ENGINE_VERSION,
+        locale: "zh-CN" as never,
+        styles: {},
+        sheetOrder: ["s0"],
+        sheets: { s0: { id: "s0", name: "Sheet1", rowCount: 1000, columnCount: 26, cellData: {} } },
+      };
+      const book = createBook(boot, snapshot);
+      const compiled = compileOps({ unitId: book.unitId, snapshot: book.workbook.save() }, ops);
+      for (const cmd of compiled.commands)
+        if (!(await boot.executeCommand(cmd.id, cmd.params)))
+          throw new OpCompileError("预览操作未生效");
+      const after = book.workbook.save();
+      minimalXlsx(after);
+      return {
+        status: "ok",
+        data: {
+          dryRun: true,
+          rev: 0,
+          preview: readPreview({ ranges: compiled.ranges, structural: compiled.structural }, after),
+        },
+      };
+    } catch (e) {
+      return {
+        status: "error",
+        error: {
+          code: e instanceof FileOperationError ? e.code : "INVALID_ARGUMENT",
+          message:
+            e instanceof FileOperationError || e instanceof OpCompileError
+              ? e.message
+              : "新建预览失败",
+          retryable: false,
+        },
+      };
+    } finally {
+      await boot.dispose();
+    }
+  }
+
+  async discardCreated(docId: string, root: string, sessionId: string): Promise<void> {
+    const entry = await this.entry(docId, root);
+    clearTimeout(entry.timer);
+    await entry.live.boot.dispose();
+    rmSync(resolveWorkspacePath(root, entry.meta.path).abs, { force: true });
+    this.db.prepare("DELETE FROM doc_ops WHERE doc_id=?").run(docId);
+    this.db.prepare("DELETE FROM doc_checkpoints WHERE doc_id=?").run(docId);
+    this.db.prepare("DELETE FROM documents WHERE id=?").run(docId);
+    this.db
+      .prepare(
+        "DELETE FROM backups WHERE workspace_id=? AND session_id=? AND original_path=? AND kind='created'",
+      )
+      .run(entry.meta.workspaceId, sessionId, entry.meta.path);
+    this.docs.delete(docId);
+    this.metas.delete(docId);
+  }
+
+  async flushAll(): Promise<void> {
+    const failures: unknown[] = [];
+    for (const task of this.docs.values()) {
+      try {
+        const entry = await task;
+        await this.enqueue(entry, () => this.doCheckpoint(entry));
+      } catch (e) {
+        failures.push(e);
+      }
+    }
+    if (failures.length)
+      throw new FileOperationError("INTERNAL", "部分文档写回失败；日志已保留，可在下次启动恢复");
+  }
+
+  async close(): Promise<void> {
+    this.closing = true;
+    clearInterval(this.watchTimer);
+    try {
+      await this.flushAll();
+    } finally {
+      for (const task of this.docs.values()) {
+        const entry = await task.catch(() => undefined);
+        if (entry) {
+          clearTimeout(entry.timer);
+          await entry.live.boot.dispose();
+        }
+      }
+      this.docs.clear();
+    }
   }
 
   private renderCells(entry: DocEntry, ranges: RangeRef[]): string[] {

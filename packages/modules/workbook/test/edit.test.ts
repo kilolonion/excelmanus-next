@@ -3,18 +3,28 @@ import { copyFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { openDb } from "@excelmanus/kernel";
+import { BACKUPS_MIGRATION, openDb } from "@excelmanus/kernel";
 import type { ICellData } from "@univerjs/core";
 import { describe, expect, it } from "vitest";
 import { workbookEditTool } from "../src/edit.ts";
-import { DOC_OPS_MIGRATION, DOCUMENTS_MIGRATION, DocumentService } from "../src/service.ts";
+import {
+  CHECKPOINT_MIGRATION,
+  DOC_OPS_MIGRATION,
+  DOCUMENTS_MIGRATION,
+  DocumentService,
+} from "../src/service.ts";
 
 const SAMPLE_XLSX = fileURLToPath(new URL("../../../../samples/sales.xlsx", import.meta.url));
 
 async function setup() {
   const dir = mkdtempSync(join(tmpdir(), "xman-edit-"));
   copyFileSync(SAMPLE_XLSX, join(dir, "sales.xlsx"));
-  const db = openDb(join(dir, "test.db"), [DOCUMENTS_MIGRATION, DOC_OPS_MIGRATION]);
+  const db = openDb(join(dir, "test.db"), [
+    DOCUMENTS_MIGRATION,
+    DOC_OPS_MIGRATION,
+    BACKUPS_MIGRATION,
+    CHECKPOINT_MIGRATION,
+  ]);
   const svc = new DocumentService(db);
   const { meta } = await svc.open("ws1", dir, "sales.xlsx");
   return { dir, db, svc, docId: meta.id };

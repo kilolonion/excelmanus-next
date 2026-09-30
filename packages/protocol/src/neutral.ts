@@ -100,6 +100,8 @@ export interface ResolvedModel {
   model: string;
   baseUrl?: string;
   apiKey: string;
+  /** 模型上下文窗口 token 数；档案未配置时缺省（04 §6.1）。 */
+  contextWindow?: number;
   providerOptions?: JsonObject;
   reasoning?: string;
 }

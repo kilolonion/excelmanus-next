@@ -4,6 +4,7 @@ import { S } from "../strings.ts";
 export function SessionList() {
   const sessions = useApp((s) => s.sessions);
   const sessionId = useApp((s) => s.sessionId);
+  const agents = useApp((s) => s.agents);
 
   return (
     <div className="session-list">
@@ -31,6 +32,17 @@ export function SessionList() {
           </div>
         ))}
       </div>
+      {agents.length > 0 && (
+        <div className="agent-roster">
+          <div className="section-title">团队</div>
+          {agents.map((agent) => (
+            <div className="agent-row" key={agent.id}>
+              <span>{agent.name ?? agent.id}</span>
+              <span className={`badge ${agent.status}`}>{agent.status}</span>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="sidebar-footer">
         <button type="button" className="btn" onClick={() => setSettingsOpen(true)}>
           {S.settings}

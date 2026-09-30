@@ -1,8 +1,13 @@
-// 内核基础迁移（10 §3）。每个数组元素 = 一个迁移版本，整体在 openDb 的单事务中执行。
-// 模块迁移由 server 拼接在本数组之后。
+// 内核基础迁移（10 §3）。具名迁移（ADR 0004 修订）：每条 { id, sql }，
+// 应用状态按 id 记录在 schema_migrations；模块迁移由 server 拼接在本数组之后。
 
-export const KERNEL_MIGRATIONS: readonly string[] = [
-  `
+import type { Migration } from "./db.ts";
+import { LEASES_MIGRATION } from "./leases.ts";
+
+export const KERNEL_MIGRATIONS: readonly Migration[] = [
+  {
+    id: "kernel/001-base",
+    sql: `
   CREATE TABLE session_log (
     session_id TEXT NOT NULL,
     seq INTEGER NOT NULL,
@@ -128,5 +133,62 @@ export const KERNEL_MIGRATIONS: readonly string[] = [
     value TEXT NOT NULL CHECK (json_valid(value)),
     updated_at TEXT NOT NULL
   );
-  `,
+    `,
+  },
+  {
+    id: "kernel/002-interactions",
+    sql: `
+  CREATE TABLE pending_interactions (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    tool_call_id TEXT,
+    spec TEXT NOT NULL CHECK (json_valid(spec)),
+    status TEXT NOT NULL DEFAULT 'pending',
+    decision TEXT,
+    reason TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX pending_interactions_session ON pending_interactions(session_id, status);
+
+  CREATE TABLE auto_approve_rules (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    path_pattern TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(session_id, tool_name, path_pattern)
+  );
+  CREATE INDEX auto_approve_rules_session ON auto_approve_rules(session_id);
+
+  CREATE TABLE todos (
+    session_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    items TEXT NOT NULL CHECK (json_valid(items)),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (session_id, agent_id)
+  ) WITHOUT ROWID;
+    `,
+  },
+  {
+    id: "kernel/003-inbox-pending",
+    sql: `
+  CREATE TABLE inbox_pending (
+    message_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    from_agent_id TEXT NOT NULL,
+    to_agent_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    message TEXT NOT NULL,
+    urgent INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL,
+    delivered_at TEXT
+  );
+  CREATE INDEX inbox_pending_recipient ON inbox_pending(session_id, to_agent_id, status);
+    `,
+  },
+  LEASES_MIGRATION,
 ];

@@ -15,7 +15,15 @@ export class XlsxImportError extends Error {
   }
 }
 
+export interface XlsxPreservation {
+  parts: Record<string, Uint8Array>;
+  sheetParts: Record<string, { path: string; rid: string; sheetId: string }>;
+  stylesPart: string;
+}
+
 export interface ImportedWorkbook {
+  preservation?: XlsxPreservation;
+  csv?: { encoding: string; delimiter: string; newline: string; trailingNewline: boolean };
   snapshot: IWorkbookData;
   /** 不支持部件的计数（图表/透视表/图片/宏等），进 overview。 */
   unsupported: Record<string, number>;
@@ -118,7 +126,7 @@ const BUILTIN_NUMFMT: Record<number, string> = {
 
 interface StylesOut {
   /** Univer styles 表：key = `s{cellXfs 下标}`。 */
-  styles: Record<string, { n: { pattern: string } }>;
+  styles: Record<string, { n?: { pattern: string } }>;
   /** 单元格 s 属性（cellXfs 下标）→ Univer 样式 id；无格式则 undefined。 */
   xfToStyle: (xfIndex: number) => string | undefined;
 }
@@ -137,9 +145,8 @@ function readStyles(xml: Xml | undefined): StylesOut {
   xfs.forEach((xf, i) => {
     const numFmtId = Number(attr(xf, "numFmtId") ?? 0);
     const pattern = numfmts.get(numFmtId) ?? BUILTIN_NUMFMT[numFmtId];
-    if (pattern === undefined) return;
     const key = `s${i}`;
-    styles[key] = { n: { pattern } };
+    styles[key] = pattern === undefined ? {} : { n: { pattern } };
     xfStyle.set(i, key);
   });
   return { styles, xfToStyle: (i) => xfStyle.get(i) };
@@ -183,17 +190,17 @@ function parseCell(node: Xml, sst: string[], xfToStyle: StylesOut["xfToStyle"]):
         throw new XlsxImportError("单元格引用了不存在的共享字符串");
       }
       cell.v = sst[idx];
-      cell.t = 2; // CellValueType.STRING
+      cell.t = 1; // CellValueType.STRING
       break;
     }
     case "str":
       cell.v = raw ?? "";
-      cell.t = 2;
+      cell.t = 1;
       break;
     case "inlineStr": {
       const is = node.is as Xml | undefined;
       cell.v = is ? readRichText(is) : "";
-      cell.t = 2;
+      cell.t = 1;
       break;
     }
     case "b":
@@ -202,18 +209,18 @@ function parseCell(node: Xml, sst: string[], xfToStyle: StylesOut["xfToStyle"]):
       break;
     case "e":
       cell.v = raw ?? "#ERROR";
-      cell.t = 2;
+      cell.t = 1;
       break;
     case "d":
       cell.v = raw ?? "";
-      cell.t = 2;
+      cell.t = 1;
       break;
     default: {
       // n / 缺省
       const num = raw === undefined || raw === "" ? undefined : Number(raw);
       if (num !== undefined && Number.isFinite(num)) {
         cell.v = num;
-        cell.t = 1; // NUMBER
+        cell.t = 2; // NUMBER
       } else if (raw !== undefined && raw !== "") {
         cell.v = raw;
         cell.t = 2;
@@ -221,7 +228,7 @@ function parseCell(node: Xml, sst: string[], xfToStyle: StylesOut["xfToStyle"]):
       break;
     }
   }
-  if (cell.v === undefined && cell.f === undefined) return null;
+  if (cell.v === undefined && cell.f === undefined && cell.s === undefined) return null;
   return { data: cell, isFormula };
 }
 
@@ -366,6 +373,8 @@ export function importXlsx(bytes: Uint8Array, name: string): ImportedWorkbook {
       return undefined;
     }
     const text = new TextDecoder("utf-8", { fatal: true }).decode(raw);
+    if (/<!DOCTYPE|<!ENTITY/i.test(text))
+      throw new XlsxImportError("工作簿 XML 不允许 DTD 或实体声明");
     if (XMLValidator.validate(text) !== true) {
       throw new XlsxImportError("工作簿 XML 部件格式损坏");
     }
@@ -409,6 +418,7 @@ export function importXlsx(bytes: Uint8Array, name: string): ImportedWorkbook {
   );
   if (sheetsArr.length === 0) throw new XlsxImportError("workbook 中没有工作表");
 
+  const sheetParts: XlsxPreservation["sheetParts"] = {};
   const sheets: Record<string, Partial<IWorksheetData>> = {};
   const sheetOrder: string[] = [];
   const cellCounts: Record<string, number> = {};
@@ -422,6 +432,11 @@ export function importXlsx(bytes: Uint8Array, name: string): ImportedWorkbook {
     const state = attr(s, "state");
     const hidden = state === "hidden" ? 1 : state === "veryHidden" ? 2 : 0;
     if (!target) throw new XlsxImportError("工作表缺少有效的内部部件关系");
+    sheetParts[sheetId] = {
+      path: target,
+      rid: rid as string,
+      sheetId: attr(s, "sheetId") ?? String(i + 1),
+    };
     const sheetXml = readXmlDirect(target, true);
     if (!sheetXml?.worksheet) throw new XlsxImportError("不支持的工作表部件或部件格式损坏");
     const parsed = parseWorksheet(sheetXml, sst, styles.xfToStyle);
@@ -443,6 +458,7 @@ export function importXlsx(bytes: Uint8Array, name: string): ImportedWorkbook {
   }
 
   return {
+    preservation: { parts: files, sheetParts, stylesPart: stylesPart ?? "xl/styles.xml" },
     snapshot: {
       id: `wbk_${name.replace(/\W+/g, "_")}`,
       name,

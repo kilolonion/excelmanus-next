@@ -2,6 +2,7 @@
 // LogRecord 是 session_log 行的形状，也是同步通道 rec 消息中的 record。
 
 import { z } from "zod";
+import { FileIntentMeta } from "./files.ts";
 import { ClassifiedError, JsonObject, ToolCall, Usage } from "./neutral.ts";
 
 // ---------- 06 §2.3 统一工具结果 ----------
@@ -63,10 +64,24 @@ export type ToolErrorCode = (typeof TOOL_ERROR_CODES)[number];
 export const PermissionMode = z.enum(["confirm", "standard", "auto"]);
 export type PermissionMode = z.infer<typeof PermissionMode>;
 
+/** 审批决定的持久化形式。REST 同时接受 approve/deny 别名。 */
+export const ApprovalDecision = z.enum(["approved", "denied"]);
+export type ApprovalDecision = z.infer<typeof ApprovalDecision>;
+export const ApprovalEffect = z.enum([
+  "read",
+  "write",
+  "destructive",
+  "external",
+  "interactive",
+  "agent",
+  "state",
+]);
+export type ApprovalEffect = z.infer<typeof ApprovalEffect>;
+
 export const DispatchStatus = z.enum(["accepted", "queued", "applied", "cancelled", "failed"]);
 export type DispatchStatus = z.infer<typeof DispatchStatus>;
 
-/** 用户消息派发策略（04 §4.1）；M1 只实现 queue 语义。 */
+/** 用户消息派发策略（04 §4.1）。 */
 export const DispatchMode = z.enum(["steer", "interrupt", "queue"]);
 export type DispatchMode = z.infer<typeof DispatchMode>;
 
@@ -79,7 +94,9 @@ export type ReplayKind = z.infer<typeof ReplayKind>;
 export const AgentStatus = z.enum([
   "idle",
   "running",
+  "waiting",
   "blocked",
+  "paused",
   "interrupted",
   "failed",
   "closed",
@@ -108,12 +125,28 @@ export const RECORD_DATA_SCHEMAS = {
   }),
   "agent.spawned": z.object({
     role: AgentRole,
+    parentId: z.string().nullable().optional(),
     name: z.string().optional(),
     modelProfileId: z.string().nullable().optional(),
+    task: z.string().optional(),
+    files: z.array(z.string()).optional(),
+    budget: JsonObject.optional(),
     /** 会话创建时生成一次并冻结的系统提示词（04 §7.3），存于 agents 投影。 */
     systemPrompt: z.string().optional(),
   }),
   "agent.status": z.object({ status: AgentStatus }),
+  "inbox.sent": z.object({
+    messageId: z.string(),
+    fromAgentId: z.string(),
+    toAgentId: z.string(),
+    kind: z.enum(["agent", "report", "notice", "user"]),
+    message: z.string(),
+    urgent: z.boolean().optional(),
+  }),
+  "inbox.delivered": z.object({
+    messageId: z.string(),
+    toAgentId: z.string(),
+  }),
   "user.message": z.object({
     dispatchId: z.string(),
     clientMessageId: z.string(),
@@ -155,12 +188,51 @@ export const RECORD_DATA_SCHEMAS = {
     args: z.unknown(),
     targets: z.array(z.string()),
     replay: ReplayKind,
+    intentMeta: FileIntentMeta.optional(),
   }),
   "tool.result": z.object({
     toolCallId: z.string(),
     toolName: z.string(),
     status: ToolResultStatus,
     result: ToolResult,
+  }),
+  "approval.requested": z.object({
+    approvalId: z.string(),
+    toolCallId: z.string(),
+    toolName: z.string(),
+    args: z.unknown(),
+    targets: z.array(z.string()),
+    effect: ApprovalEffect,
+    spec: z.record(z.string(), z.unknown()).optional(),
+  }),
+  "approval.decided": z.object({
+    approvalId: z.string(),
+    decision: ApprovalDecision,
+    reason: z.string().optional(),
+    remember: z.boolean().optional(),
+  }),
+  "question.asked": z.object({
+    questionId: z.string(),
+    questionType: z.enum(["choice", "text", "range_confirm", "range_pick", "change_confirm"]),
+    spec: z.record(z.string(), z.unknown()),
+  }),
+  "question.answered": z.object({
+    questionId: z.string(),
+    answer: z.unknown(),
+    rev: z.number().int().nonnegative().optional(),
+  }),
+  "ui.present": z.object({ payload: z.unknown() }),
+  "todo.set": z.object({ items: z.array(z.record(z.string(), z.unknown())) }),
+  "todo.updated": z.object({
+    todoId: z.string().optional(),
+    status: z.string().optional(),
+    result: z.unknown().optional(),
+  }),
+  "change.summary": z.object({
+    docId: z.string().optional(),
+    docRevs: z.record(z.string(), z.number()).optional(),
+    changes: z.unknown(),
+    toolCallId: z.string().optional(),
   }),
   "retry.scheduled": z.object({
     attempt: z.number().int().positive(),
@@ -176,6 +248,24 @@ export const RECORD_DATA_SCHEMAS = {
     turnId: z.string().optional(),
     usage: Usage,
     cumulative: Usage.optional(),
+    /** 运行时累计预算计数（模型 token 之外的步数/工具调用）。 */
+    steps: z.number().int().nonnegative().optional(),
+    toolCalls: z.number().int().nonnegative().optional(),
+    /** 当前上下文占用（04 §6.1）；window 未知为 null。 */
+    context: z
+      .object({ tokens: z.int(), window: z.int().nullable(), estimated: z.boolean() })
+      .optional(),
+  }),
+  /** 上下文压缩记录（04 §6.3）；agent_context 投影标记被摘要取代的条目。 */
+  compaction: z.object({
+    trigger: z.enum(["auto", "manual", "overflow"]),
+    summary: z.string(),
+    /** 保留原文尾部第一条条目的 from_seq；null = 不保留原文。 */
+    keepFromSeq: z.int().nullable(),
+    beforeTokens: z.int(),
+    afterTokens: z.int(),
+    /** true 表示 token 数为字符估算而非提供商报告。 */
+    estimated: z.boolean(),
   }),
 } satisfies Record<string, z.ZodType<unknown>>;
 

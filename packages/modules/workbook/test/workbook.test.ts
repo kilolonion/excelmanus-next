@@ -6,9 +6,14 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ToolContext } from "@excelmanus/kernel";
-import { createReadTable, openDb } from "@excelmanus/kernel";
+import { BACKUPS_MIGRATION, BackupService, createReadTable, openDb } from "@excelmanus/kernel";
 import { afterAll, describe, expect, test } from "vitest";
-import { DOC_OPS_MIGRATION, DOCUMENTS_MIGRATION, DocumentService } from "../src/service.ts";
+import {
+  CHECKPOINT_MIGRATION,
+  DOC_OPS_MIGRATION,
+  DOCUMENTS_MIGRATION,
+  DocumentService,
+} from "../src/service.ts";
 import { workbookTools } from "../src/tools.ts";
 
 const dirs: string[] = [];
@@ -20,7 +25,12 @@ function setup() {
   const samples = join(dirname(fileURLToPath(import.meta.url)), "../../../../samples");
   cpSync(join(samples, "sales.xlsx"), join(workspaceRoot, "sales.xlsx"));
   cpSync(join(samples, "catalog-gbk.csv"), join(workspaceRoot, "catalog-gbk.csv"));
-  const db = openDb(join(dir, "db.sqlite"), [DOCUMENTS_MIGRATION, DOC_OPS_MIGRATION]);
+  const db = openDb(join(dir, "db.sqlite"), [
+    DOCUMENTS_MIGRATION,
+    DOC_OPS_MIGRATION,
+    BACKUPS_MIGRATION,
+    CHECKPOINT_MIGRATION,
+  ]);
   const service = new DocumentService(db);
   const tools = workbookTools(service);
   const read = tools.find((t) => t.name === "workbook_read");
@@ -34,6 +44,12 @@ function setup() {
     agentId: "main",
     toolCallId: "tc1",
     reads: createReadTable(),
+    backups: new BackupService(db).bind({
+      workspaceId: "ws1",
+      workspaceRoot,
+      sessionId: "ses1",
+      agentId: "main",
+    }),
   };
   return { read, analyze, service, ctx };
 }

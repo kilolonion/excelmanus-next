@@ -1,0 +1,95 @@
+{
+  "_readme": "M0 xlsx 保真编解码判据（由项目负责人编写，执行者不得删改或放宽；认为有误时报告负责人）。依据 07 §4、§12，AGENTS.md 红线 5，01 §4 不做项。本轮范围：负责人决定暂不提供 Excel 原生文件，语料来自 LibreOffice 无头生成、WPS（本机已安装，可用 AppleScript/命令行导出时使用，否则跳过并记录）、以及按 ECMA-376 手工构造的最小 OOXML 包。Excel/Google Sheets 来源在报告中标为未覆盖，07 §12 该项本轮不能判为通过。",
+  "scope": {
+    "codec": "自研 ZIP 容器层 + 部件级保留清单 + Univer 快照映射（只做 07 §4.2 列出的 Univer 可建模内容中：值、公式、共享公式、样式引用、合并、行高列宽、隐藏、冻结）。条件格式/数据验证/定义名在本轮以'原样保留'对待，不映射进快照。",
+    "notInScope": "对象层锚点平移（07 §12 对象层项，另起 spike）、新建图表的 DrawingML 生成器（只做到'新增图表部件时 Content_Types 与关系正确'的最小占位图表）、CSV、xls/xlsb、加密"
+  },
+  "corpus": {
+    "minFiles": 20,
+    "note": "07 §12 要求 ≥40 个、含 Excel/WPS/LO/Google 四来源；本轮只能做到 LO + WPS + 手工，目标 ≥20 个，缺口写进报告。每个文件在 corpus/manifest.json 登记：来源、生成方式（脚本可复现）、包含的特性、许可（自产则为 CC0）。",
+    "mustCover": [
+      "纯值与多种数字格式",
+      "公式、共享公式（si）、数组公式",
+      "合并、行高列宽、隐藏行列、分组（outline）、冻结",
+      "条件格式（含 x14 extLst 扩展）",
+      "数据验证",
+      "定义名（全局与工作表级）",
+      "表对象（tables/table1.xml）",
+      "图表（至少柱状、折线、饼各一）",
+      "图片（PNG、JPEG）",
+      "批注（legacy comments + vmlDrawing）",
+      "中文工作表名、中文内容、含空格与引号的工作表名",
+      "多工作表 + 隐藏工作表",
+      "外部链接（externalLinks）",
+      "宏：xlsm 带 vbaProject.bin（手工构造：可放一个占位二进制部件并正确登记 Content_Types，用来验证逐字节保留）",
+      "透视表（LO 可生成 pivotTable/pivotCacheDefinition）",
+      "迷你图（x14:sparklineGroups，手工构造）",
+      "自定义 XML 部件（customXml/item1.xml）",
+      "大文件：≥ 20 万行 × 10 列的纯值工作表"
+    ]
+  },
+  "operations": {
+    "O0": "导入 → 不修改 → 检查点写出",
+    "O1": "导入 → 修改一个单元格值（选第一张非空工作表的 A1 或已有数值单元格）→ 检查点",
+    "O2": "导入 → 在第一张工作表第 2 行处插入一行 → 检查点",
+    "O3": "导入 → 新增一张工作表（名称 '新表'）并写入 A1 → 检查点",
+    "O4": "导入 → 在新增工作表上新增一个最小柱状图部件（引用该表 A1:A3）→ 检查点"
+  },
+  "checks": [
+    {
+      "id": "F01",
+      "title": "未修改部件逐字节一致",
+      "expect": "对每个文件、每个操作：除'本操作必然修改的部件集合'外，其余 ZIP 条目的解压后字节 sha256 与原文件完全相同；ZIP 条目集合只增不减（O3/O4 可增，O0–O2 集合完全相同）。'必然修改集合'由 codec 在写出时自报，run-cases 独立复核：O0 = 空集；O1 = {被改工作表 xml, 可能的 sharedStrings.xml, 可能的 calcChain.xml 删除见 F05}；O2 同 O1 并可能含 定义名所在 workbook.xml；O3/O4 = {workbook.xml, workbook.xml.rels, [Content_Types].xml, docProps/app.xml, 新增部件}。自报集合之外出现任何变化即失败"
+    },
+    {
+      "id": "F02",
+      "title": "被修改工作表中的未知元素原位保留",
+      "expect": "O1/O2 后，被修改工作表 XML 中 sheetData 以外的元素（含 extLst、x14 条件格式、sparklineGroups、legacyDrawing、tableParts、drawing、pageSetup 等）按原顺序、原内容出现（规范化空白后逐元素比对）"
+    },
+    {
+      "id": "F03",
+      "title": "样式索引不重排",
+      "expect": "O1 写入与原单元格相同样式时 styles.xml 字节不变；需要新样式时只在 cellXfs 末尾追加，原有 xf 索引与内容不变"
+    },
+    {
+      "id": "F04",
+      "title": "值正确",
+      "expect": "O0–O4 写出的文件重新导入后，所有工作表所有单元格的 值/公式文本 与原文件导入结果一致（O1 仅目标单元格不同；O2 为插入行之后的行整体下移一行）"
+    },
+    {
+      "id": "F05",
+      "title": "calcChain 与缓存值",
+      "expect": "修改了公式或插入行的写出：若原有 calcChain.xml，则删除它并同步移除 Content_Types 与 workbook.xml.rels 中的引用（Excel 会自行重建）；workbook.xml 设置 fullCalcOnLoad=\"1\"。未修改公式的 O0 不得触碰 calcChain"
+    },
+    {
+      "id": "F06",
+      "title": "LibreOffice 无头可打开",
+      "expect": "每个写出文件 `soffice --headless --convert-to csv`（或 --convert-to xlsx 到临时目录）退出码 0 且产出非空；O1 目标单元格在 LO 导出的 CSV 中为新值"
+    },
+    {
+      "id": "F07",
+      "title": "WPS 打开无修复提示（抽样人工）",
+      "expect": "抽样 ≥ 5 个 O2/O4 写出的文件，列出清单与打开方法，由负责人人工在 WPS 中打开确认；本轮自动流程只生成清单，结论字段为 pending-manual"
+    },
+    {
+      "id": "F08",
+      "title": "拒绝场景",
+      "expect": "以下情况 codec 必须拒绝且错误码/原因正确，原文件字节不变：(a) 加密工作簿（CFB 容器，EncryptionInfo）→ UNSUPPORTED_FEATURE '需先解密'；(b) O2 插入行穿过透视表源区域 → 拒绝并指明透视表；(c) O2 插入行穿过表对象（本轮不做表对象平移）→ 拒绝；(d) 含数字签名（_xmlsignatures）时任何修改 → 返回需要确认的提示而不是静默写出；(e) ZIP 中存在路径穿越条目（../）或超大解压比（> 100:1 且 > 1GB）→ 拒绝导入"
+    },
+    {
+      "id": "F09",
+      "title": "写入原子性",
+      "expect": "检查点先写 同目录 .excelmanus/tmp/ 临时文件 → 重新解析抽样比对 → rename 覆盖；在 rename 前注入失败（测试开关）时原文件字节不变且临时文件被清理"
+    },
+    {
+      "id": "F10",
+      "title": "复用库评估（07 §12 第二项）",
+      "expect": "在同一语料上对 @xlsx/xlsx-populate@0.2.2 做 O0/O1 比较：部件级保真（F01 口径）与耗时；ExcelJS 4.4.0 只做 O0 部件保真对照（已知会丢部件，用数据证明）。结论写报告：复用哪些部分（如仅 ZIP/XML 工具）或都不复用"
+    },
+    {
+      "id": "P01",
+      "title": "性能",
+      "expect": "20 万行 × 10 列文件：导入（到 Univer 快照）耗时、O1 检查点耗时、峰值 RSS；另报 5 万行 × 20 列（01 §5.1 首屏基准）的导入耗时"
+    }
+  ]
+}

@@ -7,7 +7,9 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { resolveWorkspacePath } from "@excelmanus/kernel";
 import { createApiClient, type RecMsg, type ServerMessage } from "@excelmanus/protocol";
+import { importXlsx } from "@excelmanus/workbook";
 import { WebSocket } from "ws";
 import { startServer } from "../src/index.ts";
 
@@ -49,7 +51,8 @@ for (const f of extraFiles) {
   writeFileSync(join(srv.workspaceRoot, basename(f)), readFileSync(f));
 }
 
-const deadline = Date.now() + 180_000;
+const verifyFile = argValues("--verify-xlsx")[0];
+let finished = false;
 try {
   const api = createApiClient(srv.url, srv.token);
   const { profile } = await api.createModelProfile({
@@ -59,7 +62,7 @@ try {
     baseUrl: env.MIMO_BASE_URL as string,
     apiKey: env.MIMO_API_KEY as string,
   });
-  console.log(`profile: ${profile.provider} ${profile.model} key=${profile.apiKeyMasked}`);
+  console.log(`profile: ${profile.provider} ${profile.model}`);
   const { session } = await api.createSession({});
   const sid = session.id;
 
@@ -90,7 +93,8 @@ try {
     });
   });
   ws.on("open", () => ws.send(JSON.stringify({ type: "sub", topic: `session:${sid}`, cursor: 0 })));
-  setTimeout(() => resolveDone("timeout"), 170_000);
+  const timer = setTimeout(() => resolveDone("timeout"), 170_000);
+  timer.unref();
   await subOk;
 
   await api.sendMessage(sid, "main", {
@@ -98,6 +102,8 @@ try {
     text: prompt,
   });
   const outcome = await done;
+  clearTimeout(timer);
+  ws.close();
   const seq = recs.map((r) => `${r.seq}:${r.record.type}`).join(" → ");
   console.log(`outcome: ${outcome}; recs=${recs.length}; deltas=${deltas.length}`);
   console.log(`record 序列：${seq}`);
@@ -105,20 +111,32 @@ try {
     if (r.record.type === "tool.intent" || r.record.type === "tool.result") {
       const d = r.record.data as { toolName?: string; status?: string; result?: unknown };
       let line = `  ${r.record.type} tool=${d.toolName ?? "?"} status=${d.status ?? "-"}`;
-      if (r.record.type === "tool.result" && d.result !== undefined) {
-        const s = JSON.stringify(d.result);
-        line += ` result=${s.length > 220 ? `${s.slice(0, 220)}…` : s}`;
+      if (r.record.type === "tool.result") {
+        const code = (d.result as { error?: { code?: string } })?.error?.code;
+        if (code) line += ` code=${code}`;
       }
       console.log(line);
     }
   }
-  const lastOutput = [...recs].reverse().find((r) => r.record.type === "model.output");
-  if (lastOutput) {
-    const t = (lastOutput.record.data as { text?: string }).text ?? "";
-    console.log(`最终回答：${t.slice(0, 200)}`);
-  }
-  if (Date.now() > deadline) console.log("（已超时）");
-} finally {
+  if (outcome !== "done" || !recs.some((r) => r.record.type === "turn.completed"))
+    throw new Error("真实模型冒烟未完成");
   await srv.close();
+  finished = true;
+  if (verifyFile) {
+    const bytes = readFileSync(resolveWorkspacePath(srv.workspaceRoot, verifyFile).abs);
+    const reopened = importXlsx(bytes, verifyFile);
+    if (!Object.values(reopened.cellCounts).some((n) => n > 0))
+      throw new Error("目标工作簿没有数据");
+    console.log(
+      JSON.stringify({
+        verification: "checkpoint-reimport",
+        sheets: reopened.snapshot.sheetOrder.length,
+        cells: Object.values(reopened.cellCounts).reduce((a, b) => a + b, 0),
+        ok: true,
+      }),
+    );
+  }
+} finally {
+  if (!finished) await srv.close();
   rmSync(dataDir, { recursive: true, force: true });
 }

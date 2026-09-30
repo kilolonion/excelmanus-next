@@ -1,3 +1,5 @@
+import { FileOperationError } from "@excelmanus/kernel";
+import { publishNew, workbookExportTool } from "./export.ts";
 // workbook_read / workbook_analyze（06 §4.1–4.2）：只读活文档工具。
 // 数据面：overview/range/search；分析面：sql（内存 SQLite，只许 SELECT/WITH）
 // 与 profile（列画像）。结果统一带 docRevs；上限 2000 格 / 16000 字符，截断给游标。
@@ -5,8 +7,8 @@
 import { DatabaseSync } from "node:sqlite";
 import { formatRange, indexToCol, parseRange, type RangeRef } from "@excelmanus/core";
 import type { ToolContext, ToolDefinition } from "@excelmanus/kernel";
-import type { ToolResult } from "@excelmanus/protocol";
-import type { ICellData, IWorksheetData } from "@univerjs/core";
+import { AnalyzeSaveTo, type ToolResult } from "@excelmanus/protocol";
+import type { ICellData, IWorkbookData, IWorksheetData } from "@univerjs/core";
 import { z } from "zod";
 import { workbookEditTool } from "./edit.ts";
 import { DocNotFoundError, type DocumentService } from "./service.ts";
@@ -360,6 +362,7 @@ const analyzeInput = z.object({
   sheet: z.string().optional(),
   range: z.string().optional(),
   sql: z.string().optional(),
+  saveTo: AnalyzeSaveTo.optional(),
 });
 
 // ---------- 工具定义 ----------
@@ -498,10 +501,12 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
       "对工作簿区域做分析。mode=sql 把指定工作表/区域（首行为表头）装入内存 SQLite 执行只读 SELECT/WITH 查询，预览 ≤200 行；mode=profile 返回每列的类型/非空数/去重数/min/max/mean/top 值。输入 docId 或工作区相对 path。",
     input: analyzeInput,
     output: z.record(z.string(), z.unknown()),
-    effect: "read",
-    targets: (a) =>
-      typeof (a as { path?: unknown }).path === "string" ? [(a as { path: string }).path] : [],
-    replay: "safe",
+    effect: (a: z.infer<typeof analyzeInput>) => (a.saveTo ? "write" : "read"),
+    targets: (a) => {
+      const q = analyzeInput.parse(a);
+      return [...(q.path ? [q.path] : []), ...(q.saveTo?.path ? [q.saveTo.path] : [])];
+    },
+    replay: (a: z.infer<typeof analyzeInput>) => (a.saveTo ? "unsafe" : "safe"),
     timeoutMs: 60_000,
     roles: ["main"],
     async execute(args, ctx): Promise<ToolResult> {
@@ -525,10 +530,85 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
               string,
               unknown
             >[];
+            let saved: unknown;
+            if (a.saveTo) {
+              const values = [
+                all.length ? Object.keys(all[0] as object) : [],
+                ...all.map((r) =>
+                  Object.values(r).map((v) =>
+                    v === null
+                      ? null
+                      : typeof v === "number" || typeof v === "boolean" || typeof v === "string"
+                        ? v
+                        : String(v),
+                  ),
+                ),
+              ];
+              if (!values[0]?.length)
+                throw new FileOperationError("INVALID_ARGUMENT", "空查询没有结果列，无法保存");
+              if (values.length * (values[0]?.length ?? 0) > 200000)
+                throw new FileOperationError("LIMIT_EXCEEDED", "saveTo 最多 20 万格");
+              if (a.saveTo.path) {
+                const snap: IWorkbookData = {
+                  id: "analysis",
+                  name: a.saveTo.path,
+                  appVersion: "1.0.2",
+                  locale: "zh-CN" as never,
+                  styles: {},
+                  sheetOrder: ["s0"],
+                  sheets: {
+                    s0: {
+                      id: "s0",
+                      name: a.saveTo.sheet,
+                      rowCount: values.length,
+                      columnCount: values[0]?.length ?? 1,
+                      cellData: Object.fromEntries(
+                        values.map((row, r) => [
+                          r,
+                          Object.fromEntries(
+                            row.map((v, c) => [
+                              c,
+                              { v, t: typeof v === "number" ? 1 : typeof v === "boolean" ? 3 : 2 },
+                            ]),
+                          ),
+                        ]),
+                      ),
+                    },
+                  },
+                };
+                saved = await publishNew(svc, ctx, a.saveTo.path, snap);
+              } else {
+                const result = await svc.submit(doc.docId, ctx.workspaceRoot, {
+                  baseRev: doc.rev,
+                  source: { kind: "agent", id: `${ctx.sessionId}/${ctx.agentId}` },
+                  sessionId: ctx.sessionId,
+                  toolCallId: ctx.toolCallId,
+                  ops: [
+                    { op: "sheet.add", name: a.saveTo.sheet },
+                    {
+                      op: "cells.set",
+                      range: `'${a.saveTo.sheet.replaceAll("'", "''")}'!A1`,
+                      values,
+                    },
+                  ],
+                });
+                if (!result.ok)
+                  return {
+                    status: "error",
+                    error: { code: result.code, message: result.message, retryable: false },
+                  };
+                saved = {
+                  docId: doc.docId,
+                  rev: result.rev,
+                  ...(result.backupPath ? { backupPath: result.backupPath } : {}),
+                };
+              }
+            }
             return {
               status: "ok",
               data: {
                 ...base,
+                ...(saved ? { saved } : {}),
                 mode: "sql",
                 columns: all.length > 0 ? Object.keys(all[0] as object) : [],
                 rows: all.slice(0, SQL_PREVIEW_ROWS).map((r) => Object.values(r)),
@@ -545,6 +625,7 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
           }
         }
         // profile
+        if (a.saveTo) throw new FileOperationError("INVALID_ARGUMENT", "saveTo 仅支持 sql 模式");
         return {
           status: "ok",
           data: { ...base, mode: "profile", ...profileRegion(doc, a.sheet, a.range) },
@@ -568,5 +649,5 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
     },
   };
 
-  return [workbookRead, workbookAnalyze, workbookEditTool(svc)];
+  return [workbookRead, workbookAnalyze, workbookEditTool(svc), workbookExportTool(svc)];
 }

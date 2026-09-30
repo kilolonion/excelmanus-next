@@ -10,7 +10,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@excelmanus/core": "workspace:*",
     "@excelmanus/protocol": "workspace:*",
-    "@excelmanus/core": "workspace:*"
+    "@jitl/quickjs-wasmfile-release-sync": "0.32.0",
+    "quickjs-emscripten": "0.32.0"
   }
 }

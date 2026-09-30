@@ -1,12 +1,14 @@
 // M2a 活文档同步 e2e：假模型走 workbook_read → workbook_edit（真实 HTTP/WS/SQLite），
 // 另一个 WS 客户端订阅 doc:<id> 收 doc.op、doc.submit 冲突与续传。
 
-import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import type { LanguageModelV4StreamPart, LanguageModelV4Usage } from "@ai-sdk/provider";
 import { createApiClient, type RecMsg, type ServerMessage } from "@excelmanus/protocol";
+import { importXlsx } from "@excelmanus/workbook";
 import { MockLanguageModelV4 } from "ai/test";
 import { afterAll, describe, expect, test } from "vitest";
 import { WebSocket } from "ws";
@@ -188,6 +190,30 @@ describe("e2e：活文档写入 + doc: 同步", () => {
     if (first === undefined) throw new Error("doc.op 无 mutation");
     const { unitId, subUnitId } = first.params;
 
+    // M2b: await the real debounce checkpoint, then verify disk and backup from SQLite.
+    await wsDoc.waitFor(
+      (m) => m.type === "doc.checkpoint" && m.checkpointRev === 1,
+      "checkpoint rev1",
+    );
+    const disk = importXlsx(readFileSync(join(srv.workspaceRoot, "sales.xlsx")), "sales.xlsx");
+    expect(disk.snapshot.sheets.s0?.cellData?.[1]?.[3]?.v).toBe("e2e写入");
+    const verifyDb = new DatabaseSync(join(dataDir, "excelmanus.db"));
+    try {
+      const backup = verifyDb
+        .prepare(
+          "SELECT backup_path FROM backups WHERE kind='backup' AND original_path='sales.xlsx'",
+        )
+        .get() as { backup_path: string };
+      expect(readFileSync(join(srv.workspaceRoot, backup.backup_path))).toEqual(
+        readFileSync(SAMPLE_XLSX),
+      );
+      expect(
+        verifyDb.prepare("SELECT checkpoint_rev FROM documents WHERE id=?").get(docId),
+      ).toMatchObject({ checkpoint_rev: 1 });
+    } finally {
+      verifyDb.close();
+    }
+
     // baseRev=0 写同一格 D2 → reject
     wsDoc.send({
       type: "doc.submit",
@@ -241,6 +267,30 @@ describe("e2e：活文档写入 + doc: 同步", () => {
     await wsDoc2.waitFor((m) => m.type === "doc.op", "replay op");
     const ops = wsDoc2.msgs.filter((m) => m.type === "doc.op") as { rev: number }[];
     expect(ops.map((o) => o.rev)).toEqual([2]);
+    await wsDoc2.waitFor(
+      (m) => m.type === "doc.checkpoint" && m.checkpointRev === 2,
+      "checkpoint rev2",
+    );
     wsDoc2.close();
+    wsSess.close();
+    // A fresh server opens the checkpoint and preserves document ids/revision without duplicating writes.
+    await srv.close();
+    servers.splice(servers.indexOf(srv), 1);
+    const restarted = await startServer({
+      dataDir,
+      resolveLanguageModel: () => makeDocMockModel(),
+      log: () => {},
+    });
+    servers.push(restarted);
+    const snap = await createApiClient(restarted.url, restarted.token).getDocSnapshot(wsId, docId);
+    expect(snap.document.rev).toBe(2);
+    expect(snap.document.checkpointRev).toBe(2);
+    expect(
+      (
+        snap.snapshot as {
+          sheets: Record<string, { cellData: Record<number, Record<number, { v: unknown }>> }>;
+        }
+      ).sheets[subUnitId]?.cellData[10]?.[0]?.v,
+    ).toBe("另一处");
   });
 });

@@ -1,17 +1,26 @@
-// 只读表格工作台：文件列表 + 上传 + Univer 1.0.2 只读查看 + 选区上下文。
+// 表格工作台：文件列表 + 上传 + Univer 1.0.2 编辑 + 选区上下文。
 
 import { formatRange, parseRange } from "@excelmanus/core";
-import type { IWorkbookData, Univer } from "@univerjs/core";
+import { CommandType, type IWorkbookData, type Univer } from "@univerjs/core";
 import { UniverSheetsCorePreset } from "@univerjs/preset-sheets-core";
 import zhCN from "@univerjs/preset-sheets-core/locales/zh-CN";
 import { createUniver, LocaleType, mergeLocales } from "@univerjs/presets";
 import type { FWorkbook } from "@univerjs/sheets/facade";
 import { useEffect, useRef, useState } from "react";
-import { openWorkspaceFile, setSelection, uploadWorkspaceFile, useApp } from "../store.ts";
+import {
+  openWorkspaceFile,
+  registerDocumentEditor,
+  setSelection,
+  submitDocumentMutation,
+  uploadWorkspaceFile,
+  useApp,
+} from "../store.ts";
 import { S } from "../strings.ts";
 
 function UniverViewer() {
   const doc = useApp((s) => s.doc);
+  const docId = doc?.docId;
+  const snapshot = doc?.snapshot;
   const focus = useApp((s) => s.rangeFocus);
   const preview = useApp((s) => s.rangePreview);
   const hostRef = useRef<HTMLDivElement>(null);
@@ -19,7 +28,7 @@ function UniverViewer() {
 
   useEffect(() => {
     const host = hostRef.current;
-    if (!host || !doc) return;
+    if (!host || !docId || !snapshot) return;
     const { univer, univerAPI } = createUniver({
       locale: LocaleType.ZH_CN,
       locales: { [LocaleType.ZH_CN]: mergeLocales(zhCN) },
@@ -34,9 +43,38 @@ function UniverViewer() {
         }),
       ],
     });
-    const wb = univerAPI.createWorkbook(structuredClone(doc.snapshot) as unknown as IWorkbookData);
-    wb.setEditable(false);
+    const wb = univerAPI.createWorkbook(structuredClone(snapshot) as unknown as IWorkbookData);
+    // 工作台编辑与代理共用 doc.submit；服务端负责串行化与冲突判定。
+    wb.setEditable(true);
     apiRef.current = { univer, wb };
+    let applyingRemote = false;
+    const bridge = {
+      docId,
+      applyRemote: async (mutations: Array<{ id: string; params: unknown }>) => {
+        applyingRemote = true;
+        try {
+          for (const mutation of mutations) {
+            const ok = await univerAPI.executeCommand(
+              mutation.id,
+              (mutation.params ?? {}) as object,
+              { fromCollab: true },
+            );
+            if (!ok) throw new Error(`远端 mutation 未生效：${mutation.id}`);
+          }
+        } finally {
+          applyingRemote = false;
+        }
+      },
+    };
+    registerDocumentEditor(bridge);
+    const commandSub = wb.onCommandExecuted((command, options) => {
+      if (applyingRemote || options?.fromCollab || options?.fromChangeset) return;
+      if (command.type !== CommandType.MUTATION) return;
+      void submitDocumentMutation(docId, {
+        id: command.id,
+        params: command.params ?? {},
+      });
+    });
     const sub = wb.onSelectionChange((selections) => {
       const sel = selections[0];
       const sheet = wb.getActiveSheet();
@@ -53,11 +91,13 @@ function UniverViewer() {
       );
     });
     return () => {
+      commandSub.dispose();
       sub.dispose();
+      registerDocumentEditor(null);
       apiRef.current = null;
       univer.dispose();
     };
-  }, [doc]);
+  }, [docId, snapshot]);
 
   useEffect(() => {
     const wb = apiRef.current?.wb;
@@ -157,6 +197,11 @@ export function Workbench() {
           );
         })}
       </div>
+      {doc?.checkpointError && (
+        <div className="notice error small">
+          {S.checkpointFailed}: {doc.checkpointError}
+        </div>
+      )}
       <div className="doc-area">
         <UniverViewer />
       </div>

@@ -219,7 +219,62 @@ export const SendMessageResponse = z.object({
   deduplicated: z.boolean(),
 });
 
+export const DispatchResponse = z.object({ dispatch: Dispatch });
+
 export const StopResponse = z.object({ ok: z.literal(true), stopped: z.boolean() });
+
+/** 停止会话全部运行中代理（11 §147）：stopped 为实际被停止的 agentId。 */
+export const StopAllResponse = z.object({ ok: z.literal(true), stopped: z.array(z.string()) });
+
+/** 继续：重新入队挂起派发的数量与是否实际开轮（04 §4.2、§8.3）。 */
+export const ResumeResponse = z.object({
+  ok: z.literal(true),
+  resumed: z.int().nonnegative(),
+  started: z.boolean(),
+});
+
+/** 手动压缩：空闲立即压缩，运行中排期到下一步边界（04 §6.3、11 §4）。 */
+export const CompactResponse = z.object({
+  compacted: z.boolean(),
+  scheduled: z.boolean(),
+});
+
+/** 审批决定：兼容 UI 发送的 approve/deny 与日志中的过去式。 */
+export const ApprovalDecisionBody = z.strictObject({
+  decision: z.enum(["approve", "approved", "deny", "denied"]),
+  reason: z.string().max(2000).optional(),
+  remember: z.boolean().optional(),
+});
+export type ApprovalDecisionBody = z.infer<typeof ApprovalDecisionBody>;
+
+export const ApprovalResponse = z.object({
+  approval: z.object({
+    id: z.string(),
+    sessionId: z.string(),
+    agentId: z.string(),
+    toolCallId: z.string(),
+    toolName: z.string(),
+    status: z.enum(["pending", "approved", "denied"]),
+    decision: z.enum(["approved", "denied"]).optional(),
+    reason: z.string().nullable().optional(),
+  }),
+  idempotent: z.boolean().optional(),
+});
+
+export const QuestionAnswerBody = z.strictObject({
+  answer: z.unknown(),
+  rev: z.int().nonnegative().optional(),
+});
+export type QuestionAnswerBody = z.infer<typeof QuestionAnswerBody>;
+export const QuestionResponse = z.object({
+  question: z.object({
+    id: z.string(),
+    sessionId: z.string(),
+    agentId: z.string(),
+    status: z.enum(["pending", "approved"]),
+  }),
+  idempotent: z.boolean().optional(),
+});
 
 export const ProviderListResponse = z.object({
   items: z.array(ProviderPreset),
@@ -243,6 +298,8 @@ export const DocumentInfo = z.object({
   workspaceId: z.string(),
   path: z.string(),
   kind: DocKind,
+  checkpointRev: z.int().nonnegative().optional(),
+  checkpointError: z.string().optional(),
   rev: z.int().nonnegative(),
   createdAt: z.string(),
 });

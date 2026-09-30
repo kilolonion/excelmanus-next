@@ -2,6 +2,7 @@
 
 import { parseRange } from "@excelmanus/core";
 import type {
+  AgentInfo,
   FileEntry,
   ModelProfile,
   ProviderPreset,
@@ -17,14 +18,30 @@ import {
   reduceDoc,
   reduceSession,
   type SessionState,
+  trackDocSubmit,
 } from "./reduce.ts";
+import { S } from "./strings.ts";
 import { SyncClient } from "./ws.ts";
 
 export interface OpenDoc {
   docId: string;
   rev: number;
   path: string;
+  checkpointRev?: number;
+  checkpointError?: string;
   snapshot: Record<string, unknown>;
+}
+
+/** 传输层可回放的 Univer mutation（与 kernel 的 DocMutation 保持中立结构）。 */
+export interface ClientDocMutation {
+  id: string;
+  params: unknown;
+}
+
+export interface DocumentEditorBridge {
+  docId: string;
+  /** 逐条在当前 Univer 实例中回放远端 mutation。 */
+  applyRemote(mutations: ClientDocMutation[]): Promise<void>;
 }
 
 interface AppState {
@@ -34,6 +51,7 @@ interface AppState {
   workspaceId: string;
   hasModelProfile: boolean;
   sessions: SessionSummary[];
+  agents: AgentInfo[];
   sessionId: string | null;
   agentId: string;
   session: SessionState;
@@ -48,6 +66,8 @@ interface AppState {
   rangeFocus: { range: string; nonce: number } | null;
   rangePreview: string | null;
   referenceError: string | null;
+  /** /compact 等斜杠命令的短提示（下一次发送时清除）。 */
+  commandNotice: string | null;
 }
 
 type Api = ReturnType<typeof apiClient>;
@@ -56,6 +76,9 @@ let api: Api | null = null;
 let sync: SyncClient | null = null;
 let seq = 0;
 let docRequest = 0;
+let syncConnectionId: string | null = null;
+let editorBridge: DocumentEditorBridge | null = null;
+let editorApplyQueue: Promise<void> = Promise.resolve();
 
 export const useApp = create<AppState>(() => ({
   token: null,
@@ -64,6 +87,7 @@ export const useApp = create<AppState>(() => ({
   workspaceId: "",
   hasModelProfile: false,
   sessions: [],
+  agents: [],
   sessionId: null,
   agentId: "main",
   session: initialSessionState(),
@@ -78,6 +102,7 @@ export const useApp = create<AppState>(() => ({
   rangeFocus: null,
   rangePreview: null,
   referenceError: null,
+  commandNotice: null,
 }));
 
 const set = useApp.setState;
@@ -121,7 +146,8 @@ export async function selectSession(sessionId: string): Promise<void> {
     });
     await refreshFiles();
   }
-  set({ sessionId: sessionId, session: initialSessionState() });
+  const detail = await requireApi().getSession(sessionId);
+  set({ sessionId: sessionId, session: initialSessionState(), agents: detail.agents });
   sync?.subscribe(`session:${sessionId}`);
 }
 
@@ -162,15 +188,56 @@ async function initialize(): Promise<void> {
         set({ session: reduceSession(get().session, msg) });
       } else if (msg.type === "doc.op" && msg.docId === get().doc?.docId) {
         set({ docSync: reduceDoc(get().docSync, msg) });
-        // 只读工作台不允许本地编辑远端 mutation（editable=false 会被权限拦截），
-        // 收到远端修订后防抖重取快照（07 §3.3 允许的最小实现）。
-        scheduleDocRefresh(msg.docId);
+        const doc = get().doc;
+        // ack 前服务端会把本端修订广播回发送者；本端已经乐观应用，按
+        // hello 的 connectionId 去重，避免重复执行一次 mutation。
+        const own = syncConnectionId !== null && msg.source === `user:${syncConnectionId}`;
+        if (doc) {
+          set({ doc: { ...doc, rev: Math.max(doc.rev, msg.rev) } });
+          const selection = get().selection;
+          if (selection?.docId === msg.docId)
+            set({ selection: { ...selection, rev: Math.max(selection.rev, msg.rev) } });
+        }
+        if (!own && editorBridge?.docId === msg.docId) {
+          const mutations = asClientMutations(msg.mutations);
+          // 分片或连续远端修订串行回放，避免多个 executeCommand 交错。
+          editorApplyQueue = editorApplyQueue
+            .then(async () => {
+              const bridge = editorBridge;
+              if (bridge?.docId === msg.docId) await bridge.applyRemote(mutations);
+            })
+            .catch(() => {
+              // 无法在当前版本逐条回放时回退到权威快照。
+              scheduleDocRefresh(msg.docId);
+            });
+        } else if (!own && !editorBridge) {
+          scheduleDocRefresh(msg.docId);
+        }
       } else if (msg.type === "doc.ack" || msg.type === "doc.reject") {
         set({ docSync: reduceDoc(get().docSync, msg) });
+        if (msg.type === "doc.ack") {
+          const doc = get().doc;
+          if (doc) {
+            set({ doc: { ...doc, rev: Math.max(doc.rev, msg.rev) } });
+            const selection = get().selection;
+            if (selection?.docId === doc.docId)
+              set({ selection: { ...selection, rev: Math.max(selection.rev, msg.rev) } });
+          }
+        } else {
+          // 拒绝时撤销乐观编辑：重新读取服务端快照，不重发断线期间的提交。
+          const docId = get().doc?.docId;
+          if (docId)
+            void reloadDocument(docId).catch(() => set({ referenceError: "invalid-range" }));
+        }
+      } else if (msg.type === "doc.checkpoint" && msg.docId === get().doc?.docId) {
+        const doc = get().doc;
+        if (doc)
+          set({ doc: { ...doc, checkpointRev: msg.checkpointRev, checkpointError: msg.error } });
       } else if (msg.type === "doc.reload" && msg.docId === get().doc?.docId) {
         set({ docSync: reduceDoc(get().docSync, msg) });
         void reloadDocument(msg.docId).catch(() => set({ referenceError: "invalid-range" }));
       } else if (msg.type === "hello") {
+        syncConnectionId = msg.connectionId;
         set({ connected: true });
       }
     },
@@ -192,6 +259,53 @@ async function initialize(): Promise<void> {
   set({ ready: true });
 }
 
+function asClientMutations(raw: unknown): ClientDocMutation[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (m): m is ClientDocMutation =>
+      !!m && typeof m === "object" && typeof (m as { id?: unknown }).id === "string",
+  );
+}
+
+/** 工作台挂载/卸载当前活文档的 Univer 回放桥。 */
+export function registerDocumentEditor(bridge: DocumentEditorBridge | null): void {
+  editorBridge = bridge;
+  if (bridge === null) editorApplyQueue = Promise.resolve();
+}
+
+/** 用户在工作台产生 mutation 后走统一 doc.submit 写入路径。 */
+export function submitDocumentMutation(
+  docId: string,
+  mutation: ClientDocMutation,
+): { clientOpId: string; sent: boolean } {
+  const st = get();
+  if (!st.doc || st.doc.docId !== docId || !sync) {
+    return { clientOpId: "", sent: false };
+  }
+  const clientOpId = `web-doc-${Date.now()}-${++seq}`;
+  set({ docSync: trackDocSubmit(get().docSync, clientOpId) });
+  const sent = sync.send({
+    type: "doc.submit",
+    docId,
+    clientOpId,
+    baseRev: st.docSync.rev,
+    mutations: [mutation],
+  });
+  if (!sent) {
+    // 断线编辑不自动重发；标记 rejected 并让调用方保持本地内容，待用户下一次编辑时重试。
+    set({
+      docSync: {
+        ...get().docSync,
+        pending: {
+          ...get().docSync.pending,
+          [clientOpId]: { status: "rejected", conflict: { code: "offline" } },
+        },
+      },
+    });
+  }
+  return { clientOpId, sent };
+}
+
 export async function createSession(): Promise<void> {
   const { session } = await requireApi().createSession({});
   await refreshSessions();
@@ -209,9 +323,35 @@ export async function removeSession(id: string): Promise<void> {
   }
 }
 
-export async function send(text: string): Promise<void> {
+export async function send(
+  text: string,
+  mode: "steer" | "interrupt" | "queue" = "steer",
+): Promise<void> {
   const st = get();
   if (!st.sessionId) return;
+  const cmd = text.trim();
+  // 斜杠命令不走消息派发（02 §3.2）：/compact 压缩上下文，/resume 继续。
+  if (cmd === "/compact" || cmd === "/resume") {
+    try {
+      if (cmd === "/compact") {
+        const res = await requireApi().compactAgent(st.sessionId, st.agentId);
+        set({
+          commandNotice: res.scheduled
+            ? S.compactScheduled
+            : res.compacted
+              ? S.compactDone
+              : S.compactNothing,
+        });
+      } else {
+        await requireApi().resumeAgent(st.sessionId, st.agentId);
+        set({ commandNotice: null });
+      }
+    } catch {
+      set({ commandNotice: S.commandFailed });
+    }
+    return;
+  }
+  set({ commandNotice: null });
   const context = st.selection
     ? [{ docId: st.selection.docId, rev: st.selection.rev, range: st.selection.range }]
     : undefined;
@@ -219,6 +359,7 @@ export async function send(text: string): Promise<void> {
   await requireApi().sendMessage(st.sessionId, st.agentId, {
     clientMessageId: `web-${Date.now()}-${seq}`,
     text,
+    mode,
     ...(context !== undefined ? { context } : {}),
   });
 }
@@ -227,6 +368,72 @@ export async function stopAgent(): Promise<void> {
   const st = get();
   if (!st.sessionId) return;
   await requireApi().stopAgent(st.sessionId, st.agentId);
+}
+
+/** 撤回未应用的派发；成功后由调用方把原文放回输入框。 */
+export async function cancelDispatch(dispatchId: string): Promise<void> {
+  const st = get();
+  if (!st.sessionId) return;
+  await requireApi().cancelDispatch(st.sessionId, dispatchId);
+}
+
+/** 继续：恢复停止后挂起的排队派发，或对 interrupted 代理开一轮续跑。 */
+export async function resumeAgent(): Promise<void> {
+  const st = get();
+  if (!st.sessionId) return;
+  await requireApi().resumeAgent(st.sessionId, st.agentId);
+}
+
+export async function decideApproval(
+  approvalId: string,
+  decision: "approve" | "deny",
+  reason?: string,
+  remember = false,
+): Promise<void> {
+  const response = await requireApi().decideApproval(approvalId, {
+    decision,
+    ...(reason !== undefined && reason !== "" ? { reason } : {}),
+    ...(remember ? { remember: true } : {}),
+  });
+  const approval = response.approval;
+  set({
+    session: {
+      ...get().session,
+      approvals: get().session.approvals.map((item) =>
+        item.approvalId === approval.id
+          ? {
+              ...item,
+              status: approval.status,
+              ...(approval.decision !== undefined ? { decision: approval.decision } : {}),
+              ...(approval.reason !== undefined && approval.reason !== null
+                ? { reason: approval.reason }
+                : {}),
+            }
+          : item,
+      ),
+    },
+  });
+}
+
+export async function answerQuestion(
+  questionId: string,
+  answer: unknown,
+  rev?: number,
+): Promise<void> {
+  await requireApi().answerQuestion(questionId, {
+    answer,
+    ...(rev !== undefined ? { rev } : {}),
+  });
+  set({
+    session: {
+      ...get().session,
+      questions: get().session.questions.map((item) =>
+        item.questionId === questionId
+          ? { ...item, status: "answered", answer, ...(rev !== undefined ? { rev } : {}) }
+          : item,
+      ),
+    },
+  });
 }
 
 export async function openWorkspaceFile(path: string): Promise<void> {
@@ -239,6 +446,8 @@ export async function openWorkspaceFile(path: string): Promise<void> {
     doc: {
       docId: document.id,
       rev: document.rev,
+      checkpointRev: document.checkpointRev,
+      checkpointError: document.checkpointError,
       path: document.path,
       snapshot: snapshot as Record<string, unknown>,
     },

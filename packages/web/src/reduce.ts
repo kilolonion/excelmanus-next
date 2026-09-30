@@ -6,18 +6,59 @@ import type { ServerMessage } from "@excelmanus/protocol";
 
 export interface UiMessage {
   id: string;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "compaction";
   text: string;
+  agentId?: string | null;
+  mode?: "steer" | "interrupt" | "queue";
+  /** 派发状态（04 §4.3）：accepted 不展示；queued 可撤回。 */
+  dispatchStatus?: "accepted" | "queued" | "applied" | "cancelled" | "failed";
+  /** role === "compaction" 时存在：压缩前后 token 与触发来源。 */
+  compaction?: {
+    trigger: "auto" | "manual" | "overflow";
+    beforeTokens: number;
+    afterTokens: number;
+    estimated: boolean;
+  };
 }
 
 export interface ToolCard {
   toolCallId: string;
   name: string;
-  status: "pending" | "ok" | "error" | "not_executed" | "cancelled";
+  status: "pending" | "ok" | "error" | "not_executed" | "cancelled" | "uncertain";
   args?: string;
   targets?: string[];
   resultSummary?: string;
   docId?: string;
+}
+
+export interface ApprovalCard {
+  approvalId: string;
+  toolCallId: string;
+  toolName: string;
+  args?: unknown;
+  targets: string[];
+  effect: string;
+  spec?: Record<string, unknown>;
+  status: "pending" | "approved" | "denied";
+  decision?: "approved" | "denied";
+  reason?: string;
+  remember?: boolean;
+  agentId?: string | null;
+}
+
+export interface QuestionCard {
+  questionId: string;
+  questionType: "choice" | "text" | "range_confirm" | "range_pick" | "change_confirm";
+  spec: Record<string, unknown>;
+  status: "pending" | "answered";
+  answer?: unknown;
+  rev?: number;
+  agentId?: string | null;
+}
+
+export interface TodoItem {
+  id: string;
+  [key: string]: unknown;
 }
 
 export interface SessionState {
@@ -32,6 +73,13 @@ export interface SessionState {
   pendingToolArgs: Record<string, { name: string; args: string }>;
   retry: { attempt: number; waitMs: number } | null;
   error: { kind: string; message: string } | null;
+  /** 各代理最新状态（与 agents 投影同词表），由轮边界与 agent.status 记录维护。 */
+  agentStatus: Record<string, string>;
+  approvals: ApprovalCard[];
+  questions: QuestionCard[];
+  todos: TodoItem[];
+  /** 当前上下文占用（usage.updated.context，04 §6.1）；无数据为 null。 */
+  contextUsage: { tokens: number; window: number | null; estimated: boolean } | null;
 }
 
 export const initialSessionState = (): SessionState => ({
@@ -44,6 +92,11 @@ export const initialSessionState = (): SessionState => ({
   pendingToolArgs: {},
   retry: null,
   error: null,
+  agentStatus: {},
+  approvals: [],
+  questions: [],
+  todos: [],
+  contextUsage: null,
 });
 
 function summarizeResult(result: unknown): string {
@@ -55,25 +108,80 @@ function summarizeResult(result: unknown): string {
   }
 }
 
-function applyRecord(s: SessionState, type: string, data: Record<string, unknown>): SessionState {
+function normalizeTodos(items: unknown[]): TodoItem[] {
+  return items.map((raw, i) => {
+    const item: Record<string, unknown> =
+      raw && typeof raw === "object" && !Array.isArray(raw)
+        ? { ...(raw as Record<string, unknown>) }
+        : { title: String(raw ?? "") };
+    const id = typeof item.id === "string" && item.id !== "" ? item.id : `todo-${i}`;
+    return { ...item, id };
+  });
+}
+
+function applyRecord(
+  s: SessionState,
+  type: string,
+  data: Record<string, unknown>,
+  meta: { agentId?: string | null } = {},
+): SessionState {
   switch (type) {
     case "session.created":
     case "session.updated":
     case "agent.spawned":
-    case "agent.status":
       return s;
     case "user.message": {
       const id = typeof data.dispatchId === "string" ? data.dispatchId : `u${s.messages.length}`;
       if (s.messages.some((m) => m.id === id)) return s;
+      const mode =
+        data.mode === "steer" || data.mode === "interrupt" || data.mode === "queue"
+          ? data.mode
+          : "steer";
       return {
         ...s,
-        messages: [...s.messages, { id, role: "user", text: String(data.text ?? "") }],
+        messages: [
+          ...s.messages,
+          {
+            id,
+            role: "user",
+            text: String(data.text ?? ""),
+            agentId: meta.agentId ?? null,
+            mode,
+            dispatchStatus: "accepted",
+          },
+        ],
       };
     }
-    case "dispatch.updated":
-      return s;
-    case "turn.started":
-      return { ...s, running: true, error: null, retry: null };
+    case "dispatch.updated": {
+      const dispatchId = typeof data.dispatchId === "string" ? data.dispatchId : "";
+      const status = data.status;
+      if (
+        dispatchId === "" ||
+        (status !== "accepted" &&
+          status !== "queued" &&
+          status !== "applied" &&
+          status !== "cancelled" &&
+          status !== "failed")
+      ) {
+        return s;
+      }
+      return {
+        ...s,
+        messages: s.messages.map((m) =>
+          m.id === dispatchId ? { ...m, dispatchStatus: status } : m,
+        ),
+      };
+    }
+    case "agent.status": {
+      const status = typeof data.status === "string" ? data.status : "";
+      if (meta.agentId == null || status === "") return s;
+      return { ...s, agentStatus: { ...s.agentStatus, [meta.agentId]: status } };
+    }
+    case "turn.started": {
+      const agentStatus =
+        meta.agentId == null ? s.agentStatus : { ...s.agentStatus, [meta.agentId]: "running" };
+      return { ...s, running: true, error: null, retry: null, agentStatus };
+    }
     case "step.started":
       return { ...s, streamingText: "", reasoningText: s.reasoningText };
     case "model.output": {
@@ -132,7 +240,13 @@ function applyRecord(s: SessionState, type: string, data: Record<string, unknown
         | { status?: string; data?: unknown; error?: { message?: string } }
         | undefined;
       const status =
-        res?.status === "ok" ? "ok" : res?.status === "not_executed" ? "not_executed" : "error";
+        res?.status === "ok"
+          ? "ok"
+          : res?.status === "not_executed"
+            ? "not_executed"
+            : res?.status === "uncertain"
+              ? "uncertain"
+              : "error";
       const summary =
         res?.status === "ok"
           ? summarizeResult(res.data)
@@ -154,6 +268,122 @@ function applyRecord(s: SessionState, type: string, data: Record<string, unknown
       }
       return { ...s, tools };
     }
+    case "approval.requested": {
+      const approvalId = String(data.approvalId ?? "");
+      if (approvalId === "") return s;
+      const card: ApprovalCard = {
+        approvalId,
+        toolCallId: String(data.toolCallId ?? ""),
+        toolName: String(data.toolName ?? "?"),
+        args: data.args,
+        targets: Array.isArray(data.targets)
+          ? data.targets.filter((x): x is string => typeof x === "string")
+          : [],
+        effect: String(data.effect ?? "write"),
+        ...(data.spec && typeof data.spec === "object" && !Array.isArray(data.spec)
+          ? { spec: data.spec as Record<string, unknown> }
+          : {}),
+        status: "pending",
+        ...(meta.agentId !== undefined ? { agentId: meta.agentId } : {}),
+      };
+      const i = s.approvals.findIndex((a) => a.approvalId === approvalId);
+      const approvals = [...s.approvals];
+      if (i >= 0) {
+        const existing = approvals[i];
+        if (existing) approvals[i] = { ...existing, ...card, status: existing.status };
+      } else approvals.push(card);
+      return { ...s, approvals };
+    }
+    case "approval.decided": {
+      const approvalId = String(data.approvalId ?? "");
+      const decision: ApprovalCard["status"] | undefined =
+        data.decision === "approved"
+          ? "approved"
+          : data.decision === "denied"
+            ? "denied"
+            : undefined;
+      if (!approvalId || !decision) return s;
+      const approvals = s.approvals.map((a) =>
+        a.approvalId === approvalId
+          ? {
+              ...a,
+              status: decision,
+              decision,
+              ...(typeof data.reason === "string" ? { reason: data.reason } : {}),
+              ...(typeof data.remember === "boolean" ? { remember: data.remember } : {}),
+            }
+          : a,
+      );
+      return { ...s, approvals };
+    }
+    case "question.asked": {
+      const questionId = String(data.questionId ?? "");
+      if (!questionId) return s;
+      const questionType = data.questionType;
+      if (
+        questionType !== "choice" &&
+        questionType !== "text" &&
+        questionType !== "range_confirm" &&
+        questionType !== "range_pick" &&
+        questionType !== "change_confirm"
+      )
+        return s;
+      const spec =
+        data.spec && typeof data.spec === "object" && !Array.isArray(data.spec)
+          ? (data.spec as Record<string, unknown>)
+          : {};
+      const card: QuestionCard = {
+        questionId,
+        questionType,
+        spec,
+        status: "pending",
+        ...(meta.agentId !== undefined ? { agentId: meta.agentId } : {}),
+      };
+      const i = s.questions.findIndex((q) => q.questionId === questionId);
+      const questions = [...s.questions];
+      if (i >= 0) {
+        const existing = questions[i];
+        if (existing) questions[i] = { ...existing, ...card, status: existing.status };
+      } else questions.push(card);
+      return { ...s, questions };
+    }
+    case "question.answered": {
+      const questionId = String(data.questionId ?? "");
+      if (!questionId) return s;
+      return {
+        ...s,
+        questions: s.questions.map((q) =>
+          q.questionId === questionId
+            ? {
+                ...q,
+                status: "answered",
+                answer: data.answer,
+                ...(typeof data.rev === "number" ? { rev: data.rev } : {}),
+              }
+            : q,
+        ),
+      };
+    }
+    case "todo.set": {
+      if (!Array.isArray(data.items)) return s;
+      return { ...s, todos: normalizeTodos(data.items) };
+    }
+    case "todo.updated": {
+      const todoId = typeof data.todoId === "string" ? data.todoId : "";
+      if (!todoId) return s;
+      return {
+        ...s,
+        todos: s.todos.map((item) =>
+          item.id === todoId
+            ? {
+                ...item,
+                ...(typeof data.status === "string" ? { status: data.status } : {}),
+                ...(Object.hasOwn(data, "result") ? { result: data.result } : {}),
+              }
+            : item,
+        ),
+      };
+    }
     case "retry.scheduled":
       return {
         ...s,
@@ -166,11 +396,65 @@ function applyRecord(s: SessionState, type: string, data: Record<string, unknown
       };
     case "turn.completed":
     case "turn.interrupted":
-      return { ...s, running: false, streamingText: "", retry: null };
-    case "turn.failed":
-      return { ...s, running: false, streamingText: "", retry: null };
-    case "usage.updated":
-      return s;
+    case "turn.failed": {
+      const agentStatus =
+        meta.agentId == null
+          ? s.agentStatus
+          : {
+              ...s.agentStatus,
+              [meta.agentId]:
+                type === "turn.completed"
+                  ? "idle"
+                  : type === "turn.interrupted"
+                    ? "interrupted"
+                    : "failed",
+            };
+      return { ...s, running: false, streamingText: "", retry: null, agentStatus };
+    }
+    case "usage.updated": {
+      const ctx = data.context as
+        | { tokens?: unknown; window?: unknown; estimated?: unknown }
+        | undefined;
+      if (!ctx || typeof ctx.tokens !== "number") return s;
+      return {
+        ...s,
+        contextUsage: {
+          tokens: ctx.tokens,
+          window: typeof ctx.window === "number" ? ctx.window : null,
+          estimated: ctx.estimated === true,
+        },
+      };
+    }
+    case "compaction": {
+      const id = `cmp-${s.cursor}`;
+      const beforeTokens = Number(data.beforeTokens ?? 0);
+      const afterTokens = Number(data.afterTokens ?? 0);
+      const trigger =
+        data.trigger === "manual" || data.trigger === "overflow" ? data.trigger : "auto";
+      return {
+        ...s,
+        messages: [
+          ...s.messages,
+          {
+            id,
+            role: "compaction",
+            text: String(data.summary ?? ""),
+            agentId: meta.agentId ?? null,
+            compaction: {
+              trigger,
+              beforeTokens,
+              afterTokens,
+              estimated: data.estimated === true,
+            },
+          },
+        ],
+        contextUsage: {
+          tokens: afterTokens,
+          window: s.contextUsage?.window ?? null,
+          estimated: true,
+        },
+      };
+    }
     default:
       console.warn(`未知记录类型：${type}`);
       return s;
@@ -181,7 +465,9 @@ export function reduceSession(state: SessionState, msg: ServerMessage): SessionS
   if (msg.type === "rec") {
     if (msg.seq <= state.cursor) return state;
     const next = {
-      ...applyRecord(state, msg.record.type, msg.record.data as Record<string, unknown>),
+      ...applyRecord(state, msg.record.type, msg.record.data as Record<string, unknown>, {
+        agentId: msg.record.agentId,
+      }),
     };
     next.cursor = Math.max(state.cursor, msg.seq);
     return next;
@@ -273,6 +559,30 @@ export function trackDocSubmit(state: DocSyncState, clientOpId: string): DocSync
     ...state,
     pending: { ...state.pending, [clientOpId]: { status: "pending" } },
   };
+}
+
+/** 同代理中排在 msg 之前、仍未应用的 queue 模式消息数（02 §3.2 “前面还有 N 条”）。 */
+export function queueAhead(s: SessionState, msg: UiMessage): number {
+  let n = 0;
+  for (const m of s.messages) {
+    if (m.id === msg.id) break;
+    if (
+      m.role === "user" &&
+      (m.agentId ?? null) === (msg.agentId ?? null) &&
+      m.mode === "queue" &&
+      m.dispatchStatus === "queued"
+    ) {
+      n += 1;
+    }
+  }
+  return n;
+}
+
+/** 某代理仍未应用的派发数（停止后挂起的排队消息，04 §4.2）。 */
+export function queuedCount(s: SessionState, agentId: string): number {
+  return s.messages.filter(
+    (m) => m.role === "user" && (m.agentId ?? null) === agentId && m.dispatchStatus === "queued",
+  ).length;
 }
 
 /** 排序展示：把工具卡片并入消息流（按序追加在最新消息之后的简化模型）。 */

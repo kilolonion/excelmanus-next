@@ -48,6 +48,12 @@ describe("许可证白名单", () => {
     expect(evaluateLicenses(grouped("(MIT AND GPL-3.0-only)", ["and-bad"]))).toHaveLength(1);
   });
 
+  test("DOMPurify 双许可选择 Apache-2.0；MPL 单许可和 AND 仍拒绝", () => {
+    expect(evaluateLicenses(grouped("(MPL-2.0 OR Apache-2.0)", ["dompurify"]))).toEqual([]);
+    expect(evaluateLicenses(grouped("MPL-2.0", ["lightningcss"]))).toHaveLength(1);
+    expect(evaluateLicenses(grouped("(MPL-2.0 AND Apache-2.0)", ["and-mpl"]))).toHaveLength(1);
+  });
+
   test("别名与 Zlib：MIT/X11 视同 MIT；(MIT AND Zlib) 放行；X11 单独仍失败", () => {
     expect(evaluateLicenses(grouped("MIT/X11", ["legacy-x11-lib"]))).toEqual([]);
     expect(evaluateLicenses(grouped("(MIT AND Zlib)", ["pako-like"]))).toEqual([]);

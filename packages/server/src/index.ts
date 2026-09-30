@@ -7,22 +7,31 @@ import type { AddressInfo } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { nowIso } from "@excelmanus/core";
-import { filesModule } from "@excelmanus/files";
+import { writableFilesModule } from "@excelmanus/files";
 import {
   AgentRuntime,
+  ApprovalCoordinator,
+  agentTools,
+  BACKUPS_MIGRATION,
+  BackupService,
   type CapabilityModule,
   KERNEL_MIGRATIONS,
   kernelProjections,
+  LeaseService,
   type ModelGateway,
   openDb,
+  QuestionCoordinator,
   recoverInterruptedAgents,
   SessionLog,
   SyncBus,
+  TeamCoordinator,
   type ToolDefinition,
 } from "@excelmanus/kernel";
 import { createGateway } from "@excelmanus/models";
 import type { ResolvedModel, ToolSpec } from "@excelmanus/protocol";
+import { SandboxPool } from "@excelmanus/sandbox";
 import {
+  CHECKPOINT_MIGRATION,
   DOC_OPS_MIGRATION,
   DOCUMENTS_MIGRATION,
   type WorkbookModule,
@@ -32,7 +41,9 @@ import { serve } from "@hono/node-server";
 import { z } from "zod";
 import { createApp } from "./app.ts";
 import { loadMasterKey } from "./crypto.ts";
+import { interactionTools } from "./interactions.ts";
 import { acquireInstanceLock } from "./lock.ts";
+import { runScriptTool } from "./script.ts";
 import { ensureDeviceToken, ensureWorkspace, resolveProfileModel } from "./store.ts";
 import { attachSyncChannel } from "./ws.ts";
 
@@ -81,28 +92,46 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       ...(opts.modules?.flatMap((m) => m.migrations ?? []) ?? [
         DOCUMENTS_MIGRATION,
         DOC_OPS_MIGRATION,
+        BACKUPS_MIGRATION,
+        CHECKPOINT_MIGRATION,
       ]),
     ];
     const db = openDb(join(dataDir, "excelmanus.db"), migrations);
+    const backups = new BackupService(db);
+    const leases = new LeaseService(db);
+    const files = writableFilesModule(db, backups);
     const workbook = opts.modules
       ? opts.modules.find((m): m is WorkbookModule => m.id === "workbook" && "service" in m)
-      : workbookModule(db);
-    const modules: CapabilityModule[] =
-      opts.modules ?? (workbook ? [filesModule, workbook] : [filesModule]);
+      : workbookModule(db, backups);
+    const interactionModule: CapabilityModule = { id: "interactions", tools: [] };
+    const baseModules: CapabilityModule[] =
+      opts.modules ?? (workbook ? [files, workbook] : [files]);
     const ws = ensureWorkspace(db, {
       name: "默认工作区",
       path: workspaceRoot,
       isDefault: true,
     });
     const token = ensureDeviceToken(dataDir, db);
+    if (!opts.modules) backups.pruneBackups(ws.id, ws.path);
 
     const bus = new SyncBus();
     const sessionLog = new SessionLog(db, {
-      projections: [...kernelProjections(), ...modules.flatMap((m) => m.projections ?? [])],
+      projections: [...kernelProjections(), ...baseModules.flatMap((m) => m.projections ?? [])],
       bus,
     });
+    const questions = new QuestionCoordinator(db, sessionLog);
+    interactionModule.tools = interactionTools(sessionLog, questions);
+    const team = new TeamCoordinator(db, sessionLog, leases);
+    const agentModule: CapabilityModule = { id: "agents", tools: agentTools(team) };
+    const modules: CapabilityModule[] = opts.modules
+      ? [...baseModules, agentModule]
+      : [...baseModules, interactionModule, agentModule];
+    const approvals = new ApprovalCoordinator(db, sessionLog);
     const tools = new Map<string, ToolDefinition>();
     for (const m of modules) for (const t of m.tools ?? []) tools.set(t.name, t);
+    // run_script 属于装配层：要同时组合 workbook 与 files 两个模块（模块互不依赖）
+    const sandbox = new SandboxPool();
+    tools.set("run_script", runScriptTool({ sandbox, documents: workbook?.service, tools, db }));
     const recovered = recoverInterruptedAgents({ db, log: sessionLog, tools });
     if (recovered > 0) emit("agents.recovered", { count: recovered });
     const specCache = new Map<string, ToolSpec[]>();
@@ -138,6 +167,11 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       gateway,
       tools,
       toolSpecsFor,
+      backups,
+      leases,
+      approval: approvals,
+      question: questions,
+      agents: team,
       resolveModel: (agent) => {
         const r = resolveProfileModel(db, masterKey, agent.modelProfileId);
         return r;
@@ -146,6 +180,12 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       workspaceId: workspaceIdFor,
       retryBaseMs: opts.retryBaseMs,
     });
+    team.bindRuntime(
+      (sessionId, agentId, dispatchId, mode) =>
+        runtime.enqueue(sessionId, agentId, dispatchId, mode),
+      (sessionId, agentId) => runtime.enqueueInbox(sessionId, agentId),
+      (sessionId, agentId) => runtime.stop(sessionId, agentId),
+    );
 
     const tickets = new Map<string, number>();
     let port = 0;
@@ -168,6 +208,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       bus,
       log: sessionLog,
       runtime,
+      approvals,
       gateway,
       tickets,
       ticketTtlMs: opts.ticketTtlMs ?? 30_000,
@@ -221,8 +262,13 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
         detach();
         server.closeAllConnections();
         await new Promise<void>((r) => server.close(() => r()));
-        db.close();
-        lock.release();
+        try {
+          await sandbox.close();
+          await workbook?.service.close();
+        } finally {
+          db.close();
+          lock.release();
+        }
       },
     };
   } catch (err) {

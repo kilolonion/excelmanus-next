@@ -1,7 +1,9 @@
 // CSV → IWorkbookData 只读导入。
 // 编码：BOM（UTF-8/UTF-16LE/BE）→ UTF-8 fatal 嗅探 → GBK 兜底；分隔符嗅探 , ; \t |。
 
-import type { ICellData } from "@univerjs/core";
+import { FileOperationError } from "@excelmanus/kernel";
+import type { ICellData, IWorkbookData } from "@univerjs/core";
+import iconv from "iconv-lite";
 import type { ImportedWorkbook } from "./xlsx.ts";
 
 export class CsvImportError extends Error {
@@ -97,17 +99,13 @@ function parseRows(text: string, delim: string): string[][] {
   return rows;
 }
 
-const NUMERIC = /^-?\d+(\.\d+)?([eE][+-]?\d+)?$/;
-
 function toCell(s: string): ICellData | null {
-  const t = s.trim();
-  if (t === "") return null;
-  if (NUMERIC.test(t)) return { v: Number(t), t: 1 };
-  return { v: t, t: 2 };
+  if (s === "") return null;
+  return { v: s, t: 1 };
 }
 
 export function importCsv(bytes: Uint8Array, name: string): ImportedWorkbook {
-  const { text } = decodeCsv(bytes);
+  const { text, encoding } = decodeCsv(bytes);
   const delim = sniffDelimiter(text);
   const rows = parseRows(text, delim);
   if (rows.length === 0) throw new CsvImportError("CSV 为空");
@@ -128,6 +126,12 @@ export function importCsv(bytes: Uint8Array, name: string): ImportedWorkbook {
   });
   const sheetName = "Sheet1";
   return {
+    csv: {
+      encoding,
+      delimiter: delim,
+      newline: text.includes("\r\n") ? "\r\n" : "\n",
+      trailingNewline: /[\r\n]$/.test(text),
+    },
     snapshot: {
       id: `wbk_${name.replace(/\W+/g, "_")}`,
       name,
@@ -149,4 +153,61 @@ export function importCsv(bytes: Uint8Array, name: string): ImportedWorkbook {
     cellCounts: { [sheetName]: cellCount },
     formulaCounts: {},
   };
+}
+
+export function exportCsv(
+  snapshot: IWorkbookData,
+  options: {
+    sheet?: string;
+    delimiter?: string;
+    encoding?: string;
+    newline?: string;
+    trailingNewline?: boolean;
+  } = {},
+): Uint8Array {
+  const sheet = options.sheet
+    ? Object.values(snapshot.sheets).find((s) => s.name === options.sheet || s.id === options.sheet)
+    : snapshot.sheets[snapshot.sheetOrder[0] ?? ""];
+  if (!sheet) throw new FileOperationError("NOT_FOUND", "工作表不存在");
+  const data = (sheet.cellData as Record<number, Record<number, ICellData>>) ?? {};
+  const rs = Object.keys(data).map(Number);
+  const maxR = Math.max(-1, ...rs);
+  const maxC = Math.max(
+    -1,
+    ...Object.values(data).flatMap((r) => Object.keys(r ?? {}).map(Number)),
+  );
+  if ((maxR + 1) * (maxC + 1) > 4_000_000)
+    throw new FileOperationError("LIMIT_EXCEEDED", "CSV 导出最多 400 万格");
+  const delim = options.delimiter ?? ",";
+  const lines: string[] = [];
+  for (let r = 0; r <= maxR; r++) {
+    const row: string[] = [];
+    for (let c = 0; c <= maxC; c++) {
+      const cell = data[r]?.[c];
+      const v = String(cell?.f ?? cell?.v ?? "");
+      row.push(v.includes(delim) || /["\r\n]/.test(v) ? `"${v.replaceAll('"', '""')}"` : v);
+    }
+    lines.push(row.join(delim));
+  }
+  const text =
+    lines.join(options.newline ?? "\n") +
+    (options.trailingNewline ? (options.newline ?? "\n") : "");
+  const encoding = options.encoding ?? "utf-8";
+  if (encoding === "gbk") {
+    const bytes = iconv.encode(text, "gbk");
+    if (iconv.decode(bytes, "gbk") !== text)
+      throw new FileOperationError(
+        "UNSUPPORTED_FEATURE",
+        "文本无法用 GBK 无损表示，请另存为 UTF-8",
+      );
+    return bytes;
+  }
+  if (encoding === "utf-8-bom")
+    return Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(text)]);
+  if (encoding === "utf-16le" || encoding === "utf-16be")
+    return Buffer.concat([
+      Buffer.from(encoding.endsWith("le") ? [0xff, 0xfe] : [0xfe, 0xff]),
+      iconv.encode(text, encoding),
+    ]);
+  return Buffer.from(text);
 }

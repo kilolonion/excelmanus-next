@@ -3,10 +3,14 @@
 
 import type { z } from "zod";
 import {
+  type ApprovalDecisionBody,
+  ApprovalResponse,
   BootstrapResponse,
+  CompactResponse,
   type CreateModelProfileBody,
   type CreateSessionBody,
   CreateSessionResponse,
+  DispatchResponse,
   DocSnapshotResponse,
   FileListResponse,
   HealthResponse,
@@ -16,12 +20,16 @@ import {
   ProfileListResponse,
   ProfileResponse,
   ProviderListResponse,
+  type QuestionAnswerBody,
+  QuestionResponse,
   RestError,
+  ResumeResponse,
   type SendMessageBody,
   SendMessageResponse,
   SessionDetailResponse,
   SessionListResponse,
   SessionLogResponse,
+  StopAllResponse,
   StopResponse,
   TestProfileResponse,
   TicketResponse,
@@ -93,7 +101,19 @@ export interface ApiClient {
     agentId: string,
     body: z.infer<typeof SendMessageBody>,
   ): Promise<z.infer<typeof SendMessageResponse>>;
+  cancelDispatch(sessionId: string, dispatchId: string): Promise<z.infer<typeof DispatchResponse>>;
   stopAgent(sessionId: string, agentId: string): Promise<z.infer<typeof StopResponse>>;
+  stopAll(sessionId: string): Promise<z.infer<typeof StopAllResponse>>;
+  resumeAgent(sessionId: string, agentId: string): Promise<z.infer<typeof ResumeResponse>>;
+  compactAgent(sessionId: string, agentId: string): Promise<z.infer<typeof CompactResponse>>;
+  decideApproval(
+    approvalId: string,
+    body: z.infer<typeof ApprovalDecisionBody>,
+  ): Promise<z.infer<typeof ApprovalResponse>>;
+  answerQuestion(
+    questionId: string,
+    body: z.infer<typeof QuestionAnswerBody>,
+  ): Promise<z.infer<typeof QuestionResponse>>;
 
   openDoc(
     workspaceId: string,
@@ -183,8 +203,19 @@ export function createApiClient(
 
     sendMessage: (sessionId, agentId, body) =>
       call(SendMessageResponse, "POST", `/sessions/${sessionId}/agents/${agentId}/messages`, body),
+    cancelDispatch: (sessionId, dispatchId) =>
+      call(DispatchResponse, "DELETE", `/sessions/${sessionId}/dispatches/${dispatchId}`),
     stopAgent: (sessionId, agentId) =>
       call(StopResponse, "POST", `/sessions/${sessionId}/agents/${agentId}/stop`),
+    stopAll: (sessionId) => call(StopAllResponse, "POST", `/sessions/${sessionId}/stop-all`),
+    resumeAgent: (sessionId, agentId) =>
+      call(ResumeResponse, "POST", `/sessions/${sessionId}/agents/${agentId}/resume`),
+    compactAgent: (sessionId, agentId) =>
+      call(CompactResponse, "POST", `/sessions/${sessionId}/agents/${agentId}/compact`),
+    decideApproval: (approvalId, body) =>
+      call(ApprovalResponse, "POST", `/approvals/${approvalId}`, body),
+    answerQuestion: (questionId, body) =>
+      call(QuestionResponse, "POST", `/questions/${questionId}`, body),
 
     openDoc: (workspaceId, body) =>
       call(OpenDocResponse, "POST", `/workspaces/${workspaceId}/docs/open`, body),

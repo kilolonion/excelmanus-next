@@ -14,6 +14,8 @@ import type { DatabaseSync } from "node:sqlite";
 import { newId, nowIso, parseRange } from "@excelmanus/core";
 import {
   type AgentRuntime,
+  type ApprovalCoordinator,
+  approvalDto,
   buildSystemPrompt,
   type ModelGateway,
   PathSafetyError,
@@ -24,10 +26,12 @@ import {
 import { PROVIDER_PRESETS } from "@excelmanus/models";
 import type { StepEvent } from "@excelmanus/protocol";
 import {
+  ApprovalDecisionBody,
   CreateModelProfileBody,
   CreateSessionBody,
   OpenDocBody,
   protocolVersion,
+  QuestionAnswerBody,
   SendMessageBody,
   UpdateModelProfileBody,
   UpdateSessionBody,
@@ -63,6 +67,7 @@ export interface AppDeps {
   bus: SyncBus;
   log: SessionLog;
   runtime: AgentRuntime;
+  approvals: ApprovalCoordinator;
   gateway: ModelGateway;
   tickets: Map<string, number>;
   ticketTtlMs: number;
@@ -125,7 +130,7 @@ export function createApp(deps: AppDeps): Hono {
 
   const fail = (
     c: Context,
-    status: 400 | 401 | 403 | 404 | 409 | 413 | 500 | 501,
+    status: 400 | 401 | 403 | 404 | 409 | 413 | 500 | 501 | 502,
     code: string,
     message: string,
     details?: unknown,
@@ -415,6 +420,61 @@ export function createApp(deps: AppDeps): Hono {
     return c.json({ ok: true });
   });
 
+  // ---------- 审批 ----------
+
+  app.post("/api/v1/approvals/:id", async (c) => {
+    const body = parse(ApprovalDecisionBody, await c.req.json().catch(() => null));
+    if ("issues" in body) return fail(c, 400, "bad_request", "请求体不合法", body.issues);
+    const raw = body.decision;
+    const decision = raw === "approve" || raw === "approved" ? "approved" : "denied";
+    const pending = deps.approvals.get(c.req.param("id"));
+    if (!pending) return fail(c, 404, "not_found", "审批不存在");
+    try {
+      const out = deps.runtime.decideApproval(
+        c.req.param("id"),
+        decision,
+        body.reason,
+        body.remember ?? false,
+      );
+      return c.json({ approval: approvalDto(out.row), idempotent: out.idempotent });
+    } catch (e) {
+      return fail(c, 409, "conflict", e instanceof Error ? e.message : "审批无法处理");
+    }
+  });
+
+  app.get("/api/v1/sessions/:id/approvals", (c) => {
+    const row = getSession(db, c.req.param("id"));
+    if (!row) return fail(c, 404, "not_found", "会话不存在");
+    return c.json({ items: deps.approvals.pendingForSession(row.id).map(approvalDto) });
+  });
+
+  app.post("/api/v1/questions/:id", async (c) => {
+    const body = parse(QuestionAnswerBody, await c.req.json().catch(() => null));
+    if ("issues" in body) return fail(c, 400, "bad_request", "请求体不合法", body.issues);
+    const row = db
+      .prepare(
+        "SELECT id, session_id, agent_id, status FROM pending_interactions WHERE id = ? AND kind = 'question'",
+      )
+      .get(c.req.param("id")) as
+      | { id: string; session_id: string; agent_id: string; status: string }
+      | undefined;
+    if (!row) return fail(c, 404, "not_found", "问题不存在");
+    try {
+      const out = deps.runtime.answerQuestion(c.req.param("id"), body.answer, body.rev);
+      return c.json({
+        question: {
+          id: c.req.param("id"),
+          sessionId: row.session_id,
+          agentId: row.agent_id,
+          status: out.row.status,
+        },
+        idempotent: out.idempotent,
+      });
+    } catch (e) {
+      return fail(c, 409, "conflict", e instanceof Error ? e.message : "问题无法处理");
+    }
+  });
+
   app.get("/api/v1/sessions/:id/log", (c) => {
     const row = getSession(db, c.req.param("id"));
     if (!row) return fail(c, 404, "not_found", "会话不存在");
@@ -443,6 +503,23 @@ export function createApp(deps: AppDeps): Hono {
     }
     const body = parse(SendMessageBody, await c.req.json().catch(() => null));
     if ("issues" in body) return fail(c, 400, "bad_request", "请求体不合法", body.issues);
+    const mode = body.mode ?? "steer";
+
+    // 重启后仍 blocked（持久化待审批/待回答）：steer/queue 持久化为 queued 挂起，
+    // 等审批决定后由运行时继续；interrupt 以"用户发送了新指令"拒绝待审批后开新一轮
+    //（04 §4.1）。待回答 ask_user 不能被打断，保持冲突。
+    let blockedPending: { id: string; kind: string } | undefined;
+    const blockedIdle = agent.status === "blocked" && !deps.runtime.isRunning(sessionId, agentId);
+    if (blockedIdle) {
+      blockedPending = db
+        .prepare(
+          "SELECT id, kind FROM pending_interactions WHERE session_id = ? AND agent_id = ? AND status = 'pending' ORDER BY created_at LIMIT 1",
+        )
+        .get(sessionId, agentId) as { id: string; kind: string } | undefined;
+      if (mode === "interrupt" && blockedPending?.kind !== "approval") {
+        return fail(c, 409, "conflict", "代理正在等待用户回答");
+      }
+    }
 
     // 幂等：同 clientMessageId 同内容返回原记录，不同内容返回冲突（04 §4.3）
     const existing = db
@@ -459,7 +536,7 @@ export function createApp(deps: AppDeps): Hono {
       if (
         old?.text !== body.text ||
         JSON.stringify(old.context ?? []) !== JSON.stringify(body.context ?? []) ||
-        (old.mode ?? "queue") !== (body.mode ?? "queue")
+        (old.mode ?? "steer") !== mode
       ) {
         return fail(c, 409, "conflict", "clientMessageId 已使用且内容不同");
       }
@@ -501,8 +578,9 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     const dispatchId = newId("dsp");
-    const mode = body.mode ?? "queue";
     const running = deps.runtime.isRunning(sessionId, agentId);
+    // 挂起语义：运行中或等待审批/回答期间受理的消息都先记 queued（04 §4.1/§4.2）
+    const initialStatus = running || blockedIdle ? "queued" : "accepted";
     deps.log.append(sessionId, agentId, [
       {
         type: "user.message",
@@ -516,10 +594,14 @@ export function createApp(deps: AppDeps): Hono {
       },
       {
         type: "dispatch.updated",
-        data: { dispatchId, status: running ? "queued" : "accepted" },
+        data: { dispatchId, status: initialStatus },
       },
     ]);
-    deps.runtime.enqueue(sessionId, agentId, dispatchId);
+    if (blockedIdle && mode === "interrupt" && blockedPending !== undefined) {
+      // 待审批被新指令打断：视为拒绝，resumePersistedApproval 收口旧轮后 pump 开新轮
+      deps.runtime.decideApproval(blockedPending.id, "denied", "用户发送了新指令");
+    }
+    deps.runtime.enqueue(sessionId, agentId, dispatchId, mode);
     return c.json(
       {
         dispatch: {
@@ -528,7 +610,7 @@ export function createApp(deps: AppDeps): Hono {
           agentId,
           clientMessageId: body.clientMessageId,
           mode,
-          status: running ? "queued" : "accepted",
+          status: initialStatus,
         },
         deduplicated: false,
       },
@@ -549,6 +631,106 @@ export function createApp(deps: AppDeps): Hono {
     return c.json({ ok: true, stopped });
   });
 
+  /** 停止该会话全部运行中的代理（11 §147）。 */
+  app.post("/api/v1/sessions/:id/stop-all", (c) => {
+    const sessionId = c.req.param("id");
+    const row = getSession(db, sessionId);
+    if (!row) return fail(c, 404, "not_found", "会话不存在");
+    const stopped = listAgents(db, sessionId)
+      .map((a) => a.id)
+      .filter((id) => deps.runtime.stop(sessionId, id));
+    return c.json({ ok: true, stopped });
+  });
+
+  /** 撤回未应用的派发（04 §4.3）：accepted/queued → cancelled；已 cancelled 幂等返回。 */
+  app.delete("/api/v1/sessions/:id/dispatches/:dispatchId", (c) => {
+    const sessionId = c.req.param("id");
+    const dispatchId = c.req.param("dispatchId");
+    const row = getSession(db, sessionId);
+    if (!row) return fail(c, 404, "not_found", "会话不存在");
+    const dto = (d: {
+      id: string;
+      session_id: string;
+      agent_id: string;
+      client_message_id: string;
+      mode: string;
+      status: string;
+    }) => ({
+      id: d.id,
+      sessionId: d.session_id,
+      agentId: d.agent_id,
+      clientMessageId: d.client_message_id,
+      mode: d.mode,
+      status: d.status,
+    });
+    const existing = db
+      .prepare("SELECT * FROM dispatches WHERE id = ? AND session_id = ?")
+      .get(dispatchId, sessionId) as
+      | {
+          id: string;
+          session_id: string;
+          agent_id: string;
+          client_message_id: string;
+          mode: string;
+          status: string;
+        }
+      | undefined;
+    if (!existing) return fail(c, 404, "not_found", "派发不存在");
+    if (existing.status === "cancelled") return c.json({ dispatch: dto(existing) });
+    if (existing.status !== "accepted" && existing.status !== "queued") {
+      return fail(c, 409, "conflict", "派发已应用，无法撤回");
+    }
+    deps.log.append(sessionId, existing.agent_id, [
+      { type: "dispatch.updated", data: { dispatchId, status: "cancelled" } },
+    ]);
+    deps.runtime.cancelDispatch(sessionId, existing.agent_id, dispatchId);
+    const updated = db
+      .prepare("SELECT * FROM dispatches WHERE id = ?")
+      .get(dispatchId) as typeof existing;
+    return c.json({ dispatch: dto(updated ?? existing) });
+  });
+
+  /** 继续（04 §4.2/§8.3）：恢复挂起派发；无挂起且代理 interrupted 时开一轮继续轮。 */
+  app.post("/api/v1/sessions/:id/agents/:agentId/resume", (c) => {
+    const sessionId = c.req.param("id");
+    const agentId = c.req.param("agentId");
+    const row = getSession(db, sessionId);
+    if (!row) return fail(c, 404, "not_found", "会话不存在");
+    const agent = db
+      .prepare("SELECT id FROM agents WHERE session_id = ? AND id = ?")
+      .get(sessionId, agentId);
+    if (!agent) return fail(c, 404, "not_found", "代理不存在");
+    if (deps.runtime.isRunning(sessionId, agentId)) {
+      return fail(c, 409, "conflict", "代理正在运行");
+    }
+    const out = deps.runtime.resumeAgent(sessionId, agentId);
+    return c.json({ ok: true, resumed: out.resumed, started: out.started });
+  });
+
+  /** 手动压缩（04 §6.3、11 §4）：运行中排期到下一步边界，空闲立即执行。 */
+  app.post("/api/v1/sessions/:id/agents/:agentId/compact", async (c) => {
+    const sessionId = c.req.param("id");
+    const agentId = c.req.param("agentId");
+    const row = getSession(db, sessionId);
+    if (!row) return fail(c, 404, "not_found", "会话不存在");
+    const agent = db
+      .prepare("SELECT id, status FROM agents WHERE session_id = ? AND id = ?")
+      .get(sessionId, agentId) as { id: string; status: string } | undefined;
+    if (!agent) return fail(c, 404, "not_found", "代理不存在");
+    if (agent.status === "closed") return fail(c, 409, "conflict", "代理已关闭");
+    try {
+      return c.json(await deps.runtime.compact(sessionId, agentId));
+    } catch (err) {
+      emit("compaction.failed", {
+        sessionId,
+        agentId,
+        trigger: "manual",
+        message: err instanceof Error ? err.message : String(err),
+      });
+      return fail(c, 502, "compaction_failed", "上下文压缩失败，请重试");
+    }
+  });
+
   // ---------- 工作区文档与文件（modules/workbook 的活文档只读面） ----------
 
   const docMeta = (m: {
@@ -556,6 +738,8 @@ export function createApp(deps: AppDeps): Hono {
     workspaceId: string;
     path: string;
     kind: string;
+    checkpointRev?: number;
+    checkpointError?: string;
     rev: number;
     createdAt: string;
   }) => ({
@@ -563,6 +747,8 @@ export function createApp(deps: AppDeps): Hono {
     workspaceId: m.workspaceId,
     path: m.path,
     kind: m.kind,
+    checkpointRev: m.checkpointRev,
+    checkpointError: m.checkpointError,
     rev: m.rev,
     createdAt: m.createdAt,
   });

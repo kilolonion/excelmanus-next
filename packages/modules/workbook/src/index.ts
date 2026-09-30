@@ -1,8 +1,13 @@
 // modules/workbook：活文档（xlsx/csv → Univer 无头实例）+ workbook_read/workbook_analyze/workbook_edit。
 // 依赖方向：只依赖 kernel 公开接口 / protocol / core；不依赖 modules/files。
 
-import type { CapabilityModule, DatabaseSync } from "@excelmanus/kernel";
-import { DOC_OPS_MIGRATION, DOCUMENTS_MIGRATION, DocumentService } from "./service.ts";
+import type { BackupService, CapabilityModule, DatabaseSync } from "@excelmanus/kernel";
+import {
+  CHECKPOINT_MIGRATION,
+  DOC_OPS_MIGRATION,
+  DOCUMENTS_MIGRATION,
+  DocumentService,
+} from "./service.ts";
 import { workbookTools } from "./tools.ts";
 
 export interface WorkbookModule extends CapabilityModule {
@@ -10,11 +15,11 @@ export interface WorkbookModule extends CapabilityModule {
 }
 
 /** 文档服务绑定到 SQLite（documents/doc_ops 表由本模块迁移创建）。 */
-export function workbookModule(db: DatabaseSync): WorkbookModule {
-  const service = new DocumentService(db);
+export function workbookModule(db: DatabaseSync, backups?: BackupService): WorkbookModule {
+  const service = new DocumentService(db, backups);
   return {
     id: "workbook",
-    migrations: [DOCUMENTS_MIGRATION, DOC_OPS_MIGRATION],
+    migrations: [DOCUMENTS_MIGRATION, DOC_OPS_MIGRATION, CHECKPOINT_MIGRATION],
     tools: workbookTools(service),
     service,
   };
@@ -33,6 +38,7 @@ export {
   OpCompileError,
 } from "./ops.ts";
 export {
+  CHECKPOINT_MIGRATION,
   DOC_OPS_MIGRATION,
   DOCUMENTS_MIGRATION,
   DocNotFoundError,

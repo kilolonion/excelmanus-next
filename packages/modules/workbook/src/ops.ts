@@ -5,6 +5,7 @@ import {
   indexToCol,
   MAX_C,
   MAX_R,
+  newId,
   parseRange,
   type RangeRef,
   rangeRefToA1,
@@ -190,6 +191,7 @@ const cellData = (v: string | number | boolean | null): Record<string, unknown> 
 const HALIGN = { left: 1, center: 2, right: 3 } as const;
 
 export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
+  ctx = { ...ctx, snapshot: structuredClone(ctx.snapshot) };
   const commands: CompiledCommand[] = [];
   const ranges: RangeRef[] = [];
   const structural: StructuralOp[] = [];
@@ -223,6 +225,20 @@ export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
               );
             }
           }
+        }
+        if (target.r1 >= (sheet.data.rowCount ?? 1)) {
+          sheet.data.rowCount = target.r1 + 1;
+          commands.push({
+            id: "sheet.mutation.set-worksheet-row-count",
+            params: { unitId, subUnitId: sheet.id, rowCount: sheet.data.rowCount },
+          });
+        }
+        if (target.c1 >= (sheet.data.columnCount ?? 1)) {
+          sheet.data.columnCount = target.c1 + 1;
+          commands.push({
+            id: "sheet.mutation.set-worksheet-column-count",
+            params: { unitId, subUnitId: sheet.id, columnCount: sheet.data.columnCount },
+          });
         }
         commands.push({
           id: "sheet.command.set-range-values",
@@ -360,16 +376,28 @@ export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
         break;
       }
       case "sheet.add": {
+        if (
+          !op.name ||
+          op.name.length > 31 ||
+          /[[\]:*?/\\]/.test(op.name) ||
+          Object.values(ctx.snapshot.sheets).some((s) => s.name === op.name)
+        )
+          throw new OpCompileError("工作表名称无效或重复");
+        const id = newId("sheet");
         const index = op.index ?? ctx.snapshot.sheetOrder?.length ?? 0;
+        if (index > ctx.snapshot.sheetOrder.length) throw new OpCompileError("工作表插入索引越界");
+        const added = { id, name: op.name, rowCount: 1000, columnCount: 26, cellData: {} };
         commands.push({
           id: "sheet.command.insert-sheet",
           params: {
             unitId,
             index,
-            sheet: { name: op.name, rowCount: 1000, columnCount: 26 },
+            sheet: added,
           },
         });
-        structural.push({ sheetId: "*", kind: "insertSheet", index, count: 0 });
+        ctx.snapshot.sheets[id] = added;
+        ctx.snapshot.sheetOrder.splice(index, 0, id);
+        structural.push({ sheetId: id, kind: "insertSheet", index, count: 0 });
         break;
       }
       case "sheet.rename": {
@@ -378,6 +406,14 @@ export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
           id: "sheet.command.set-worksheet-name",
           params: { unitId, subUnitId: sheet.id, name: op.name },
         });
+        if (
+          !op.name ||
+          op.name.length > 31 ||
+          /[[\]:*?/\\]/.test(op.name) ||
+          Object.values(ctx.snapshot.sheets).some((s) => s.id !== sheet.id && s.name === op.name)
+        )
+          throw new OpCompileError("工作表名称无效或重复");
+        sheet.data.name = op.name;
         structural.push({ sheetId: sheet.id, kind: "renameSheet", index: 0, count: 0 });
         break;
       }

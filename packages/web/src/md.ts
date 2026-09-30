@@ -1,68 +1,64 @@
-// Markdown → 受信 HTML：marked 解析后按标签白名单消毒（不带 dompurify，避免 MPL 依赖）。
+// Markdown → DOMPurify 消毒 → 区域引用 → 最终消毒。
 
 import { parseRange } from "@excelmanus/core";
+import DOMPurify, { type Config } from "dompurify";
 import { marked } from "marked";
 
 marked.setOptions({ breaks: true, gfm: true });
 
-const ALLOWED_TAGS = new Set([
-  "P",
-  "BR",
-  "STRONG",
-  "EM",
-  "B",
-  "I",
-  "U",
-  "S",
-  "DEL",
-  "H1",
-  "H2",
-  "H3",
-  "H4",
-  "H5",
-  "H6",
-  "UL",
-  "OL",
-  "LI",
-  "BLOCKQUOTE",
-  "PRE",
-  "CODE",
-  "HR",
-  "TABLE",
-  "THEAD",
-  "TBODY",
-  "TR",
-  "TH",
-  "TD",
-  "A",
-  "SPAN",
-]);
+const SANITIZE_CONFIG: Config = {
+  ALLOWED_TAGS: [
+    "P",
+    "BR",
+    "STRONG",
+    "EM",
+    "B",
+    "I",
+    "U",
+    "S",
+    "DEL",
+    "H1",
+    "H2",
+    "H3",
+    "H4",
+    "H5",
+    "H6",
+    "UL",
+    "OL",
+    "LI",
+    "BLOCKQUOTE",
+    "PRE",
+    "CODE",
+    "HR",
+    "TABLE",
+    "THEAD",
+    "TBODY",
+    "TR",
+    "TH",
+    "TD",
+    "A",
+    "SPAN",
+  ],
+  ALLOWED_ATTR: ["href", "class"],
+  ALLOW_DATA_ATTR: false,
+  ALLOW_ARIA_ATTR: false,
+  ALLOWED_URI_REGEXP: /^(?:https?:|#|\.?\/)/i,
+};
+
+DOMPurify.addHook("uponSanitizeAttribute", (node, data) => {
+  if (data.attrName === "class" && !/^language-[\w-]+$/.test(data.attrValue)) {
+    data.keepAttr = false;
+  }
+  if (data.attrName === "href" && node.nodeName !== "A") {
+    data.keepAttr = false;
+  }
+});
 
 function sanitize(html: string): string {
-  const doc = new DOMParser().parseFromString(html, "text/html");
-  const walk = (node: Element | ChildNode): void => {
-    for (const child of [...node.childNodes]) {
-      if (child.nodeType === Node.ELEMENT_NODE) {
-        const el = child as Element;
-        if (!ALLOWED_TAGS.has(el.tagName)) {
-          // 未知标签：只保留纯文本（不保留子元素，避免嵌套的危险元素绕过消毒）
-          el.replaceWith(doc.createTextNode(el.textContent ?? ""));
-          continue;
-        }
-        for (const attr of [...el.attributes]) {
-          const n = attr.name.toLowerCase();
-          const v = attr.value;
-          const ok =
-            el.tagName === "A" && n === "href" && /^https?:|^#|^\.?\//.test(v.trim())
-              ? true
-              : n === "class" && /^language-[\w-]+$/.test(v);
-          if (!ok) el.removeAttribute(attr.name);
-        }
-        walk(el);
-      }
-    }
-  };
-  walk(doc.body);
+  const doc = new DOMParser().parseFromString(
+    DOMPurify.sanitize(html, SANITIZE_CONFIG),
+    "text/html",
+  );
   const linkRanges = (node: Node): void => {
     for (const child of [...node.childNodes]) {
       if (child.nodeType === Node.TEXT_NODE) {
@@ -95,7 +91,7 @@ function sanitize(html: string): string {
     }
   };
   linkRanges(doc.body);
-  return doc.body.innerHTML;
+  return DOMPurify.sanitize(doc.body.innerHTML, SANITIZE_CONFIG);
 }
 
 export function renderMarkdown(text: string): string {

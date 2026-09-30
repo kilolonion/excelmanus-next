@@ -164,6 +164,10 @@ export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () 
     source: string,
     mutations: DocMutation[],
   ) => {
+    if (source.startsWith("external:")) {
+      send(conn, { type: "doc.reload", docId, rev, reason: "external" });
+      return;
+    }
     const costOf = (m: DocMutation) => {
       const ranges = deriveWriteSet(m).ranges;
       let cells = 1;
@@ -210,11 +214,19 @@ export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () 
   };
   const docSvc = opts.docService;
   if (docSvc !== undefined) {
+    docSvc.onCheckpoint = (docId, checkpointRev, error) => {
+      for (const conn of conns.values())
+        if (conn.docSubs.has(`doc:${docId}`))
+          send(conn, { type: "doc.checkpoint", docId, checkpointRev, ...(error ? { error } : {}) });
+    };
     docSvc.onRevision = (docId, rev, source, mutations) =>
       publishDocOp(docId, rev, source, mutations);
   }
   const unsubscribeDoc = () => {
-    if (docSvc !== undefined) docSvc.onRevision = undefined;
+    if (docSvc !== undefined) {
+      docSvc.onRevision = undefined;
+      docSvc.onCheckpoint = undefined;
+    }
   };
 
   const snapshotsFor = (topic: string): SnapshotMsg[] =>

@@ -46,3 +46,16 @@
 - 10 §2 访问纪律：单事务 < 5 ms 满足（实测 p99 ≤ 0.11 ms）。
 - 01 §5.2 可靠性"进程崩溃不丢失已确认的数据"：SIGKILL 实验 500/500，`integrity_check=ok`。
 - 14 §2"真实 SQLite 文件"：契约测试与投影重建测试将使用 `node:sqlite` 打开的真实文件库。
+
+## 修订（2026-09-30）：迁移改为具名 + 旧库探测引导
+
+**原因**：迁移原以 `meta.schema_version`（全局序号）记录已应用条数，且迁移列表是多来源拼接（`[...KERNEL_MIGRATIONS, ...各模块迁移]`）。M3 往 kernel 迁移末尾追加后模块迁移序号整体后移，旧库按旧序号续跑会重执行已应用过的模块建表（`table documents already exists`），阻断启动。
+
+**决定**：
+
+- 迁移改为具名：`Migration { id: string; sql: string }`（如 `kernel/001-base`、`workbook/documents`），`KERNEL_MIGRATIONS`、各 `*_MIGRATION` 常量与 `CapabilityModule.migrations` 统一为该类型。
+- `openDb` 维护 `schema_migrations(id TEXT PRIMARY KEY, applied_at TEXT NOT NULL)`，按声明顺序执行未应用迁移（每条一个事务），执行前照旧备份 `.bak-<n>`（n 为已应用条数）。
+- 库含程序不认识的已应用 id → `SchemaVersionError` 并列出未知 id（保留"库比程序新拒绝启动"）。
+- 旧库引导（存在 `meta.schema_version`、无 `schema_migrations`）：对每条迁移从其 SQL 自动推导对象——`CREATE TABLE/INDEX x` 查 `sqlite_master`、`ALTER TABLE t ADD COLUMN c` 查 `pragma_table_info(t)`；全部已存在 → 记为已应用，全部不存在 → 待执行，部分存在 → 抛错提示数据库不一致（不自动修）。引导完成后删除 `meta.schema_version`。
+
+**后果**：各来源迁移可独立追加、互不挤占序号；引导规则只适配线性追加的迁移历史，不为人工改乱的数据库兜底（部分存在即拒绝）。

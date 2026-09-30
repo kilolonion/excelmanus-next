@@ -337,6 +337,7 @@ export function resolveProfileModel(
     model: row.model,
     ...(row.base_url !== null ? { baseUrl: row.base_url } : {}),
     apiKey,
+    ...(row.context_window !== null ? { contextWindow: row.context_window } : {}),
     ...(row.provider_options !== null
       ? { providerOptions: JSON.parse(row.provider_options) as Record<string, unknown> }
       : {}),
