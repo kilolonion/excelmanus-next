@@ -10,7 +10,15 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "4.0.60",
+    "@ai-sdk/deepseek": "3.0.50",
+    "@ai-sdk/openai": "4.0.72",
+    "@ai-sdk/openai-compatible": "3.0.53",
+    "@ai-sdk/provider": "4.0.17",
+    "@ai-sdk/provider-utils": "5.0.45",
     "@excelmanus/protocol": "workspace:*",
-    "@excelmanus/core": "workspace:*"
+    "@excelmanus/core": "workspace:*",
+    "ai": "7.0.108",
+    "zod": "4.6.5"
   }
 }

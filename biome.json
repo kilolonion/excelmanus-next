@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!**/results/**", "!stitch/**"]
+    "includes": ["**", "!**/results", "!stitch", "!**/test/fixtures"]
   },
   "formatter": {
     "enabled": true,

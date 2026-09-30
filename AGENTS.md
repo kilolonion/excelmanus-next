@@ -37,6 +37,10 @@
 - 每个里程碑（`docs/15-milestones.md`）开始前先做该阶段的 spike，结论写 ADR；spike 失败按文档给出的备选方案切换，并把范围变化写进 ADR。
 - 每个里程碑的退出条件 = `docs/14-quality.md` 中对应门禁与验收场景；逐项在 `docs/acceptance/` 留证据。
 
+## 测试策略（ADR 0006，覆盖 14 §2–§4 的严格条款）
+- 不追求工业级：每个主要能力一条真实边界集成测试（真实 HTTP/WS/SQLite + 假模型）+ 投影重建测试；不做逐端点契约测试、覆盖率、逐转换单测。
+- 纯逻辑只在易错处测（区域运算、reduce、冲突判定）。
+
 ## 命令
 - 安装：`pnpm install`（CI 用 `pnpm install --frozen-lockfile`）
 - 类型检查：`pnpm typecheck`（根 scripts/test + 每包 `tsc --noEmit`）

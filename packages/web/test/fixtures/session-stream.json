@@ -1,0 +1,313 @@
+[
+  {
+    "type": "rec",
+    "topic": "session:ses_TAFCRHqQYaO0",
+    "seq": 1,
+    "record": {
+      "seq": 1,
+      "sessionId": "ses_TAFCRHqQYaO0",
+      "agentId": null,
+      "type": "session.created",
+      "data": {
+        "workspaceId": "wks_ZF12m_X97Iqk",
+        "title": null,
+        "permissionMode": "standard"
+      },
+      "createdAt": "2026-09-30T00:09:52.283Z"
+    }
+  },
+  {
+    "type": "rec",
+    "topic": "session:ses_TAFCRHqQYaO0",
+    "seq": 2,
+    "record": {
+      "seq": 2,
+      "sessionId": "ses_TAFCRHqQYaO0",
+      "agentId": "main",
+      "type": "agent.spawned",
+      "data": {
+        "role": "main",
+        "name": "主代理",
+        "modelProfileId": "mp_PNLp2Oo30SlM",
+        "systemPrompt": "你是 ExcelManus，一个帮用户处理电子表格与文件的助手。\n\n通用原则：\n- 先观察再修改：动手前先确认当前内容与结构，不凭猜测操作。\n- 写入基于读过的内容；发生冲突时重新读取后再决定。\n- 如实报告结果与限制，不确定时先询问用户，不编造。\n- 回答用简体中文，简洁、直接给结论。\n\n权限说明：当前权限模式为 standard。读取自动放行；删除与调用外部服务需要用户批准。\n\n工作区：默认工作区（今天是 2026-09-30）。"
+      },
+      "createdAt": "2026-09-30T00:09:52.283Z"
+    }
+  },
+  {
+    "type": "rec",
+    "topic": "session:ses_TAFCRHqQYaO0",
+    "seq": 3,
+    "record": {
+      "seq": 3,
+      "sessionId": "ses_TAFCRHqQYaO0",
+      "agentId": "main",
+      "type": "user.message",
+      "data": {
+        "dispatchId": "dsp_Jx4qFsVad969",
+        "clientMessageId": "wb1",
+        "text": "这个工作簿里有什么",
+        "mode": "queue",
+        "context": [
+          {
+            "docId": "doc_d4_r2mhG1vpO",
+            "rev": 0,
+            "range": "销售!A1:F3"
+          }
+        ]
+      },
+      "createdAt": "2026-09-30T00:09:52.309Z"
+    }
+  },
+  {
+    "type": "rec",
+    "topic": "session:ses_TAFCRHqQYaO0",
+    "seq": 4,
+    "record": {
+      "seq": 4,
+      "sessionId": "ses_TAFCRHqQYaO0",
+      "agentId": "main",
+      "type": "dispatch.updated",
+      "data": {
+        "dispatchId": "dsp_Jx4qFsVad969",
+        "status": "accepted"
+      },
+      "createdAt": "2026-09-30T00:09:52.309Z"
+    }
+  },
+  {
+    "type": "rec",
+    "topic": "session:ses_TAFCRHqQYaO0",
+    "seq": 5,
+    "record": {
+      "seq": 5,
+      "sessionId": "ses_TAFCRHqQYaO0",
+      "agentId": "main",
+      "type": "dispatch.updated",
+      "data": {
+        "dispatchId": "dsp_Jx4qFsVad969",
+        "status": "applied"
+      },
+      "createdAt": "2026-09-30T00:09:52.309Z"
+    }
+  },
+  {
+    "type": "rec",
+    "topic": "session:ses_TAFCRHqQYaO0",
+    "seq": 6,
+    "record": {
+      "seq": 6,
+      "sessionId": "ses_TAFCRHqQYaO0",
+      "agentId": "main",
+      "type": "turn.started",
+      "data": {
+        "turnId": "trn_ggNBLikhlTss"
+      },
+      "createdAt": "2026-09-30T00:09:52.309Z"
+    }
+  },
+  {
+    "type": "rec",
+    "topic": "session:ses_TAFCRHqQYaO0",
+    "seq": 7,
+    "record": {
+      "seq": 7,
+      "sessionId": "ses_TAFCRHqQYaO0",
+      "agentId": "main",
+      "type": "step.started",
+      "data": {
+        "turnId": "trn_ggNBLikhlTss",
+        "stepId": "stp_ElEaUKfwtfeM",
+        "step": 1,
+        "model": "custom-openai-compatible/mock-wb"
+      },
+      "createdAt": "2026-09-30T00:09:52.310Z"
+    }
+  },
+  {
+    "type": "rec",
+    "topic": "session:ses_TAFCRHqQYaO0",
+    "seq": 8,
+    "record": {
+      "seq": 8,
+      "sessionId": "ses_TAFCRHqQYaO0",
+      "agentId": "main",
+      "type": "model.output",
+      "data": {
+        "stepId": "stp_ElEaUKfwtfeM",
+        "toolCalls": [
+          {
+            "id": "tw1",
+            "name": "workbook_read",
+            "args": {
+              "path": "sales.xlsx",
+              "mode": "overview"
+            }
+          }
+        ]
+      },
+      "createdAt": "2026-09-30T00:09:52.311Z"
+    }
+  },
+  {
+    "type": "rec",
+    "topic": "session:ses_TAFCRHqQYaO0",
+    "seq": 9,
+    "record": {
+      "seq": 9,
+      "sessionId": "ses_TAFCRHqQYaO0",
+      "agentId": "main",
+      "type": "tool.intent",
+      "data": {
+        "stepId": "stp_ElEaUKfwtfeM",
+        "toolCallId": "tw1",
+        "toolName": "workbook_read",
+        "args": {
+          "path": "sales.xlsx",
+          "mode": "overview"
+        },
+        "targets": [
+          "sales.xlsx"
+        ],
+        "replay": "safe"
+      },
+      "createdAt": "2026-09-30T00:09:52.312Z"
+    }
+  },
+  {
+    "type": "rec",
+    "topic": "session:ses_TAFCRHqQYaO0",
+    "seq": 10,
+    "record": {
+      "seq": 10,
+      "sessionId": "ses_TAFCRHqQYaO0",
+      "agentId": "main",
+      "type": "tool.result",
+      "data": {
+        "toolCallId": "tw1",
+        "toolName": "workbook_read",
+        "status": "ok",
+        "result": {
+          "status": "ok",
+          "data": {
+            "docId": "doc_d4_r2mhG1vpO",
+            "path": "sales.xlsx",
+            "docRevs": {
+              "doc_d4_r2mhG1vpO": 0
+            },
+            "mode": "overview",
+            "name": "sales.xlsx",
+            "sheets": [
+              {
+                "id": "s0",
+                "name": "销售",
+                "rows": 52,
+                "cols": 6,
+                "cells": 307,
+                "formulas": 50,
+                "hidden": false
+              },
+              {
+                "id": "s1",
+                "name": "参数",
+                "rows": 2,
+                "cols": 2,
+                "cells": 4,
+                "formulas": 0,
+                "hidden": true
+              }
+            ],
+            "unsupported": {}
+          }
+        }
+      },
+      "createdAt": "2026-09-30T00:09:52.316Z"
+    }
+  },
+  {
+    "type": "rec",
+    "topic": "session:ses_TAFCRHqQYaO0",
+    "seq": 11,
+    "record": {
+      "seq": 11,
+      "sessionId": "ses_TAFCRHqQYaO0",
+      "agentId": "main",
+      "type": "step.started",
+      "data": {
+        "turnId": "trn_ggNBLikhlTss",
+        "stepId": "stp_JFM0MBf1I7IL",
+        "step": 2,
+        "model": "custom-openai-compatible/mock-wb"
+      },
+      "createdAt": "2026-09-30T00:09:52.317Z"
+    }
+  },
+  {
+    "type": "delta",
+    "topic": "session:ses_TAFCRHqQYaO0",
+    "agentId": "main",
+    "stepId": "stp_JFM0MBf1I7IL",
+    "part": 1,
+    "kind": "text",
+    "payload": "工作簿已读取。"
+  },
+  {
+    "type": "rec",
+    "topic": "session:ses_TAFCRHqQYaO0",
+    "seq": 12,
+    "record": {
+      "seq": 12,
+      "sessionId": "ses_TAFCRHqQYaO0",
+      "agentId": "main",
+      "type": "model.output",
+      "data": {
+        "stepId": "stp_JFM0MBf1I7IL",
+        "text": "工作簿已读取。"
+      },
+      "createdAt": "2026-09-30T00:09:52.322Z"
+    }
+  },
+  {
+    "type": "rec",
+    "topic": "session:ses_TAFCRHqQYaO0",
+    "seq": 13,
+    "record": {
+      "seq": 13,
+      "sessionId": "ses_TAFCRHqQYaO0",
+      "agentId": "main",
+      "type": "turn.completed",
+      "data": {
+        "turnId": "trn_ggNBLikhlTss",
+        "reason": "stop",
+        "usage": {
+          "inputTokens": 10,
+          "outputTokens": 5,
+          "reasoningTokens": 0,
+          "totalTokens": 15
+        }
+      },
+      "createdAt": "2026-09-30T00:09:52.322Z"
+    }
+  },
+  {
+    "type": "rec",
+    "topic": "session:ses_TAFCRHqQYaO0",
+    "seq": 14,
+    "record": {
+      "seq": 14,
+      "sessionId": "ses_TAFCRHqQYaO0",
+      "agentId": "main",
+      "type": "usage.updated",
+      "data": {
+        "turnId": "trn_ggNBLikhlTss",
+        "usage": {
+          "inputTokens": 10,
+          "outputTokens": 5,
+          "reasoningTokens": 0,
+          "totalTokens": 15
+        }
+      },
+      "createdAt": "2026-09-30T00:09:52.322Z"
+    }
+  }
+]

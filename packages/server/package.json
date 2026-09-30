@@ -22,6 +22,15 @@
     "@excelmanus/rules": "workspace:*",
     "@excelmanus/skills": "workspace:*",
     "@excelmanus/mcp": "workspace:*",
-    "@excelmanus/web": "workspace:*"
+    "@excelmanus/web": "workspace:*",
+    "@hono/node-server": "2.1.1",
+    "hono": "4.13.8",
+    "ws": "8.21.3",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@ai-sdk/provider": "4.0.17",
+    "@types/ws": "8.18.1",
+    "ai": "7.0.108"
   }
 }

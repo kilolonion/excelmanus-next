@@ -1,0 +1,446 @@
+/* Studio Minimal Editorial 风格（stitch 参考），普通 CSS + 变量，无 Tailwind。 */
+
+:root {
+  --surface: #f9f9f8;
+  --surface-low: #f4f4f3;
+  --surface-card: #ffffff;
+  --surface-high: #e8e8e7;
+  --text: #1a1c1c;
+  --text-variant: #4d4540;
+  --outline: #d0c4be;
+  --primary: #000000;
+  --on-primary: #ffffff;
+  --accent: #4b41e1;
+  --error: #ba1a1a;
+  --error-container: #ffdad6;
+  --warn-container: #f4e8c8;
+  --radius: 10px;
+  font-family: "Plus Jakarta Sans", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+body {
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+}
+button {
+  font: inherit;
+}
+pre,
+code,
+textarea {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+.fatal {
+  display: flex;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-variant);
+  padding: 40px;
+  text-align: center;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 230px 1fr 44%;
+  height: 100vh;
+}
+.sidebar {
+  border-right: 1px solid var(--surface-high);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-low);
+  padding: 14px 10px;
+}
+.brand {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  padding: 4px 8px 14px;
+}
+.main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.workbench {
+  border-left: 1px solid var(--surface-high);
+  background: var(--surface-low);
+  display: flex;
+}
+
+.row-between {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-variant);
+  letter-spacing: 0.04em;
+}
+.muted {
+  color: var(--text-variant);
+}
+.small {
+  font-size: 12px;
+}
+
+.btn {
+  border: 1px solid var(--surface-high);
+  background: var(--surface-card);
+  border-radius: var(--radius);
+  padding: 6px 12px;
+  cursor: pointer;
+}
+.btn:hover {
+  background: var(--surface);
+}
+.btn.primary {
+  background: var(--primary);
+  color: var(--on-primary);
+  border-color: var(--primary);
+}
+.btn.ghost {
+  border-color: transparent;
+  background: transparent;
+}
+.btn.ghost:hover {
+  background: var(--surface-high);
+}
+.btn.danger {
+  color: var(--error);
+}
+.btn.small {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+.session-list {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.session-items {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 0;
+}
+.session-item {
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius);
+  padding: 2px 4px;
+}
+.session-item.active {
+  background: var(--surface-card);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+.session-name {
+  flex: 1;
+  text-align: left;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar-footer {
+  padding-top: 10px;
+}
+
+.notice {
+  padding: 8px 14px;
+  background: var(--warn-container);
+  font-size: 13px;
+}
+.notice.muted {
+  background: var(--surface-high);
+}
+.notice.error {
+  background: var(--error-container);
+  color: var(--error);
+}
+.notice.warn {
+  background: var(--warn-container);
+}
+
+.chat {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.chat-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.msg {
+  max-width: 82%;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  line-height: 1.65;
+}
+.msg.user {
+  align-self: flex-end;
+  background: var(--primary);
+  color: var(--on-primary);
+}
+.msg.assistant {
+  align-self: flex-start;
+  background: var(--surface-card);
+  border: 1px solid var(--surface-high);
+}
+
+.md p {
+  margin: 0 0 8px;
+}
+
+.msg.user .md p {
+  margin: 0;
+}
+.md pre {
+  background: var(--surface-low);
+  padding: 10px;
+  border-radius: 8px;
+  overflow-x: auto;
+}
+.md code {
+  font-size: 12.5px;
+}
+.md table {
+  border-collapse: collapse;
+}
+.md th,
+.md td {
+  border: 1px solid var(--outline);
+  padding: 4px 10px;
+  font-size: 13px;
+}
+
+.tool-card {
+  align-self: flex-start;
+  max-width: 82%;
+  background: var(--surface-card);
+  border: 1px solid var(--surface-high);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  font-size: 12.5px;
+}
+.tool-card.error {
+  border-left-color: var(--error);
+}
+.tool-card.ok {
+  border-left-color: #069669;
+}
+.tool-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.tool-name {
+  font-weight: 600;
+}
+.badge {
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 99px;
+  background: var(--surface-high);
+}
+.badge.ok {
+  background: #d3f5e7;
+  color: #005137;
+}
+.badge.error {
+  background: var(--error-container);
+  color: var(--error);
+}
+.tool-args,
+.tool-result {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  background: var(--surface-low);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 140px;
+  overflow: auto;
+}
+.reasoning {
+  align-self: flex-start;
+  max-width: 82%;
+  font-size: 12.5px;
+  color: var(--text-variant);
+}
+.reasoning summary {
+  cursor: pointer;
+}
+.reasoning pre {
+  white-space: pre-wrap;
+  background: var(--surface-low);
+  padding: 8px;
+  border-radius: 8px;
+}
+
+.composer {
+  display: flex;
+  gap: 8px;
+  padding: 12px 22px;
+  border-top: 1px solid var(--surface-high);
+  background: var(--surface-card);
+}
+.composer textarea {
+  flex: 1;
+  resize: none;
+  border: 1px solid var(--surface-high);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  font-size: 14px;
+  background: var(--surface);
+  color: var(--text);
+}
+.composer textarea:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.workbench-inner {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 14px 10px;
+  gap: 8px;
+}
+.file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.file-item {
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 13px;
+}
+.file-item:hover:not(:disabled) {
+  background: var(--surface-high);
+}
+.file-item.active {
+  background: var(--surface-card);
+  font-weight: 600;
+}
+.file-item:disabled {
+  color: var(--text-variant);
+  cursor: default;
+}
+.doc-area {
+  flex: 1;
+  min-height: 0;
+  background: var(--surface-card);
+  border: 1px solid var(--surface-high);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.doc-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 20px;
+  text-align: center;
+}
+.univer-host {
+  height: 100%;
+  width: 100%;
+}
+.selection-bar {
+  padding: 4px 6px;
+}
+
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.modal {
+  background: var(--surface-card);
+  border-radius: 14px;
+  padding: 20px;
+  width: 520px;
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+}
+.modal h3 {
+  margin: 0;
+}
+.modal h4 {
+  margin: 18px 0 8px;
+}
+.profile-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+.profile-item {
+  border: 1px solid var(--surface-high);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+.profile-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.profile-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.profile-form input,
+.profile-form select {
+  border: 1px solid var(--surface-high);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  background: var(--surface);
+  font-size: 13px;
+}
+.profile-form .btn {
+  grid-column: 1 / -1;
+}

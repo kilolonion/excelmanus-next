@@ -10,10 +10,15 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@excelmanus/core": "workspace:*",
     "@excelmanus/kernel": "workspace:*",
     "@excelmanus/protocol": "workspace:*",
-    "@excelmanus/core": "workspace:*",
-    "@excelmanus/models": "workspace:*",
-    "@excelmanus/sandbox": "workspace:*"
+    "fast-xml-parser": "5.11.1",
+    "fflate": "0.8.3",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@univerjs/core": "1.0.2",
+    "iconv-lite": "0.7.3"
   }
 }

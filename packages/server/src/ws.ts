@@ -1,0 +1,333 @@
+// 同步通道（11 §3）：一次性 30s 票据、hello、sub/unsub、游标续传、
+// rec/delta/snapshot 推送、心跳。doc:* 主题 M1 只回 sub.error。
+
+import { randomUUID } from "node:crypto";
+import type { IncomingMessage, Server } from "node:http";
+import type { Duplex } from "node:stream";
+import { setImmediate as yieldLoop } from "node:timers/promises";
+import type { SessionLog, SyncBus } from "@excelmanus/kernel";
+import type { LogRecord, ServerMessage, SnapshotMsg } from "@excelmanus/protocol";
+import { ClientMessage, protocolVersion } from "@excelmanus/protocol";
+import { type WebSocket, WebSocketServer } from "ws";
+import { sha256 } from "./store.ts";
+
+const PAGE_SIZE = 500;
+const MAX_BUFFERED = 4 * 1024 * 1024;
+
+interface Sub {
+  topic: string;
+  sessionId: string;
+  live: boolean;
+  lastSent: number;
+  buffer: { seq: number; rec: LogRecord }[];
+}
+
+interface Conn {
+  id: string;
+  ws: WebSocket;
+  subs: Map<string, Sub>;
+  isAppSub: boolean;
+  idleTimer: NodeJS.Timeout;
+}
+
+interface StreamState {
+  topic: string;
+  agentId: string;
+  stepId: string;
+  text: string;
+  reasoning: string;
+  toolArgs: string;
+}
+
+export interface SyncChannelOptions {
+  log: SessionLog;
+  bus: SyncBus;
+  /** sha256(ticket) → expiresAtMs；一次性，取出即删。 */
+  tickets: Map<string, number>;
+  heartbeatMs?: number;
+  heartbeatTimeoutMs?: number;
+  emit?: (event: string, fields: Record<string, string | number | boolean>) => void;
+  /** 允许的 Host/Origin（随端口确定后调用）。 */
+  allowedHosts(): Set<string>;
+  allowedOrigins(): Set<string>;
+}
+
+export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () => void {
+  const emit = opts.emit ?? (() => {});
+  const heartbeatMs = opts.heartbeatMs ?? 20_000;
+  const heartbeatTimeoutMs = opts.heartbeatTimeoutMs ?? 40_000;
+  const conns = new Map<string, Conn>();
+  const streams = new Map<string, StreamState>();
+  const streamKey = (topic: string, agentId: string, stepId: string) =>
+    `${topic}${agentId}${stepId}`;
+
+  const send = (conn: Conn, msg: ServerMessage) => {
+    if (conn.ws.readyState !== conn.ws.OPEN) return;
+    conn.ws.send(JSON.stringify(msg));
+  };
+
+  const publishRec = (topic: string, rec: LogRecord) => {
+    for (const conn of conns.values()) {
+      const sub = conn.subs.get(topic);
+      if (!sub) continue;
+      if (!sub.live) sub.buffer.push({ seq: rec.seq, rec });
+      else if (rec.seq > sub.lastSent) {
+        sub.lastSent = rec.seq;
+        send(conn, { type: "rec", topic, seq: rec.seq, record: rec });
+      }
+    }
+    // 流式状态收尾：模型输出落库/尝试作废后，该 stepId 不再有 delta
+    const stepId = rec.data.stepId;
+    if (
+      (rec.type === "model.output" || rec.type === "attempt.discarded") &&
+      typeof stepId === "string" &&
+      rec.agentId
+    ) {
+      streams.delete(streamKey(topic, rec.agentId, stepId));
+    }
+  };
+
+  const publishDelta = (ev: {
+    sessionId: string;
+    agentId: string;
+    stepId: string;
+    part: number;
+    deltaKind: string;
+    payload: unknown;
+  }) => {
+    const topic = `session:${ev.sessionId}`;
+    const key = streamKey(topic, ev.agentId, ev.stepId);
+    const s = streams.get(key) ?? {
+      topic,
+      agentId: ev.agentId,
+      stepId: ev.stepId,
+      text: "",
+      reasoning: "",
+      toolArgs: "",
+    };
+    const piece = typeof ev.payload === "string" ? ev.payload : "";
+    if (ev.deltaKind === "text") s.text += piece;
+    else if (ev.deltaKind === "reasoning") s.reasoning += piece;
+    else if (ev.deltaKind === "tool_args") s.toolArgs += piece;
+    streams.set(key, s);
+    for (const conn of conns.values()) {
+      const sub = conn.subs.get(topic);
+      // 补发期间丢弃 delta：补发结束时的 snapshot 已包含它们
+      if (sub?.live) {
+        send(conn, {
+          type: "delta",
+          topic,
+          agentId: ev.agentId,
+          stepId: ev.stepId,
+          part: ev.part,
+          kind: ev.deltaKind as "text",
+          payload: ev.payload,
+        });
+      }
+    }
+  };
+
+  const publishApp = (data: { type: string } & Record<string, unknown>) => {
+    for (const conn of conns.values()) {
+      if (conn.isAppSub) send(conn, { type: "app.event", data });
+    }
+  };
+
+  const unsubscribe = opts.bus.subscribe((ev) => {
+    if (ev.kind === "rec") publishRec(`session:${ev.rec.sessionId}`, ev.rec);
+    else if (ev.kind === "delta") publishDelta(ev);
+    else publishApp(ev.data);
+  });
+
+  const snapshotsFor = (topic: string): SnapshotMsg[] =>
+    [...streams.values()].filter((s) => s.topic === topic).map((s) => ({ type: "snapshot", ...s }));
+
+  const waitDrain = async (conn: Conn) => {
+    while (conn.ws.readyState === conn.ws.OPEN && conn.ws.bufferedAmount > MAX_BUFFERED) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+  };
+
+  const subscribe = async (conn: Conn, topic: string, cursor: number | undefined) => {
+    if (topic.startsWith("doc:")) {
+      send(conn, {
+        type: "sub.error",
+        topic,
+        error: { code: "not_implemented", message: "文档主题在 M2 提供" },
+      });
+      return;
+    }
+    if (topic === "app") {
+      conn.isAppSub = true;
+      send(conn, { type: "sub.ok", topic, headCursor: 0, cursor: 0 });
+      return;
+    }
+    const sessionId = topic.slice("session:".length);
+    const head = opts.log.headSeq(sessionId);
+    const sub: Sub = {
+      topic,
+      sessionId,
+      live: false,
+      lastSent: cursor ?? head,
+      buffer: [],
+    };
+    conn.subs.set(topic, sub);
+    send(conn, { type: "sub.ok", topic, headCursor: head, cursor: sub.lastSent });
+    let sent = 0;
+    if (cursor !== undefined) {
+      for (;;) {
+        const rows = opts.log.readAfter(sessionId, sub.lastSent, PAGE_SIZE);
+        for (const rec of rows) send(conn, { type: "rec", topic, seq: rec.seq, record: rec });
+        sent += rows.length;
+        if (rows.length > 0) sub.lastSent = (rows[rows.length - 1] as LogRecord).seq;
+        if (rows.length < PAGE_SIZE) break;
+        await yieldLoop();
+        await waitDrain(conn);
+        if (conn.subs.get(topic) !== sub || !conns.has(conn.id)) return;
+      }
+    }
+    for (const m of sub.buffer) {
+      if (m.seq > sub.lastSent) {
+        sub.lastSent = m.seq;
+        send(conn, { type: "rec", topic, seq: m.seq, record: m.rec });
+      }
+    }
+    sub.buffer = [];
+    for (const snap of snapshotsFor(topic)) send(conn, snap);
+    sub.live = true;
+    emit("sub.live", { connectionId: conn.id, topic, caughtUp: sent });
+  };
+
+  const onMessage = (conn: Conn, data: string) => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(data);
+    } catch {
+      send(conn, { type: "error", error: { code: "bad_message", message: "消息不是 JSON" } });
+      return;
+    }
+    const r = ClientMessage.safeParse(parsed);
+    if (!r.success) {
+      send(conn, { type: "error", error: { code: "bad_message", message: "消息不符合协议" } });
+      emit("ws.bad_message", { connectionId: conn.id });
+      return;
+    }
+    const msg = r.data;
+    switch (msg.type) {
+      case "ping":
+        send(conn, { type: "pong" });
+        break;
+      case "pong":
+        break;
+      case "unsub":
+        if (msg.topic === "app") conn.isAppSub = false;
+        conn.subs.delete(msg.topic);
+        break;
+      case "sub":
+        subscribe(conn, msg.topic, msg.cursor).catch((err: unknown) => {
+          emit("sub.failed", { connectionId: conn.id, name: (err as Error).name });
+          send(conn, {
+            type: "sub.error",
+            topic: msg.topic,
+            error: { code: "internal", message: "订阅失败" },
+          });
+        });
+        break;
+      default:
+        // doc.submit / presence：类型已定义，M1 不实现
+        send(conn, {
+          type: "error",
+          error: { code: "not_implemented", message: `${msg.type} 尚未实现` },
+        });
+        break;
+    }
+  };
+
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
+
+  const rejectUpgrade = (socket: Duplex, status: number, reason: string, code: string) => {
+    const body = JSON.stringify({ error: { code, message: reason, requestId: randomUUID() } });
+    socket.once("finish", () => socket.destroy());
+    socket.end(
+      `HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
+    );
+  };
+
+  const onUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+    socket.on("error", () => socket.destroy());
+    const url = new URL(req.url ?? "/", "http://placeholder");
+    if (!opts.allowedHosts().has(req.headers.host ?? "")) {
+      emit("upgrade.rejected", { reason: "host" });
+      return rejectUpgrade(socket, 403, "Forbidden", "forbidden_host");
+    }
+    const origin = req.headers.origin;
+    if (origin !== undefined && !opts.allowedOrigins().has(origin)) {
+      emit("upgrade.rejected", { reason: "origin" });
+      return rejectUpgrade(socket, 403, "Forbidden", "forbidden_origin");
+    }
+    if (url.pathname !== "/api/v1/sync") {
+      emit("upgrade.rejected", { reason: "path" });
+      return rejectUpgrade(socket, 404, "Not Found", "not_found");
+    }
+    const ticket = url.searchParams.get("ticket") ?? "";
+    const key = sha256(ticket);
+    const expires = opts.tickets.get(key);
+    opts.tickets.delete(key);
+    if (!ticket || expires === undefined || expires < Date.now()) {
+      emit("upgrade.rejected", {
+        reason: expires === undefined ? "ticket_unknown" : "ticket_expired",
+      });
+      return rejectUpgrade(socket, 401, "Unauthorized", "invalid_ticket");
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      const conn: Conn = {
+        id: randomUUID(),
+        ws,
+        subs: new Map(),
+        isAppSub: false,
+        idleTimer: setTimeout(() => {}, 0),
+      };
+      const armIdle = () => {
+        clearTimeout(conn.idleTimer);
+        conn.idleTimer = setTimeout(() => {
+          emit("ws.timeout", { connectionId: conn.id });
+          ws.terminate();
+        }, heartbeatTimeoutMs);
+      };
+      armIdle();
+      const pinger = setInterval(() => send(conn, { type: "ping" }), heartbeatMs);
+      conns.set(conn.id, conn);
+      emit("ws.open", { connectionId: conn.id });
+      ws.on("message", (data, isBinary) => {
+        armIdle();
+        if (isBinary) {
+          send(conn, { type: "error", error: { code: "bad_message", message: "不支持二进制帧" } });
+          return;
+        }
+        onMessage(conn, data.toString());
+      });
+      ws.on("error", () => ws.terminate());
+      ws.on("close", (code) => {
+        clearTimeout(conn.idleTimer);
+        clearInterval(pinger);
+        conns.delete(conn.id);
+        emit("ws.close", { connectionId: conn.id, code });
+      });
+      send(conn, {
+        type: "hello",
+        protocolVersion,
+        connectionId: conn.id,
+        serverTime: new Date().toISOString(),
+      });
+    });
+  };
+
+  server.on("upgrade", onUpgrade);
+
+  return () => {
+    server.off("upgrade", onUpgrade);
+    unsubscribe();
+    for (const c of conns.values()) c.ws.terminate();
+    wss.close();
+  };
+}

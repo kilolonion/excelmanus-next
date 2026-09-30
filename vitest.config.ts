@@ -18,6 +18,8 @@ export default defineConfig({
           name: root.replace(/^packages\//, "").replaceAll("/", "-"),
           root,
           include: ["test/**/*.test.ts"],
+          // 占位包暂无测试文件时整个 vitest run 不应失败（ADR 0006：少而真实）
+          passWithNoTests: true,
         },
       })),
       {
