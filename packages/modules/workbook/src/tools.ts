@@ -3,11 +3,12 @@
 // 与 profile（列画像）。结果统一带 docRevs；上限 2000 格 / 16000 字符，截断给游标。
 
 import { DatabaseSync } from "node:sqlite";
-import { formatRange, indexToCol, parseRange } from "@excelmanus/core";
+import { formatRange, indexToCol, parseRange, type RangeRef } from "@excelmanus/core";
 import type { ToolContext, ToolDefinition } from "@excelmanus/kernel";
 import type { ToolResult } from "@excelmanus/protocol";
 import type { ICellData, IWorksheetData } from "@univerjs/core";
 import { z } from "zod";
+import { workbookEditTool } from "./edit.ts";
 import { DocNotFoundError, type DocumentService } from "./service.ts";
 
 const MAX_CELLS = 2000;
@@ -27,29 +28,35 @@ interface DocRef {
   sheet(idOrName: string | undefined): IWorksheetData;
 }
 
-function openDoc(svc: DocumentService, ctx: ToolContext, docId?: string, path?: string): DocRef {
+async function openDoc(
+  svc: DocumentService,
+  ctx: ToolContext,
+  docId?: string,
+  path?: string,
+): Promise<DocRef> {
   let id: string;
   if (docId !== undefined) {
-    id = svc.entry(docId, ctx.workspaceRoot).meta.id;
+    id = (await svc.entry(docId, ctx.workspaceRoot)).meta.id;
   } else if (path !== undefined) {
-    id = svc.open(ctx.workspaceId, ctx.workspaceRoot, path).meta.id;
+    id = (await svc.open(ctx.workspaceId, ctx.workspaceRoot, path)).meta.id;
   } else {
     throw new Error("缺少 docId 或 path");
   }
-  const { meta, snapshot } = svc.snapshot(id, ctx.workspaceRoot);
+  const { meta, snapshot } = await svc.snapshot(id, ctx.workspaceRoot);
   const sheets = snapshot.sheets as Record<string, IWorksheetData>;
+  const sheetOrder = snapshot.sheetOrder;
   return {
     docId: meta.id,
     path: meta.path,
     rev: meta.rev,
     name: snapshot.name,
-    sheetOrder: snapshot.sheetOrder,
+    sheetOrder,
     sheets,
     sheet(idOrName) {
       const s =
         idOrName !== undefined
           ? Object.values(sheets).find((x) => x.id === idOrName || x.name === idOrName)
-          : sheets[this.sheetOrder[0] ?? ""];
+          : sheets[sheetOrder[0] ?? ""];
       if (!s) throw new Error(`工作表不存在：${idOrName ?? "(默认)"}`);
       return s;
     },
@@ -62,6 +69,7 @@ const docRevsOf = (docId: string, rev: number) => ({ docRevs: { [docId]: rev } }
 
 interface Region {
   sheet: IWorksheetData;
+  sheetId: string;
   sheetName: string;
   /** 0 基闭区间。 */
   r0: number;
@@ -76,6 +84,7 @@ function resolveRegion(doc: DocRef, sheetName: string | undefined, range: string
   const name = sheet.name ?? parsed.sheet ?? "Sheet1";
   return {
     sheet,
+    sheetId: sheet.id ?? name,
     sheetName: name,
     r0: parsed.startRow - 1,
     c0: parsed.startCol - 1,
@@ -88,6 +97,7 @@ function wholeSheet(doc: DocRef, sheetName: string | undefined): Region {
   const sheet = doc.sheet(sheetName);
   return {
     sheet,
+    sheetId: sheet.id ?? sheet.name ?? "Sheet1",
     sheetName: sheet.name ?? "Sheet1",
     r0: 0,
     c0: 0,
@@ -371,10 +381,10 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
     async execute(args, ctx): Promise<ToolResult> {
       const a = readInput.parse(args);
       try {
-        const doc = openDoc(svc, ctx, a.docId, a.path);
+        const doc = await openDoc(svc, ctx, a.docId, a.path);
         const base = { docId: doc.docId, path: doc.path, ...docRevsOf(doc.docId, doc.rev) };
         if (a.mode === "overview") {
-          const e = svc.entry(doc.docId, ctx.workspaceRoot);
+          const e = await svc.entry(doc.docId, ctx.workspaceRoot);
           return {
             status: "ok",
             data: {
@@ -403,6 +413,20 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
           const region = resolveRegion(doc, a.sheet, a.range);
           const facets = a.facets ?? ["values"];
           const { out, consumedRows, truncated } = readRegion(region, facets, a.offset ?? 0);
+          // 记录读集：range 模式记入所读区域（03 §6.1，截断的也算读过）
+          ctx.reads.record(
+            doc.docId,
+            [
+              {
+                sheetId: region.sheetId,
+                r0: region.r0,
+                c0: region.c0,
+                r1: region.r1,
+                c1: region.c1,
+              } satisfies RangeRef,
+            ],
+            doc.rev,
+          );
           return {
             status: "ok",
             data: {
@@ -422,9 +446,28 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
             },
           };
         }
-        // search
+        // search：命中单元格记入读集
         if (a.query === undefined || a.query === "") throw new Error("search 模式需要 query");
         const { matches, truncated } = searchDoc(doc, a.query);
+        if (matches.length > 0) {
+          const ranges: RangeRef[] = [];
+          for (const m of matches) {
+            try {
+              const p = parseRange(String(m.ref));
+              const sheet = doc.sheet(p.sheet);
+              ranges.push({
+                sheetId: sheet.id ?? p.sheet ?? "",
+                r0: p.startRow - 1,
+                c0: p.startCol - 1,
+                r1: p.endRow - 1,
+                c1: p.endCol - 1,
+              });
+            } catch {
+              // 单个引用解析失败不影响其他命中
+            }
+          }
+          if (ranges.length > 0) ctx.reads.record(doc.docId, ranges, doc.rev);
+        }
         return {
           status: "ok",
           data: { ...base, mode: "search", query: a.query, matches, truncated },
@@ -464,7 +507,7 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
     async execute(args, ctx): Promise<ToolResult> {
       const a = analyzeInput.parse(args);
       try {
-        const doc = openDoc(svc, ctx, a.docId, a.path);
+        const doc = await openDoc(svc, ctx, a.docId, a.path);
         const base = { docId: doc.docId, path: doc.path, ...docRevsOf(doc.docId, doc.rev) };
         if (a.mode === "sql") {
           if (a.sql === undefined) throw new Error("sql 模式需要 sql 参数");
@@ -525,5 +568,5 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
     },
   };
 
-  return [workbookRead, workbookAnalyze];
+  return [workbookRead, workbookAnalyze, workbookEditTool(svc)];
 }

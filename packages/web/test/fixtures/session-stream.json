@@ -1,140 +1,140 @@
 [
   {
     "type": "rec",
-    "topic": "session:ses_TAFCRHqQYaO0",
+    "topic": "session:ses_HhsLVtX-XOl3",
     "seq": 1,
     "record": {
       "seq": 1,
-      "sessionId": "ses_TAFCRHqQYaO0",
+      "sessionId": "ses_HhsLVtX-XOl3",
       "agentId": null,
       "type": "session.created",
       "data": {
-        "workspaceId": "wks_ZF12m_X97Iqk",
+        "workspaceId": "wks_ME5h5sDnt3tF",
         "title": null,
         "permissionMode": "standard"
       },
-      "createdAt": "2026-09-30T00:09:52.283Z"
+      "createdAt": "2026-09-30T01:59:39.466Z"
     }
   },
   {
     "type": "rec",
-    "topic": "session:ses_TAFCRHqQYaO0",
+    "topic": "session:ses_HhsLVtX-XOl3",
     "seq": 2,
     "record": {
       "seq": 2,
-      "sessionId": "ses_TAFCRHqQYaO0",
+      "sessionId": "ses_HhsLVtX-XOl3",
       "agentId": "main",
       "type": "agent.spawned",
       "data": {
         "role": "main",
         "name": "主代理",
-        "modelProfileId": "mp_PNLp2Oo30SlM",
+        "modelProfileId": "mp_aeVx5z1TXVw1",
         "systemPrompt": "你是 ExcelManus，一个帮用户处理电子表格与文件的助手。\n\n通用原则：\n- 先观察再修改：动手前先确认当前内容与结构，不凭猜测操作。\n- 写入基于读过的内容；发生冲突时重新读取后再决定。\n- 如实报告结果与限制，不确定时先询问用户，不编造。\n- 回答用简体中文，简洁、直接给结论。\n\n权限说明：当前权限模式为 standard。读取自动放行；删除与调用外部服务需要用户批准。\n\n工作区：默认工作区（今天是 2026-09-30）。"
       },
-      "createdAt": "2026-09-30T00:09:52.283Z"
+      "createdAt": "2026-09-30T01:59:39.466Z"
     }
   },
   {
     "type": "rec",
-    "topic": "session:ses_TAFCRHqQYaO0",
+    "topic": "session:ses_HhsLVtX-XOl3",
     "seq": 3,
     "record": {
       "seq": 3,
-      "sessionId": "ses_TAFCRHqQYaO0",
+      "sessionId": "ses_HhsLVtX-XOl3",
       "agentId": "main",
       "type": "user.message",
       "data": {
-        "dispatchId": "dsp_Jx4qFsVad969",
+        "dispatchId": "dsp_PiAkk7RZxcKq",
         "clientMessageId": "wb1",
         "text": "这个工作簿里有什么",
         "mode": "queue",
         "context": [
           {
-            "docId": "doc_d4_r2mhG1vpO",
+            "docId": "doc_xxYmesRxBt_Q",
             "rev": 0,
             "range": "销售!A1:F3"
           }
         ]
       },
-      "createdAt": "2026-09-30T00:09:52.309Z"
+      "createdAt": "2026-09-30T01:59:39.537Z"
     }
   },
   {
     "type": "rec",
-    "topic": "session:ses_TAFCRHqQYaO0",
+    "topic": "session:ses_HhsLVtX-XOl3",
     "seq": 4,
     "record": {
       "seq": 4,
-      "sessionId": "ses_TAFCRHqQYaO0",
+      "sessionId": "ses_HhsLVtX-XOl3",
       "agentId": "main",
       "type": "dispatch.updated",
       "data": {
-        "dispatchId": "dsp_Jx4qFsVad969",
+        "dispatchId": "dsp_PiAkk7RZxcKq",
         "status": "accepted"
       },
-      "createdAt": "2026-09-30T00:09:52.309Z"
+      "createdAt": "2026-09-30T01:59:39.537Z"
     }
   },
   {
     "type": "rec",
-    "topic": "session:ses_TAFCRHqQYaO0",
+    "topic": "session:ses_HhsLVtX-XOl3",
     "seq": 5,
     "record": {
       "seq": 5,
-      "sessionId": "ses_TAFCRHqQYaO0",
+      "sessionId": "ses_HhsLVtX-XOl3",
       "agentId": "main",
       "type": "dispatch.updated",
       "data": {
-        "dispatchId": "dsp_Jx4qFsVad969",
+        "dispatchId": "dsp_PiAkk7RZxcKq",
         "status": "applied"
       },
-      "createdAt": "2026-09-30T00:09:52.309Z"
+      "createdAt": "2026-09-30T01:59:39.537Z"
     }
   },
   {
     "type": "rec",
-    "topic": "session:ses_TAFCRHqQYaO0",
+    "topic": "session:ses_HhsLVtX-XOl3",
     "seq": 6,
     "record": {
       "seq": 6,
-      "sessionId": "ses_TAFCRHqQYaO0",
+      "sessionId": "ses_HhsLVtX-XOl3",
       "agentId": "main",
       "type": "turn.started",
       "data": {
-        "turnId": "trn_ggNBLikhlTss"
+        "turnId": "trn_dbhNtDdQhwG_"
       },
-      "createdAt": "2026-09-30T00:09:52.309Z"
+      "createdAt": "2026-09-30T01:59:39.537Z"
     }
   },
   {
     "type": "rec",
-    "topic": "session:ses_TAFCRHqQYaO0",
+    "topic": "session:ses_HhsLVtX-XOl3",
     "seq": 7,
     "record": {
       "seq": 7,
-      "sessionId": "ses_TAFCRHqQYaO0",
+      "sessionId": "ses_HhsLVtX-XOl3",
       "agentId": "main",
       "type": "step.started",
       "data": {
-        "turnId": "trn_ggNBLikhlTss",
-        "stepId": "stp_ElEaUKfwtfeM",
+        "turnId": "trn_dbhNtDdQhwG_",
+        "stepId": "stp_714ebWUQB--f",
         "step": 1,
         "model": "custom-openai-compatible/mock-wb"
       },
-      "createdAt": "2026-09-30T00:09:52.310Z"
+      "createdAt": "2026-09-30T01:59:39.537Z"
     }
   },
   {
     "type": "rec",
-    "topic": "session:ses_TAFCRHqQYaO0",
+    "topic": "session:ses_HhsLVtX-XOl3",
     "seq": 8,
     "record": {
       "seq": 8,
-      "sessionId": "ses_TAFCRHqQYaO0",
+      "sessionId": "ses_HhsLVtX-XOl3",
       "agentId": "main",
       "type": "model.output",
       "data": {
-        "stepId": "stp_ElEaUKfwtfeM",
+        "stepId": "stp_714ebWUQB--f",
         "toolCalls": [
           {
             "id": "tw1",
@@ -146,20 +146,20 @@
           }
         ]
       },
-      "createdAt": "2026-09-30T00:09:52.311Z"
+      "createdAt": "2026-09-30T01:59:39.539Z"
     }
   },
   {
     "type": "rec",
-    "topic": "session:ses_TAFCRHqQYaO0",
+    "topic": "session:ses_HhsLVtX-XOl3",
     "seq": 9,
     "record": {
       "seq": 9,
-      "sessionId": "ses_TAFCRHqQYaO0",
+      "sessionId": "ses_HhsLVtX-XOl3",
       "agentId": "main",
       "type": "tool.intent",
       "data": {
-        "stepId": "stp_ElEaUKfwtfeM",
+        "stepId": "stp_714ebWUQB--f",
         "toolCallId": "tw1",
         "toolName": "workbook_read",
         "args": {
@@ -171,16 +171,16 @@
         ],
         "replay": "safe"
       },
-      "createdAt": "2026-09-30T00:09:52.312Z"
+      "createdAt": "2026-09-30T01:59:39.539Z"
     }
   },
   {
     "type": "rec",
-    "topic": "session:ses_TAFCRHqQYaO0",
+    "topic": "session:ses_HhsLVtX-XOl3",
     "seq": 10,
     "record": {
       "seq": 10,
-      "sessionId": "ses_TAFCRHqQYaO0",
+      "sessionId": "ses_HhsLVtX-XOl3",
       "agentId": "main",
       "type": "tool.result",
       "data": {
@@ -190,10 +190,10 @@
         "result": {
           "status": "ok",
           "data": {
-            "docId": "doc_d4_r2mhG1vpO",
+            "docId": "doc_xxYmesRxBt_Q",
             "path": "sales.xlsx",
             "docRevs": {
-              "doc_d4_r2mhG1vpO": 0
+              "doc_xxYmesRxBt_Q": 0
             },
             "mode": "overview",
             "name": "sales.xlsx",
@@ -221,63 +221,63 @@
           }
         }
       },
-      "createdAt": "2026-09-30T00:09:52.316Z"
+      "createdAt": "2026-09-30T01:59:39.543Z"
     }
   },
   {
     "type": "rec",
-    "topic": "session:ses_TAFCRHqQYaO0",
+    "topic": "session:ses_HhsLVtX-XOl3",
     "seq": 11,
     "record": {
       "seq": 11,
-      "sessionId": "ses_TAFCRHqQYaO0",
+      "sessionId": "ses_HhsLVtX-XOl3",
       "agentId": "main",
       "type": "step.started",
       "data": {
-        "turnId": "trn_ggNBLikhlTss",
-        "stepId": "stp_JFM0MBf1I7IL",
+        "turnId": "trn_dbhNtDdQhwG_",
+        "stepId": "stp_MDH6QNlFfuL5",
         "step": 2,
         "model": "custom-openai-compatible/mock-wb"
       },
-      "createdAt": "2026-09-30T00:09:52.317Z"
+      "createdAt": "2026-09-30T01:59:39.543Z"
     }
   },
   {
     "type": "delta",
-    "topic": "session:ses_TAFCRHqQYaO0",
+    "topic": "session:ses_HhsLVtX-XOl3",
     "agentId": "main",
-    "stepId": "stp_JFM0MBf1I7IL",
+    "stepId": "stp_MDH6QNlFfuL5",
     "part": 1,
     "kind": "text",
     "payload": "工作簿已读取。"
   },
   {
     "type": "rec",
-    "topic": "session:ses_TAFCRHqQYaO0",
+    "topic": "session:ses_HhsLVtX-XOl3",
     "seq": 12,
     "record": {
       "seq": 12,
-      "sessionId": "ses_TAFCRHqQYaO0",
+      "sessionId": "ses_HhsLVtX-XOl3",
       "agentId": "main",
       "type": "model.output",
       "data": {
-        "stepId": "stp_JFM0MBf1I7IL",
+        "stepId": "stp_MDH6QNlFfuL5",
         "text": "工作簿已读取。"
       },
-      "createdAt": "2026-09-30T00:09:52.322Z"
+      "createdAt": "2026-09-30T01:59:39.545Z"
     }
   },
   {
     "type": "rec",
-    "topic": "session:ses_TAFCRHqQYaO0",
+    "topic": "session:ses_HhsLVtX-XOl3",
     "seq": 13,
     "record": {
       "seq": 13,
-      "sessionId": "ses_TAFCRHqQYaO0",
+      "sessionId": "ses_HhsLVtX-XOl3",
       "agentId": "main",
       "type": "turn.completed",
       "data": {
-        "turnId": "trn_ggNBLikhlTss",
+        "turnId": "trn_dbhNtDdQhwG_",
         "reason": "stop",
         "usage": {
           "inputTokens": 10,
@@ -286,20 +286,20 @@
           "totalTokens": 15
         }
       },
-      "createdAt": "2026-09-30T00:09:52.322Z"
+      "createdAt": "2026-09-30T01:59:39.545Z"
     }
   },
   {
     "type": "rec",
-    "topic": "session:ses_TAFCRHqQYaO0",
+    "topic": "session:ses_HhsLVtX-XOl3",
     "seq": 14,
     "record": {
       "seq": 14,
-      "sessionId": "ses_TAFCRHqQYaO0",
+      "sessionId": "ses_HhsLVtX-XOl3",
       "agentId": "main",
       "type": "usage.updated",
       "data": {
-        "turnId": "trn_ggNBLikhlTss",
+        "turnId": "trn_dbhNtDdQhwG_",
         "usage": {
           "inputTokens": 10,
           "outputTokens": 5,
@@ -307,7 +307,7 @@
           "totalTokens": 15
         }
       },
-      "createdAt": "2026-09-30T00:09:52.322Z"
+      "createdAt": "2026-09-30T01:59:39.545Z"
     }
   }
 ]

@@ -69,7 +69,7 @@ function parseHalf(ref: string): { col: number; row: number } | null {
  */
 export function parseRange(input: string): A1Range {
   const { sheet, body } = splitSheet(input.trim());
-  if (!body) throw new Error(`非法区域: ${input}`);
+  if (!body || sheet === "" || body.split(":").length > 2) throw new Error(`非法区域: ${input}`);
   const [a, b] = body.split(":", 2);
   if (a === undefined) throw new Error(`非法区域: ${input}`);
 

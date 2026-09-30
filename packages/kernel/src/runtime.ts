@@ -22,7 +22,7 @@ import type {
 import type { SyncBus } from "./bus.ts";
 import type { ModelGateway } from "./model-gateway.ts";
 import type { SessionLog } from "./session-log.ts";
-import type { ToolDefinition } from "./tools.ts";
+import { createReadTable, type ReadTable, type ToolDefinition } from "./tools.ts";
 
 export interface AgentRuntimeDeps {
   db: DatabaseSync;
@@ -139,6 +139,8 @@ class AgentActor {
   private readonly deps: AgentRuntimeDeps;
   private readonly sessionId: string;
   private readonly agentId: string;
+  /** 本代理的文档读集（07 §10；actor 卸下即丢弃）。 */
+  private readonly reads: ReadTable = createReadTable();
 
   constructor(deps: AgentRuntimeDeps, sessionId: string, agentId: string) {
     this.deps = deps;
@@ -544,6 +546,7 @@ class AgentActor {
               sessionId: this.sessionId,
               agentId: this.agentId,
               toolCallId: call.id,
+              reads: this.reads,
             });
           } catch (err) {
             const cancelled = this.stopRequested;
@@ -609,10 +612,15 @@ class AgentActor {
 }
 
 /**
- * 启动恢复最小版（04 §8.2）：running 代理的 open_intents 写合成 tool.result
- * （M1 全是只读工具 → 一律 not_executed），状态设 interrupted。
+ * 启动恢复（04 §8.2）：running 代理的 open_intents 逐个处理——工具声明了
+ * recover 钩子就让它判定（workbook_edit 等已落库的写返回其结果），否则
+ * 一律 not_executed；最后状态设 interrupted。
  */
-export function recoverInterruptedAgents(deps: { db: DatabaseSync; log: SessionLog }): number {
+export function recoverInterruptedAgents(deps: {
+  db: DatabaseSync;
+  log: SessionLog;
+  tools?: ReadonlyMap<string, ToolDefinition>;
+}): number {
   const running = deps.db
     .prepare("SELECT id, session_id FROM agents WHERE status = 'running'")
     .all() as { id: string; session_id: string }[];
@@ -622,22 +630,53 @@ export function recoverInterruptedAgents(deps: { db: DatabaseSync; log: SessionL
         "SELECT tool_call_id, tool_name FROM open_intents WHERE session_id = ? AND agent_id = ? ORDER BY created_seq",
       )
       .all(agent.session_id, agent.id) as { tool_call_id: string; tool_name: string }[];
-    const records: { type: string; data: unknown }[] = intents.map((it) => ({
-      type: "tool.result",
-      data: {
-        toolCallId: it.tool_call_id,
-        toolName: it.tool_name,
+    const records: { type: string; data: unknown }[] = intents.map((it) => {
+      const tool = deps.tools?.get(it.tool_name);
+      let recovered: ToolResult | undefined;
+      if (tool?.recover) {
+        // tool.intent 记录里有当时解析后的参数
+        const intentRow = deps.db
+          .prepare(
+            "SELECT data FROM session_log WHERE session_id = ? AND agent_id = ? AND type = 'tool.intent' ORDER BY seq DESC LIMIT 50",
+          )
+          .all(agent.session_id, agent.id) as { data: string }[];
+        let args: unknown;
+        for (const r of intentRow) {
+          const d = JSON.parse(r.data) as { toolCallId?: string; args?: unknown };
+          if (d.toolCallId === it.tool_call_id) {
+            args = d.args;
+            break;
+          }
+        }
+        try {
+          recovered = tool.recover({
+            sessionId: agent.session_id,
+            agentId: agent.id,
+            toolCallId: it.tool_call_id,
+            args,
+          });
+        } catch {
+          recovered = undefined;
+        }
+      }
+      const result: ToolResult = recovered ?? {
         status: "not_executed",
-        result: {
-          status: "not_executed",
-          error: {
-            code: "CANCELLED",
-            message: "进程中断，该工具未执行",
-            retryable: false,
-          },
+        error: {
+          code: "CANCELLED",
+          message: "进程中断，该工具未执行",
+          retryable: false,
         },
-      },
-    }));
+      };
+      return {
+        type: "tool.result",
+        data: {
+          toolCallId: it.tool_call_id,
+          toolName: it.tool_name,
+          status: result.status,
+          result,
+        },
+      };
+    });
     const turn = deps.db
       .prepare(
         "SELECT data FROM session_log WHERE session_id = ? AND agent_id = ? AND type = 'turn.started' ORDER BY seq DESC LIMIT 1",

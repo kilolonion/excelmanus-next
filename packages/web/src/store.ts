@@ -1,5 +1,6 @@
 // 全局状态（Zustand）：令牌、会话列表、当前会话还原状态、工作台文档、设置弹窗。
 
+import { parseRange } from "@excelmanus/core";
 import type {
   FileEntry,
   ModelProfile,
@@ -9,7 +10,14 @@ import type {
 } from "@excelmanus/protocol";
 import { create } from "zustand";
 import { apiClient, bootstrapToken } from "./api.ts";
-import { initialSessionState, reduceSession, type SessionState } from "./reduce.ts";
+import {
+  type DocSyncState,
+  initialDocSync,
+  initialSessionState,
+  reduceDoc,
+  reduceSession,
+  type SessionState,
+} from "./reduce.ts";
 import { SyncClient } from "./ws.ts";
 
 export interface OpenDoc {
@@ -31,11 +39,15 @@ interface AppState {
   session: SessionState;
   files: FileEntry[];
   doc: OpenDoc | null;
+  docSync: DocSyncState;
   selection: { docId: string; rev: number; range: string } | null;
   settingsOpen: boolean;
   providers: ProviderPreset[];
   profiles: ModelProfile[];
   fatal: string | null;
+  rangeFocus: { range: string; nonce: number } | null;
+  rangePreview: string | null;
+  referenceError: string | null;
 }
 
 type Api = ReturnType<typeof apiClient>;
@@ -43,6 +55,7 @@ type Api = ReturnType<typeof apiClient>;
 let api: Api | null = null;
 let sync: SyncClient | null = null;
 let seq = 0;
+let docRequest = 0;
 
 export const useApp = create<AppState>(() => ({
   token: null,
@@ -56,11 +69,15 @@ export const useApp = create<AppState>(() => ({
   session: initialSessionState(),
   files: [],
   doc: null,
+  docSync: initialDocSync(),
   selection: null,
   settingsOpen: false,
   providers: [],
   profiles: [],
   fatal: null,
+  rangeFocus: null,
+  rangePreview: null,
+  referenceError: null,
 }));
 
 const set = useApp.setState;
@@ -88,11 +105,33 @@ async function refreshFiles(): Promise<void> {
 }
 
 export async function selectSession(sessionId: string): Promise<void> {
+  const workspaceId = get().sessions.find((session) => session.id === sessionId)?.workspaceId;
+  if (workspaceId && workspaceId !== get().workspaceId) {
+    const previous = get().doc;
+    if (previous) sync?.unsubscribe(`doc:${previous.docId}`);
+    docRequest += 1;
+    set({
+      workspaceId,
+      doc: null,
+      selection: null,
+      files: [],
+      rangeFocus: null,
+      rangePreview: null,
+      docSync: initialDocSync(0),
+    });
+    await refreshFiles();
+  }
   set({ sessionId: sessionId, session: initialSessionState() });
   sync?.subscribe(`session:${sessionId}`);
 }
 
-export async function init(): Promise<void> {
+let initPromise: Promise<void> | null = null;
+export function init(): Promise<void> {
+  initPromise ??= initialize();
+  return initPromise;
+}
+
+async function initialize(): Promise<void> {
   const token = bootstrapToken();
   if (!token) {
     set({ ready: true, fatal: "no-token" });
@@ -109,7 +148,7 @@ export async function init(): Promise<void> {
   }
   sync = new SyncClient({
     ticket: async () => (await requireApi().createTicket()).ticket,
-    cursor: () => get().session.cursor,
+    cursor: (topic) => (topic.startsWith("doc:") ? (get().doc?.rev ?? 0) : get().session.cursor),
     onMessage: (msg: ServerMessage) => {
       const topic = `session:${get().sessionId}`;
       if (
@@ -119,8 +158,18 @@ export async function init(): Promise<void> {
       ) {
         return; // 只处理当前会话主题
       }
-      if (msg.type === "rec" || msg.type === "delta") {
+      if (msg.type === "rec" || msg.type === "delta" || msg.type === "snapshot") {
         set({ session: reduceSession(get().session, msg) });
+      } else if (msg.type === "doc.op" && msg.docId === get().doc?.docId) {
+        set({ docSync: reduceDoc(get().docSync, msg) });
+        // 只读工作台不允许本地编辑远端 mutation（editable=false 会被权限拦截），
+        // 收到远端修订后防抖重取快照（07 §3.3 允许的最小实现）。
+        scheduleDocRefresh(msg.docId);
+      } else if (msg.type === "doc.ack" || msg.type === "doc.reject") {
+        set({ docSync: reduceDoc(get().docSync, msg) });
+      } else if (msg.type === "doc.reload" && msg.docId === get().doc?.docId) {
+        set({ docSync: reduceDoc(get().docSync, msg) });
+        void reloadDocument(msg.docId).catch(() => set({ referenceError: "invalid-range" }));
       } else if (msg.type === "hello") {
         set({ connected: true });
       }
@@ -181,9 +230,11 @@ export async function stopAgent(): Promise<void> {
 }
 
 export async function openWorkspaceFile(path: string): Promise<void> {
+  const request = ++docRequest;
   const st = get();
-  const { document } = await requireApi().openDoc(st.workspaceId, { path });
-  const { snapshot } = await requireApi().getDocSnapshot(st.workspaceId, document.id);
+  const { document: opened } = await requireApi().openDoc(st.workspaceId, { path });
+  const { document, snapshot } = await requireApi().getDocSnapshot(st.workspaceId, opened.id);
+  if (request !== docRequest || get().workspaceId !== st.workspaceId) return;
   set({
     doc: {
       docId: document.id,
@@ -191,8 +242,94 @@ export async function openWorkspaceFile(path: string): Promise<void> {
       path: document.path,
       snapshot: snapshot as Record<string, unknown>,
     },
+    docSync: initialDocSync(document.rev),
+    selection: null,
+    rangeFocus: null,
+    rangePreview: null,
+    referenceError: null,
+  });
+  sync?.subscribe(`doc:${document.id}`);
+}
+
+const docRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
+/** 远端修订到达后防抖重取快照（只读视图下 mutation 不便直接应用）。 */
+function scheduleDocRefresh(docId: string): void {
+  const prev = docRefreshTimers.get(docId);
+  if (prev) clearTimeout(prev);
+  docRefreshTimers.set(
+    docId,
+    setTimeout(() => {
+      docRefreshTimers.delete(docId);
+      void reloadDocument(docId).catch(() => set({ referenceError: "invalid-range" }));
+    }, 150),
+  );
+}
+
+async function reloadDocument(docId: string): Promise<void> {
+  const request = ++docRequest;
+  const workspaceId = get().workspaceId;
+  const { document, snapshot } = await requireApi().getDocSnapshot(workspaceId, docId);
+  if (request !== docRequest || get().doc?.docId !== docId || get().workspaceId !== workspaceId)
+    return;
+  set({
+    doc: {
+      docId,
+      rev: document.rev,
+      path: document.path,
+      snapshot: snapshot as Record<string, unknown>,
+    },
+    docSync: { ...get().docSync, rev: Math.max(get().docSync.rev, document.rev) },
     selection: null,
   });
+}
+
+export async function openDocument(docId: string): Promise<void> {
+  const request = ++docRequest;
+  const workspaceId = get().workspaceId;
+  const { document, snapshot } = await requireApi().getDocSnapshot(workspaceId, docId);
+  if (request !== docRequest || get().workspaceId !== workspaceId) return;
+  set({
+    doc: {
+      docId,
+      rev: document.rev,
+      path: document.path,
+      snapshot: snapshot as Record<string, unknown>,
+    },
+    docSync: initialDocSync(document.rev),
+    selection: null,
+    rangeFocus: null,
+    rangePreview: null,
+  });
+  sync?.subscribe(`doc:${docId}`);
+}
+
+export async function focusRange(range: string, docId?: string): Promise<void> {
+  try {
+    if (!docId && !get().doc) {
+      const ids = [...new Set(get().session.tools.flatMap((t) => (t.docId ? [t.docId] : [])))];
+      if (ids.length === 1) docId = ids[0];
+    }
+    if (docId && get().doc?.docId !== docId) await openDocument(docId);
+    const doc = get().doc;
+    if (docId && doc?.docId !== docId) return;
+    if (!doc) {
+      set({ referenceError: "no-document" });
+      return;
+    }
+    const parsed = parseRange(range);
+    const sheets = doc.snapshot.sheets as Record<string, { name: string }>;
+    if (parsed.sheet && !Object.values(sheets).some((s) => s.name === parsed.sheet)) {
+      set({ referenceError: "missing-sheet" });
+      return;
+    }
+    set({ rangeFocus: { range, nonce: Date.now() }, referenceError: null });
+  } catch {
+    set({ referenceError: "invalid-range" });
+  }
+}
+
+export function previewRange(range: string | null): void {
+  set({ rangePreview: range });
 }
 
 export async function uploadWorkspaceFile(file: File): Promise<void> {

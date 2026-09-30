@@ -48,10 +48,12 @@
 - 依赖方向检查：`pnpm check:deps` = package.json 工作区依赖声明校验（`node scripts/check-deps.ts`）+ 文件级 depcruise（规则与声明同源，见 `scripts/dependency-matrix.ts`）
 - 许可证检查：`pnpm check:licenses`（`pnpm licenses list --json`，白名单见 `scripts/check-licenses.ts`）
 - 单元测试：`pnpm test`（Vitest projects：每包一个 project，另含根 `test/gates/` 门禁反例测试）
-- 一键门禁：`pnpm check`（typecheck + lint + deps + licenses，不含测试）；`pnpm check:all`（加测试）
-- 裸 Node 直跑（source-first，无构建）：`node packages/server/src/smoke.ts`
+- Web 生产构建：`pnpm build:web`
+- 一键门禁：`pnpm check`（typecheck + lint + deps + licenses，不含测试）；`pnpm check:all`（加 Web 构建与测试）
+- 裸 Node 启动后端（source-first）：`node packages/server/src/main.ts`；完整本机 Web 启动用 `pnpm start`（先构建前端）
 
 ## 当前进度
 - 单仓骨架 + 门禁框架完成：pnpm workspaces，15 个包（protocol/core/kernel/models/sandbox/server/web/desktop + modules/*7），源码优先（exports → `./src/index.ts`，Node 24 原生类型剥离已验证），depcruise + 声明校验的依赖方向门禁（`scripts/dependency-matrix.ts` 单一规则源），许可证门禁，Vitest projects 测试，Biome lint，CI 门禁工作流。
 - 依赖版本策略注意：`autoInstallPeers: false`（防止 vite 的 optional peer `lightningcss` MPL-2.0 被自动装入）；typescript 锁定 6.0.3 而非 7.x（depcruise 18 只支持 TS <7 转译器）。
-- 下一步：M0 spike（QuickJS 沙箱、Univer 无头、node:sqlite WAL/FTS5、AI SDK 单步），结论写 `docs/decisions/`。
+- M0 已按 ADR 0001–0006 收口；M1 主要纵切已提交为 `af250b6`。2026-09-30 构建、安全与交互修复见 `docs/acceptance/m1-repair.md`；最终工作树尚未验收。
+- M2a 有并行未提交实现，不作为 M1 已验收证据。保留工作树中的并行改动与未提交 spike，不按旧进度重复实施 M0。

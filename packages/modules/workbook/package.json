@@ -13,12 +13,17 @@
     "@excelmanus/core": "workspace:*",
     "@excelmanus/kernel": "workspace:*",
     "@excelmanus/protocol": "workspace:*",
+    "@univerjs/preset-sheets-node-core": "1.0.2",
+    "@univerjs/presets": "1.0.2",
+    "@univerjs/sheets": "1.0.2",
+    "@univerjs/sheets-conditional-formatting": "1.0.2",
+    "@univerjs/core": "1.0.2",
     "fast-xml-parser": "5.11.1",
     "fflate": "0.8.3",
+    "rxjs": "7.8.2",
     "zod": "4.6.5"
   },
   "devDependencies": {
-    "@univerjs/core": "1.0.2",
     "iconv-lite": "0.7.3"
   }
 }

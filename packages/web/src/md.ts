@@ -1,5 +1,6 @@
 // Markdown → 受信 HTML：marked 解析后按标签白名单消毒（不带 dompurify，避免 MPL 依赖）。
 
+import { parseRange } from "@excelmanus/core";
 import { marked } from "marked";
 
 marked.setOptions({ breaks: true, gfm: true });
@@ -62,9 +63,47 @@ function sanitize(html: string): string {
     }
   };
   walk(doc.body);
+  const linkRanges = (node: Node): void => {
+    for (const child of [...node.childNodes]) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        const text = child.textContent ?? "";
+        const pattern =
+          /(?<![\p{L}\p{N}_])(?:(?:'(?:[^']|'')+'|[\p{L}\p{N}_.-]+)!)?\$?[A-Za-z]{1,3}\$?\d{1,7}(?::\$?[A-Za-z]{1,3}\$?\d{1,7})?(?![\p{L}\p{N}_:])/gu;
+        const fragment = doc.createDocumentFragment();
+        let offset = 0;
+        for (const match of text.matchAll(pattern)) {
+          const range = match[0].replaceAll("$", "");
+          try {
+            parseRange(range);
+          } catch {
+            continue;
+          }
+          fragment.append(doc.createTextNode(text.slice(offset, match.index)));
+          const a = doc.createElement("a");
+          a.href = `#range=${encodeURIComponent(range)}`;
+          a.textContent = match[0];
+          fragment.append(a);
+          offset = match.index + match[0].length;
+        }
+        if (offset > 0) {
+          fragment.append(doc.createTextNode(text.slice(offset)));
+          child.replaceWith(fragment);
+        }
+      } else if (child instanceof Element && !["A", "PRE"].includes(child.tagName)) {
+        linkRanges(child);
+      }
+    }
+  };
+  linkRanges(doc.body);
   return doc.body.innerHTML;
 }
 
 export function renderMarkdown(text: string): string {
   return sanitize(marked.parse(text, { async: false }));
+}
+
+export function renderPlainText(text: string): string {
+  const el = document.createElement("span");
+  el.textContent = text;
+  return sanitize(el.innerHTML);
 }

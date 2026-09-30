@@ -5,7 +5,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ServerMessage } from "@excelmanus/protocol";
 import { describe, expect, test } from "vitest";
-import { displayItems, initialSessionState, reduceSession } from "../src/reduce.ts";
+import {
+  displayItems,
+  initialDocSync,
+  initialSessionState,
+  reduceDoc,
+  reduceSession,
+  trackDocSubmit,
+} from "../src/reduce.ts";
 
 const fixturePath = join(dirname(fileURLToPath(import.meta.url)), "fixtures/session-stream.json");
 
@@ -65,5 +72,46 @@ describe("reduceSession", () => {
     } as unknown as ServerMessage);
     expect(s.messages.length).toBe(0);
     expect(s.cursor).toBe(7);
+  });
+});
+
+describe("reduceDoc", () => {
+  test("doc.op 按 rev 幂等推进，分片同 rev 不重复", () => {
+    let s = initialDocSync(0);
+    const op = (rev: number, chunk?: { index: number; total: number }) =>
+      ServerMessage.parse({
+        type: "doc.op",
+        docId: "d1",
+        rev,
+        source: "agent:s1/main",
+        mutations: [],
+        ...(chunk !== undefined ? { chunk } : {}),
+      });
+    s = reduceDoc(s, op(1, { index: 0, total: 2 }));
+    s = reduceDoc(s, op(1, { index: 1, total: 2 }));
+    expect(s.rev).toBe(1);
+    s = reduceDoc(s, op(1)); // 重复 rev：幂等
+    expect(s.rev).toBe(1);
+    s = reduceDoc(s, op(2));
+    expect(s.rev).toBe(2);
+  });
+
+  test("doc.submit 的 ack/reject 更新 pending", () => {
+    let s = trackDocSubmit(initialDocSync(0), "c1");
+    expect(s.pending.c1?.status).toBe("pending");
+    s = reduceDoc(s, ServerMessage.parse({ type: "doc.ack", clientOpId: "c1", rev: 3 }));
+    expect(s.pending.c1?.status).toBe("acked");
+    expect(s.rev).toBe(3);
+    s = trackDocSubmit(s, "c2");
+    s = reduceDoc(
+      s,
+      ServerMessage.parse({
+        type: "doc.reject",
+        clientOpId: "c2",
+        conflict: { code: "VERSION_CONFLICT" },
+      }),
+    );
+    expect(s.pending.c2?.status).toBe("rejected");
+    expect(s.rev).toBe(3); // reject 不前进 rev
   });
 });

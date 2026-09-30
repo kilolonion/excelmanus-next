@@ -3,8 +3,9 @@
 // 覆盖：单元格值与公式（s/n/b/str/e/inlineStr）、数字格式（样式表 numFmt）、
 // 合并单元格、列宽行高、冻结窗格、隐藏表。不支持的部件只计数进 unsupported。
 
+import { posix } from "node:path";
 import type { ICellData, IWorkbookData, IWorksheetData } from "@univerjs/core";
-import { XMLParser } from "fast-xml-parser";
+import { XMLParser, XMLValidator } from "fast-xml-parser";
 import { unzipSync } from "fflate";
 
 export class XlsxImportError extends Error {
@@ -27,6 +28,7 @@ const parser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: "@_",
   textNodeName: "#text",
+  parseTagValue: false,
   isArray: (tag) =>
     [
       "c",
@@ -73,14 +75,18 @@ function cellAddr(ref: string): { col: number; row: number } | undefined {
 
 function readSharedStrings(xml: Xml | undefined): string[] {
   const items = asArr<Xml>((xml?.sst as Xml | undefined)?.si as Xml[] | undefined);
-  return items.map((si) => {
-    const t = si.t;
-    if (typeof t === "string" || typeof t === "number") return String(t);
-    // 富文本 runs：<r><t>..</t></r> 拼接
-    return asArr<Xml>(si.r as Xml[] | undefined)
-      .map((r) => String(r.t ?? ""))
-      .join("");
-  });
+  return items.map(readRichText);
+}
+
+function readRichText(node: Xml): string {
+  const text = (v: unknown): string => {
+    if (typeof v === "object" && v !== null) return String((v as Xml)["#text"] ?? "");
+    return String(v ?? "");
+  };
+  if (node.t !== undefined) return text(node.t);
+  return asArr<Xml>(node.r as Xml[] | undefined)
+    .map((r) => text(r.t))
+    .join("");
 }
 
 // ---------- styles（只取 numFmt 格式码 → Univer styles.n.pattern） ----------
@@ -173,7 +179,10 @@ function parseCell(node: Xml, sst: string[], xfToStyle: StylesOut["xfToStyle"]):
   switch (t) {
     case "s": {
       const idx = Number(raw ?? -1);
-      cell.v = sst[idx] ?? "";
+      if (!Number.isInteger(idx) || sst[idx] === undefined) {
+        throw new XlsxImportError("单元格引用了不存在的共享字符串");
+      }
+      cell.v = sst[idx];
       cell.t = 2; // CellValueType.STRING
       break;
     }
@@ -183,9 +192,7 @@ function parseCell(node: Xml, sst: string[], xfToStyle: StylesOut["xfToStyle"]):
       break;
     case "inlineStr": {
       const is = node.is as Xml | undefined;
-      const tNode = is?.t;
-      cell.v =
-        typeof tNode === "object" ? String((tNode as Xml)["#text"] ?? "") : String(tNode ?? "");
+      cell.v = is ? readRichText(is) : "";
       cell.t = 2;
       break;
     }
@@ -352,30 +359,50 @@ export function importXlsx(bytes: Uint8Array, name: string): ImportedWorkbook {
   } catch {
     throw new XlsxImportError("不是有效的 xlsx（zip 解包失败）");
   }
-  const readXmlDirect = (p: string): Xml | undefined => {
+  const readXmlDirect = (p: string, required = false): Xml | undefined => {
     const raw = files[p];
-    if (!raw) return undefined;
-    try {
-      return parser.parse(new TextDecoder("utf-8").decode(raw)) as Xml;
-    } catch {
+    if (!raw) {
+      if (required) throw new XlsxImportError("缺少工作簿引用的 XML 部件");
       return undefined;
+    }
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(raw);
+    if (XMLValidator.validate(text) !== true) {
+      throw new XlsxImportError("工作簿 XML 部件格式损坏");
+    }
+    try {
+      return parser.parse(text) as Xml;
+    } catch {
+      throw new XlsxImportError("工作簿 XML 部件无法解析");
     }
   };
 
   const wbXml = readXmlDirect("xl/workbook.xml");
   if (!wbXml) throw new XlsxImportError("缺少 xl/workbook.xml");
-  const relsXml = readXmlDirect("xl/_rels/workbook.xml.rels");
+  const relsXml = readXmlDirect("xl/_rels/workbook.xml.rels", true);
   const relTargets = new Map<string, string>();
+  const relTypes = new Map<string, string>();
   for (const rel of asArr<Xml>(
     (relsXml?.Relationships as Xml | undefined)?.Relationship as Xml[] | undefined,
   )) {
     const id = attr(rel, "Id");
     const target = attr(rel, "Target");
-    if (id && target) relTargets.set(id, `xl/${target.replace(/^\//, "")}`);
+    if (!id || !target || attr(rel, "TargetMode") === "External") continue;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(target) || /[\\?#]/.test(target)) {
+      throw new XlsxImportError("工作簿部件关系路径不合法");
+    }
+    const part = posix.normalize(target.startsWith("/") ? target.slice(1) : `xl/${target}`);
+    if (part === ".." || part.startsWith("../")) {
+      throw new XlsxImportError("工作簿部件关系越出包边界");
+    }
+    relTargets.set(id, part);
+    const type = attr(rel, "Type")?.split("/").pop();
+    if (type) relTypes.set(type, part);
   }
 
-  const sst = readSharedStrings(readXmlDirect("xl/sharedStrings.xml"));
-  const styles = readStyles(readXmlDirect("xl/styles.xml"));
+  const sstPart = relTypes.get("sharedStrings");
+  const stylesPart = relTypes.get("styles");
+  const sst = readSharedStrings(readXmlDirect(sstPart ?? "xl/sharedStrings.xml", !!sstPart));
+  const styles = readStyles(readXmlDirect(stylesPart ?? "xl/styles.xml", !!stylesPart));
 
   const sheetsArr = asArr<Xml>(
     ((wbXml.workbook as Xml | undefined)?.sheets as Xml | undefined)?.sheet as Xml[] | undefined,
@@ -394,14 +421,16 @@ export function importXlsx(bytes: Uint8Array, name: string): ImportedWorkbook {
     const sheetName = attr(s, "name") ?? `Sheet${i + 1}`;
     const state = attr(s, "state");
     const hidden = state === "hidden" ? 1 : state === "veryHidden" ? 2 : 0;
-    const sheetXml = target !== undefined ? readXmlDirect(target) : undefined;
-    const parsed = sheetXml ? parseWorksheet(sheetXml, sst, styles.xfToStyle) : undefined;
-    cellCounts[sheetName] = parsed?.cellCount ?? 0;
-    formulaCounts[sheetName] = parsed?.formulaCount ?? 0;
+    if (!target) throw new XlsxImportError("工作表缺少有效的内部部件关系");
+    const sheetXml = readXmlDirect(target, true);
+    if (!sheetXml?.worksheet) throw new XlsxImportError("不支持的工作表部件或部件格式损坏");
+    const parsed = parseWorksheet(sheetXml, sst, styles.xfToStyle);
+    cellCounts[sheetName] = parsed.cellCount;
+    formulaCounts[sheetName] = parsed.formulaCount;
     sheets[sheetId] = {
       id: sheetId,
       name: sheetName,
-      ...(parsed?.data ?? { rowCount: 1, columnCount: 1, cellData: {} }),
+      ...parsed.data,
       ...(hidden !== 0 ? { hidden } : {}),
     };
   });

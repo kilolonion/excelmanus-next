@@ -26,6 +26,7 @@ export type RestError = z.infer<typeof RestError>;
 /** REST 错误码词表（与工具错误码、模型错误 kind 分开）。 */
 export const REST_ERROR_CODES = [
   "unauthorized",
+  "forbidden",
   "forbidden_host",
   "forbidden_origin",
   "bad_request",

@@ -5,7 +5,7 @@ import { wsUrl } from "./api.ts";
 
 export interface SyncClientOpts {
   ticket(): Promise<string>;
-  cursor(): number;
+  cursor(topic: string): number;
   onMessage(msg: ServerMessage): void;
   onState?(connected: boolean): void;
 }
@@ -13,7 +13,7 @@ export interface SyncClientOpts {
 export class SyncClient {
   private readonly opts: SyncClientOpts;
   private ws: WebSocket | null = null;
-  private topic: string | null = null;
+  private readonly topics = new Set<string>();
   private closed = false;
   private attempts = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -22,12 +22,21 @@ export class SyncClient {
     this.opts = opts;
   }
 
-  /** 订阅会话主题；重复调用会先退订旧主题。 */
+  /** 同时保留一个会话与一个文档主题，同类主题切换时退订旧主题。 */
   subscribe(topic: string): void {
-    this.topic = topic;
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: "sub", topic, cursor: this.opts.cursor() }));
+    for (const old of this.topics) {
+      if (old !== topic && old.split(":")[0] === topic.split(":")[0]) this.unsubscribe(old);
     }
+    this.topics.add(topic);
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: "sub", topic, cursor: this.opts.cursor(topic) }));
+    }
+  }
+
+  unsubscribe(topic: string): void {
+    this.topics.delete(topic);
+    if (this.ws?.readyState === WebSocket.OPEN)
+      this.ws.send(JSON.stringify({ type: "unsub", topic }));
   }
 
   start(): void {
@@ -53,16 +62,17 @@ export class SyncClient {
         try {
           msg = ServerMessage.parse(JSON.parse(String(ev.data)));
         } catch {
-          console.warn("无法解析的同步消息", ev.data);
+          console.warn("无法解析的同步消息");
           return;
         }
+        if (msg.type === "ping") ws.send(JSON.stringify({ type: "pong" }));
         this.opts.onMessage(msg);
       };
       ws.onopen = () => {
         this.attempts = 0;
         this.opts.onState?.(true);
-        if (this.topic) {
-          ws.send(JSON.stringify({ type: "sub", topic: this.topic, cursor: this.opts.cursor() }));
+        for (const topic of this.topics) {
+          ws.send(JSON.stringify({ type: "sub", topic, cursor: this.opts.cursor(topic) }));
         }
       };
       ws.onclose = () => {

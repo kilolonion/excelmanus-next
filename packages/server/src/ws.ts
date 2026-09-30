@@ -1,5 +1,5 @@
 // 同步通道（11 §3）：一次性 30s 票据、hello、sub/unsub、游标续传、
-// rec/delta/snapshot 推送、心跳。doc:* 主题 M1 只回 sub.error。
+// rec/delta/snapshot 推送、心跳。doc:* 主题：doc_ops 续传 + doc.submit/ack/reject + 广播。
 
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, Server } from "node:http";
@@ -8,11 +8,15 @@ import { setImmediate as yieldLoop } from "node:timers/promises";
 import type { SessionLog, SyncBus } from "@excelmanus/kernel";
 import type { LogRecord, ServerMessage, SnapshotMsg } from "@excelmanus/protocol";
 import { ClientMessage, protocolVersion } from "@excelmanus/protocol";
+import type { DocMutation, DocumentService } from "@excelmanus/workbook";
+import { deriveWriteSet } from "@excelmanus/workbook";
 import { type WebSocket, WebSocketServer } from "ws";
 import { sha256 } from "./store.ts";
 
 const PAGE_SIZE = 500;
 const MAX_BUFFERED = 4 * 1024 * 1024;
+/** 大修订按约 500 格分片推送（07 §3.3）。 */
+const DOC_OP_CHUNK_CELLS = 500;
 
 interface Sub {
   topic: string;
@@ -22,10 +26,19 @@ interface Sub {
   buffer: { seq: number; rec: LogRecord }[];
 }
 
+interface DocSub {
+  topic: string;
+  docId: string;
+  live: boolean;
+  lastRev: number;
+  buffer: { rev: number; source: string; mutations: DocMutation[] }[];
+}
+
 interface Conn {
   id: string;
   ws: WebSocket;
   subs: Map<string, Sub>;
+  docSubs: Map<string, DocSub>;
   isAppSub: boolean;
   idleTimer: NodeJS.Timeout;
 }
@@ -44,6 +57,10 @@ export interface SyncChannelOptions {
   bus: SyncBus;
   /** sha256(ticket) → expiresAtMs；一次性，取出即删。 */
   tickets: Map<string, number>;
+  /** 活文档服务；未装配 workbook 时 doc: 主题回 sub.error。 */
+  docService?: DocumentService;
+  /** docId → 所属工作区根（冷启动物化需要读文件）。 */
+  workspaceRootFor?(docId: string): string | undefined;
   heartbeatMs?: number;
   heartbeatTimeoutMs?: number;
   emit?: (event: string, fields: Record<string, string | number | boolean>) => void;
@@ -139,6 +156,67 @@ export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () 
     else publishApp(ev.data);
   });
 
+  /** 按约 500 格把一次修订的 mutation 分片发送。 */
+  const sendDocOp = (
+    conn: Conn,
+    docId: string,
+    rev: number,
+    source: string,
+    mutations: DocMutation[],
+  ) => {
+    const costOf = (m: DocMutation) => {
+      const ranges = deriveWriteSet(m).ranges;
+      let cells = 1;
+      for (const r of ranges) cells += (r.r1 - r.r0 + 1) * (r.c1 - r.c0 + 1);
+      return Math.min(cells, DOC_OP_CHUNK_CELLS);
+    };
+    const chunks: DocMutation[][] = [];
+    let cur: DocMutation[] = [];
+    let curCost = 0;
+    for (const m of mutations) {
+      cur.push(m);
+      curCost += costOf(m);
+      if (curCost >= DOC_OP_CHUNK_CELLS) {
+        chunks.push(cur);
+        cur = [];
+        curCost = 0;
+      }
+    }
+    if (cur.length > 0 || chunks.length === 0) chunks.push(cur);
+    const total = chunks.length;
+    chunks.forEach((muts, index) => {
+      send(conn, {
+        type: "doc.op",
+        docId,
+        rev,
+        source,
+        mutations: muts as unknown[],
+        ...(total > 1 ? { chunk: { index, total } } : {}),
+      });
+    });
+  };
+
+  const publishDocOp = (docId: string, rev: number, source: string, mutations: DocMutation[]) => {
+    const topic = `doc:${docId}`;
+    for (const conn of conns.values()) {
+      const sub = conn.docSubs.get(topic);
+      if (!sub) continue;
+      if (!sub.live) sub.buffer.push({ rev, source, mutations });
+      else if (rev > sub.lastRev) {
+        sub.lastRev = rev;
+        sendDocOp(conn, docId, rev, source, mutations);
+      }
+    }
+  };
+  const docSvc = opts.docService;
+  if (docSvc !== undefined) {
+    docSvc.onRevision = (docId, rev, source, mutations) =>
+      publishDocOp(docId, rev, source, mutations);
+  }
+  const unsubscribeDoc = () => {
+    if (docSvc !== undefined) docSvc.onRevision = undefined;
+  };
+
   const snapshotsFor = (topic: string): SnapshotMsg[] =>
     [...streams.values()].filter((s) => s.topic === topic).map((s) => ({ type: "snapshot", ...s }));
 
@@ -150,11 +228,45 @@ export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () 
 
   const subscribe = async (conn: Conn, topic: string, cursor: number | undefined) => {
     if (topic.startsWith("doc:")) {
-      send(conn, {
-        type: "sub.error",
+      const svc = opts.docService;
+      const docId = topic.slice("doc:".length);
+      if (!svc?.hasDoc(docId)) {
+        send(conn, {
+          type: "sub.error",
+          topic,
+          error: { code: "not_found", message: "文档不存在" },
+        });
+        return;
+      }
+      const head = svc.headRev(docId);
+      if (cursor !== undefined && cursor > head) {
+        send(conn, { type: "doc.reload", docId, rev: head, reason: "snapshot_required" });
+        return;
+      }
+      const sub: DocSub = {
         topic,
-        error: { code: "not_implemented", message: "文档主题在 M2 提供" },
-      });
+        docId,
+        live: false,
+        lastRev: cursor ?? head,
+        buffer: [],
+      };
+      conn.docSubs.set(topic, sub);
+      send(conn, { type: "sub.ok", topic, headCursor: head, cursor: sub.lastRev });
+      if (cursor !== undefined) {
+        for (const op of svc.opsAfter(docId, cursor)) {
+          sub.lastRev = op.rev;
+          sendDocOp(conn, docId, op.rev, `${op.sourceKind}:${op.sourceId ?? ""}`, op.mutations);
+        }
+      }
+      for (const m of sub.buffer) {
+        if (m.rev > sub.lastRev) {
+          sub.lastRev = m.rev;
+          sendDocOp(conn, docId, m.rev, m.source, m.mutations);
+        }
+      }
+      sub.buffer = [];
+      sub.live = true;
+      emit("sub.live", { connectionId: conn.id, topic, caughtUp: 0 });
       return;
     }
     if (topic === "app") {
@@ -222,7 +334,52 @@ export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () 
       case "unsub":
         if (msg.topic === "app") conn.isAppSub = false;
         conn.subs.delete(msg.topic);
+        conn.docSubs.delete(msg.topic);
         break;
+      case "doc.submit": {
+        const svc = opts.docService;
+        const root = opts.workspaceRootFor?.(msg.docId);
+        if (!svc || !root) {
+          send(conn, {
+            type: "doc.reject",
+            clientOpId: msg.clientOpId,
+            conflict: { code: "not_found", message: "文档不存在或未装配" },
+          });
+          break;
+        }
+        void svc
+          .submit(msg.docId, root, {
+            baseRev: msg.baseRev,
+            source: { kind: "user", id: conn.id },
+            mutations: msg.mutations as DocMutation[],
+          })
+          .then((result) => {
+            if (result.ok) {
+              send(conn, { type: "doc.ack", clientOpId: msg.clientOpId, rev: result.rev });
+            } else {
+              send(conn, {
+                type: "doc.reject",
+                clientOpId: msg.clientOpId,
+                conflict: {
+                  code: result.code,
+                  message: result.message,
+                  ...(result.conflicts !== undefined
+                    ? { conflicts: result.conflicts, hint: "只重读这些区域后再写" }
+                    : {}),
+                },
+              });
+            }
+          })
+          .catch((err: unknown) => {
+            emit("doc.submit.failed", { connectionId: conn.id, name: (err as Error).name });
+            send(conn, {
+              type: "doc.reject",
+              clientOpId: msg.clientOpId,
+              conflict: { code: "internal", message: "提交失败" },
+            });
+          });
+        break;
+      }
       case "sub":
         subscribe(conn, msg.topic, msg.cursor).catch((err: unknown) => {
           emit("sub.failed", { connectionId: conn.id, name: (err as Error).name });
@@ -234,7 +391,6 @@ export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () 
         });
         break;
       default:
-        // doc.submit / presence：类型已定义，M1 不实现
         send(conn, {
           type: "error",
           error: { code: "not_implemented", message: `${msg.type} 尚未实现` },
@@ -284,6 +440,7 @@ export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () 
         id: randomUUID(),
         ws,
         subs: new Map(),
+        docSubs: new Map(),
         isAppSub: false,
         idleTimer: setTimeout(() => {}, 0),
       };
@@ -327,6 +484,7 @@ export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () 
   return () => {
     server.off("upgrade", onUpgrade);
     unsubscribe();
+    unsubscribeDoc();
     for (const c of conns.values()) c.ws.terminate();
     wss.close();
   };

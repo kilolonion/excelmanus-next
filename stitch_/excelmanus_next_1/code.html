@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+
+<html lang="en"><head><meta charset="utf-8"/><meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" name="viewport"/><meta content="mobile_tab" name="shell-type"/><link href="https://fonts.googleapis.com" rel="preconnect"/><link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/><link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&amp;family=Plus+Jakarta+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/><style>@layer base{html,body{width:100vw;margin:0;padding:0;}body{overscroll-behavior:none;}.pb-safe{padding-bottom:env(safe-area-inset-bottom,0px);}.pt-safe{padding-top:env(safe-area-inset-top,0px);}main>:first-child{margin-top:0!important;}main>:last-child{margin-bottom:0!important;}}::-webkit-scrollbar{display:none;}</style><script src="https://cdn.tailwindcss.com"></script><script id="tailwind-config">tailwind.config = { darkMode: "class", theme: { extend: { "colors": { "on-tertiary-fixed-variant": "#005137", "outline": "#7e7570", "error": "#ba1a1a", "on-tertiary-container": "#069669", "surface-bright": "#f9f9f8", "surface-container-high": "#e8e8e7", "on-tertiary": "#ffffff", "on-primary": "#ffffff", "on-background": "#1a1c1c", "primary-fixed": "#e9e1dd", "on-error": "#ffffff", "primary-fixed-dim": "#ccc5c2", "surface-container-lowest": "#ffffff", "outline-variant": "#d0c4be", "on-primary-container": "#888380", "on-primary-fixed": "#1e1b19", "secondary-fixed": "#e2dfff", "tertiary": "#000000", "on-tertiary-fixed": "#002114", "surface-tint": "#625d5b", "secondary": "#4b41e1", "on-secondary-container": "#fffbff", "secondary-container": "#645efb", "surface-container-highest": "#e2e2e2", "on-surface-variant": "#4d4540", "primary-container": "#1e1b19", "inverse-surface": "#2f3130", "background": "#f9f9f8", "tertiary-fixed-dim": "#68dba9", "tertiary-fixed": "#85f8c4", "inverse-on-surface": "#f1f1f0", "inverse-primary": "#ccc5c2", "surface": "#f9f9f8", "surface-container-low": "#f4f4f3", "secondary-fixed-dim": "#c3c0ff", "on-secondary": "#ffffff", "tertiary-container": "#002114", "on-surface": "#1a1c1c", "surface-dim": "#dadad9", "on-error-container": "#93000a", "error-container": "#ffdad6", "surface-variant": "#e2e2e2", "on-secondary-fixed": "#0f0069", "primary": "#000000", "on-secondary-fixed-variant": "#3323cc", "surface-container": "#eeeeed", "on-primary-fixed-variant": "#4a4643" }, "borderRadius": { "DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px" }, "spacing": { "margin": "1.25rem", "space-xs": "0.25rem", "margin-mobile": "0.75rem", "gutter": "1rem", "space-md": "0.75rem", "gutter-sm": "0.5rem", "space-sm": "0.5rem", "space-xl": "2rem", "space-lg": "1.25rem" }, "fontFamily": { "label-md": ["Plus Jakarta Sans"], "body-sm": ["Plus Jakarta Sans"], "body-lg": ["Plus Jakarta Sans"], "body-md": ["Plus Jakarta Sans"], "headline-xl": ["Plus Jakarta Sans"], "headline-sm": ["Plus Jakarta Sans"], "label-sm": ["Plus Jakarta Sans"], "code-formula": ["JetBrains Mono"], "code-badge": ["JetBrains Mono"], "headline-md": ["Plus Jakarta Sans"], "headline-lg": ["Plus Jakarta Sans"], "code-cell": ["JetBrains Mono"] }, "fontSize": { "label-md": ["12px", {"lineHeight": "16px", "letterSpacing": "0.01em", "fontWeight": "500"}], "body-sm": ["13px", {"lineHeight": "18px", "fontWeight": "400"}], "body-lg": ["16px", {"lineHeight": "24px", "fontWeight": "400"}], "body-md": ["14px", {"lineHeight": "20px", "fontWeight": "400"}], "headline-xl": ["28px", {"lineHeight": "36px", "letterSpacing": "-0.02em", "fontWeight": "600"}], "headline-sm": ["15px", {"lineHeight": "20px", "fontWeight": "600"}], "label-sm": ["11px", {"lineHeight": "14px", "letterSpacing": "0.02em", "fontWeight": "500"}], "code-formula": ["13px", {"lineHeight": "18px", "letterSpacing": "-0.01em", "fontWeight": "500"}], "code-badge": ["11px", {"lineHeight": "14px", "fontWeight": "500"}], "headline-md": ["18px", {"lineHeight": "24px", "letterSpacing": "-0.01em", "fontWeight": "600"}], "headline-lg": ["22px", {"lineHeight": "28px", "letterSpacing": "-0.015em", "fontWeight": "600"}], "code-cell": ["12px", {"lineHeight": "16px", "fontWeight": "400"}] } } } };</script><style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head><body class="bg-surface font-body-md text-on-surface antialiased flex flex-col min-h-screen"><header class="fixed top-0 w-full z-50 pt-safe bg-surface/90 backdrop-blur-xl shadow-[0_1px_8px_rgba(0,0,0,0.03)]"><div class="h-28 flex flex-col justify-between px-space-md py-space-xs"><div class="flex items-center justify-between w-full h-12"><div class="flex items-center gap-space-sm min-w-0"><img alt="Brand logo. - Primary color: #1c1917
+- Font: plusJakartaSans
+- Mode: light
+- Roundness: rounded-md
+" class="h-8 w-auto object-contain" src="https://lh3.googleusercontent.com/aida/AEtjO1Uu9XJzKwYmyf8zGxVVLoZFGRYliffo7OiaMQ7XkzYuYFQIazWE0b2xfIId9lH185NewpXhUfjOo_8qSMf9U27abzl3CkvUctxCPE7gMMTuXlsv3XK8cwGzMuC-pP3_JMtZ63g0tmv_TYcf0A4xuvCupuo6SzVPaTy03Ws61nCpKx_GDXWO8bM9_VTdIjPbspazFq32Eyuu3xJVESeO_B9fEqSQoj6gaHT8U2-VCUK1ka8HfNwvTeqBAaFb"/><div class="flex flex-col min-w-0"><div class="flex items-center gap-1.5"><span class="font-headline-sm text-headline-sm text-on-surface tracking-tight font-semibold truncate">ExcelManus</span><span class="font-code-badge text-code-badge px-1 py-0.5 rounded bg-surface-container-high text-on-surface-variant">Next</span></div><div class="flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-on-tertiary-container animate-pulse"></span><span class="font-label-sm text-label-sm text-on-surface-variant">Sync 18ms</span></div></div></div><button class="flex items-center gap-1 px-space-sm py-1 rounded-lg bg-surface-container-low max-w-[140px] truncate text-left"><span class="material-symbols-outlined text-[15px] text-on-surface-variant flex-shrink-0">description</span><span class="font-code-cell text-code-cell text-on-surface truncate">2026_Q3_销售汇总报表.xlsx</span><span class="material-symbols-outlined text-[14px] text-on-surface-variant flex-shrink-0">unfold_more</span></button><div class="flex items-center gap-space-xs"><div class="relative flex items-center justify-center"><div class="w-8 h-8 rounded-full bg-primary flex items-center justify-center"><span class="material-symbols-outlined text-on-primary text-[18px]">person</span></div><span class="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-secondary ring-2 ring-surface"></span></div></div></div><div class="flex items-center justify-between gap-space-sm bg-surface-container-low p-1 rounded-xl w-full"><button class="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-surface-container-lowest text-on-surface shadow-[0_1px_4px_rgba(0,0,0,0.04)]"><span class="font-headline-sm text-headline-sm text-on-surface">对话</span><span class="font-label-sm text-label-sm text-on-surface-variant">(Agent Chat)</span><span class="inline-flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full bg-secondary text-on-secondary font-label-sm text-[10px]">1</span></button><button class="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-on-surface-variant"><span class="font-headline-sm text-headline-sm text-on-surface-variant">表格</span><span class="font-label-sm text-label-sm text-on-surface-variant">(Sheet View)</span><span class="font-code-badge text-code-badge px-1 rounded bg-surface-container-high text-on-surface-variant">rev:58</span></button></div></div></header><main class="flex flex-col relative w-full pt-28 pb-24 bg-surface min-h-screen"><div class="flex flex-col w-full">
+<!-- Formula & Range Bar (Sticky Top Workbench) -->
+<section class="sticky top-0 z-20 bg-surface/95 backdrop-blur-md px-space-md py-space-xs shadow-sm">
+<div class="flex items-center gap-space-xs bg-surface-container-lowest rounded-xl p-1.5 shadow-sm">
+<div class="flex items-center gap-1 px-2 py-1 rounded-lg bg-surface-container text-on-surface flex-shrink-0">
+<span class="font-code-badge text-code-badge text-primary font-semibold">Sheet1!C4</span>
+<span class="material-symbols-outlined text-[14px] text-on-surface-variant">expand_more</span>
+</div>
+<div class="flex items-center gap-1.5 flex-1 min-w-0 px-1.5">
+<span class="font-code-formula text-code-formula text-secondary font-semibold italic flex-shrink-0">fx</span>
+<div class="overflow-x-auto whitespace-nowrap scrollbar-none min-w-0">
+<span class="font-code-formula text-code-formula text-on-surface tracking-tight">=DATEVALUE(TEXT(A2,"yyyy-mm-dd"))</span>
+</div>
+</div>
+<button class="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-secondary text-on-secondary shadow-sm active:scale-95 transition-transform flex-shrink-0" id="ask-agent-pill">
+<span class="material-symbols-outlined text-[14px]">auto_awesome</span>
+<span class="font-label-sm text-label-sm font-semibold">问代理</span>
+</button>
+</div>
+</section>
+<!-- Spreadsheet Canvas with Ambient AI Activity Layers -->
+<section class="relative w-full px-space-sm pt-space-xs pb-space-md overflow-hidden">
+<!-- Active Agent Activity Alert Pill -->
+<div class="flex items-center justify-between px-3 py-1.5 mb-space-xs rounded-xl bg-surface-container-high text-on-surface">
+<div class="flex items-center gap-2 min-w-0">
+<span class="w-2 h-2 rounded-full bg-secondary-container animate-pulse"></span>
+<span class="font-label-sm text-label-sm text-on-surface truncate">Agent 正在预审 <span class="font-code-badge text-code-badge font-semibold">C 列日期格式规范</span></span>
+</div>
+<span class="font-code-badge text-code-badge text-on-surface-variant flex-shrink-0">Auto-Linter</span>
+</div>
+<!-- Table Container with Horizontal Scroll -->
+<div class="relative w-full rounded-2xl bg-surface-container-lowest shadow-sm overflow-hidden">
+<div class="overflow-x-auto overscroll-x-contain pb-2">
+<div class="inline-block min-w-full align-middle">
+<table class="w-full text-left border-collapse table-fixed">
+<thead>
+<tr class="bg-surface-container-low text-on-surface-variant">
+<th class="w-10 px-1 py-2 text-center font-code-badge text-code-badge">#</th>
+<th class="w-28 px-3 py-2 font-label-md text-label-md">A 订单编号</th>
+<th class="w-28 px-3 py-2 font-label-md text-label-md">B 客户名称</th>
+<th class="w-36 px-3 py-2 font-label-md text-label-md bg-amber-50/60 text-amber-900">
+<div class="flex items-center justify-between">
+<span>C 销售日期</span>
+<span class="material-symbols-outlined text-[14px] text-amber-700">pending</span>
+</div>
+</th>
+<th class="w-28 px-3 py-2 font-label-md text-label-md">D 产品品类</th>
+</tr>
+</thead>
+<tbody class="divide-none">
+<!-- Row 1: Green settled row -->
+<tr class="bg-surface-container-lowest transition-colors">
+<td class="text-center font-code-cell text-code-cell text-on-surface-variant bg-surface-container-low/60">1</td>
+<td class="px-3 py-2 font-code-cell text-code-cell text-on-surface">ORD-89201</td>
+<td class="px-3 py-2 font-body-sm text-body-sm text-on-surface">晨星云智</td>
+<td class="px-3 py-2 font-code-cell text-code-cell bg-on-tertiary-container/10 text-on-tertiary-container relative">
+                  2026-08-10
+                  <span class="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-on-tertiary-container"></span>
+</td>
+<td class="px-3 py-2 font-body-sm text-body-sm text-on-surface-variant">工业智能</td>
+</tr>
+<!-- Row 2: Green settled row -->
+<tr class="bg-surface-container-lowest">
+<td class="text-center font-code-cell text-code-cell text-on-surface-variant bg-surface-container-low/60">2</td>
+<td class="px-3 py-2 font-code-cell text-code-cell text-on-surface">ORD-89202</td>
+<td class="px-3 py-2 font-body-sm text-body-sm text-on-surface">万润数据</td>
+<td class="px-3 py-2 font-code-cell text-code-cell bg-on-tertiary-container/10 text-on-tertiary-container relative">
+                  2026-08-11
+                  <span class="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-on-tertiary-container"></span>
+</td>
+<td class="px-3 py-2 font-body-sm text-body-sm text-on-surface-variant">算力集群</td>
+</tr>
+<!-- Row 3: Green settled row -->
+<tr class="bg-surface-container-lowest">
+<td class="text-center font-code-cell text-code-cell text-on-surface-variant bg-surface-container-low/60">3</td>
+<td class="px-3 py-2 font-code-cell text-code-cell text-on-surface">ORD-89203</td>
+<td class="px-3 py-2 font-body-sm text-body-sm text-on-surface">蓝象矩阵</td>
+<td class="px-3 py-2 font-code-cell text-code-cell bg-on-tertiary-container/10 text-on-tertiary-container relative">
+                  2026-08-11
+                  <span class="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-on-tertiary-container"></span>
+</td>
+<td class="px-3 py-2 font-body-sm text-body-sm text-on-surface-variant">企业SaaS</td>
+</tr>
+<!-- Row 4: Focused Mutation Target (C4) -->
+<tr class="bg-surface-container-lowest">
+<td class="text-center font-code-cell text-code-cell text-on-surface font-semibold bg-surface-container-high">4</td>
+<td class="px-3 py-2 font-code-cell text-code-cell text-on-surface">ORD-89204</td>
+<td class="px-3 py-2 font-body-sm text-body-sm text-on-surface font-medium">极光智行</td>
+<!-- C4 Active Cell with Focus Badge and Visual Outline -->
+<td class="px-3 py-2 font-code-cell text-code-cell bg-amber-100 text-on-surface relative shadow-sm">
+<div class="flex items-center justify-between">
+<span class="font-semibold text-primary">2026-08-12</span>
+<span class="inline-flex w-2 h-2 rounded-full bg-secondary"></span>
+</div>
+<div class="absolute -top-1 -right-1 px-1 rounded bg-secondary text-on-secondary font-code-badge text-[9px] shadow-sm">C4</div>
+</td>
+<td class="px-3 py-2 font-body-sm text-body-sm text-on-surface-variant">车载终端</td>
+</tr>
+<!-- Row 5: Mutation with warning (C5) -->
+<tr class="bg-surface-container-lowest">
+<td class="text-center font-code-cell text-code-cell text-on-surface-variant bg-surface-container-low/60">5</td>
+<td class="px-3 py-2 font-code-cell text-code-cell text-on-surface">ORD-89205</td>
+<td class="px-3 py-2 font-body-sm text-body-sm text-on-surface">海岳能源</td>
+<td class="px-3 py-2 bg-amber-50 text-amber-900 font-code-cell text-code-cell">
+<span class="px-1.5 py-0.5 rounded bg-amber-200 text-amber-950 font-label-sm text-label-sm font-semibold">[空值待标黄]</span>
+</td>
+<td class="px-3 py-2 font-body-sm text-body-sm text-on-surface-variant">电网边缘</td>
+</tr>
+<!-- Row 6 -->
+<tr class="bg-surface-container-lowest">
+<td class="text-center font-code-cell text-code-cell text-on-surface-variant bg-surface-container-low/60">6</td>
+<td class="px-3 py-2 font-code-cell text-code-cell text-on-surface">ORD-89206</td>
+<td class="px-3 py-2 font-body-sm text-body-sm text-on-surface">中科创源</td>
+<td class="px-3 py-2 font-code-cell text-code-cell bg-amber-50 text-amber-950">2026/08/13</td>
+<td class="px-3 py-2 font-body-sm text-body-sm text-on-surface-variant">仿生传感</td>
+</tr>
+<!-- Row 7 -->
+<tr class="bg-surface-container-lowest">
+<td class="text-center font-code-cell text-code-cell text-on-surface-variant bg-surface-container-low/60">7</td>
+<td class="px-3 py-2 font-code-cell text-code-cell text-on-surface">ORD-89207</td>
+<td class="px-3 py-2 font-body-sm text-body-sm text-on-surface">数安科技</td>
+<td class="px-3 py-2 font-code-cell text-code-cell bg-amber-50 text-amber-950">2026/08/13</td>
+<td class="px-3 py-2 font-body-sm text-body-sm text-on-surface-variant">合规审计</td>
+</tr>
+<!-- Row 8 -->
+<tr class="bg-surface-container-lowest">
+<td class="text-center font-code-cell text-code-cell text-on-surface-variant bg-surface-container-low/60">8</td>
+<td class="px-3 py-2 font-code-cell text-code-cell text-on-surface">ORD-89208</td>
+<td class="px-3 py-2 font-body-sm text-body-sm text-on-surface">元语智能</td>
+<td class="px-3 py-2 font-code-cell text-code-cell bg-amber-50 text-amber-950">2026/08/14</td>
+<td class="px-3 py-2 font-body-sm text-body-sm text-on-surface-variant">生成模型</td>
+</tr>
+<!-- Row 9 -->
+<tr class="bg-surface-container-lowest">
+<td class="text-center font-code-cell text-code-cell text-on-surface-variant bg-surface-container-low/60">9</td>
+<td class="px-3 py-2 font-code-cell text-code-cell text-on-surface">ORD-89209</td>
+<td class="px-3 py-2 font-body-sm text-body-sm text-on-surface">同舟微电</td>
+<td class="px-3 py-2 font-code-cell text-code-cell bg-amber-50 text-amber-950">2026/08/14</td>
+<td class="px-3 py-2 font-body-sm text-body-sm text-on-surface-variant">RISC-V芯片</td>
+</tr>
+<!-- Row 10 -->
+<tr class="bg-surface-container-lowest">
+<td class="text-center font-code-cell text-code-cell text-on-surface-variant bg-surface-container-low/60">10</td>
+<td class="px-3 py-2 font-code-cell text-code-cell text-on-surface">ORD-89210</td>
+<td class="px-3 py-2 font-body-sm text-body-sm text-on-surface">智汇供应链</td>
+<td class="px-3 py-2 font-code-cell text-code-cell bg-amber-50 text-amber-950">2026/08/15</td>
+<td class="px-3 py-2 font-body-sm text-body-sm text-on-surface-variant">物流中枢</td>
+</tr>
+<!-- Row 11 -->
+<tr class="bg-surface-container-lowest">
+<td class="text-center font-code-cell text-code-cell text-on-surface-variant bg-surface-container-low/60">11</td>
+<td class="px-3 py-2 font-code-cell text-code-cell text-on-surface">ORD-89211</td>
+<td class="px-3 py-2 font-body-sm text-body-sm text-on-surface">光子力拓</td>
+<td class="px-3 py-2 font-code-cell text-code-cell bg-amber-50 text-amber-950">2026/08/16</td>
+<td class="px-3 py-2 font-body-sm text-body-sm text-on-surface-variant">工业激光</td>
+</tr>
+<!-- Row 12 -->
+<tr class="bg-surface-container-lowest">
+<td class="text-center font-code-cell text-code-cell text-on-surface-variant bg-surface-container-low/60">12</td>
+<td class="px-3 py-2 font-code-cell text-code-cell text-on-surface">ORD-89212</td>
+<td class="px-3 py-2 font-body-sm text-body-sm text-on-surface">安澜生物</td>
+<td class="px-3 py-2 font-code-cell text-code-cell bg-amber-50 text-amber-950">2026/08/17</td>
+<td class="px-3 py-2 font-body-sm text-body-sm text-on-surface-variant">精准医疗</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<!-- Sheet Tabs Strip (Bottom of Table Viewport) -->
+<div class="flex items-center gap-1 px-space-sm py-1.5 bg-surface-container-low overflow-x-auto scrollbar-none">
+<button class="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-surface-container-lowest text-on-surface shadow-sm flex-shrink-0">
+<span class="w-1.5 h-1.5 rounded-full bg-on-tertiary-container"></span>
+<span class="font-label-sm text-label-sm font-semibold">销售总览</span>
+</button>
+<button class="flex items-center gap-1 px-3 py-1 rounded-lg text-on-surface-variant flex-shrink-0 active:bg-surface-container">
+<span class="font-label-sm text-label-sm">华东分公司</span>
+</button>
+<button class="flex items-center gap-1 px-3 py-1 rounded-lg text-on-surface-variant flex-shrink-0 active:bg-surface-container">
+<span class="font-label-sm text-label-sm">华南分公司</span>
+</button>
+<button class="flex items-center justify-center w-7 h-6 rounded-lg text-on-surface-variant flex-shrink-0 active:bg-surface-container">
+<span class="material-symbols-outlined text-[16px]">add</span>
+</button>
+</div>
+</div>
+<!-- Floating Inspection Card (Anchored to C4 mutation) -->
+<div class="mt-space-sm p-space-sm rounded-xl bg-surface-container-lowest shadow-md flex flex-col gap-2">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[16px] text-secondary">fact_check</span>
+<span class="font-headline-sm text-headline-sm text-on-surface">C4 变更预检</span>
+<span class="font-code-badge text-code-badge px-1.5 py-0.5 rounded bg-secondary-fixed text-on-secondary-fixed-variant">待确认</span>
+</div>
+<span class="font-label-sm text-label-sm text-on-surface-variant">置信度 99.4%</span>
+</div>
+<!-- Inspection Diff Line -->
+<div class="flex items-center gap-2 p-2 rounded-lg bg-surface-container-low">
+<div class="flex-1 flex flex-col">
+<span class="font-label-sm text-label-sm text-on-surface-variant">原单元格数据</span>
+<span class="font-code-formula text-code-formula text-error line-through">2026/08/12</span>
+</div>
+<span class="material-symbols-outlined text-[18px] text-on-surface-variant flex-shrink-0">arrow_forward</span>
+<div class="flex-1 flex flex-col">
+<span class="font-label-sm text-label-sm text-on-surface-variant">AI 建议清洗</span>
+<span class="font-code-formula text-code-formula text-on-tertiary-container font-semibold">2026-08-12</span>
+</div>
+</div>
+<div class="flex items-center justify-between pt-0.5">
+<span class="font-label-sm text-label-sm text-on-surface-variant">遵循规则: <code class="font-code-badge text-code-badge">ISO-8601 销售规范</code></span>
+<div class="flex items-center gap-1.5">
+<button class="px-2.5 py-1 rounded-lg bg-surface-container text-on-surface font-label-sm text-label-sm active:scale-95">忽略</button>
+<button class="px-2.5 py-1 rounded-lg bg-primary text-on-primary font-label-sm text-label-sm shadow-sm active:scale-95">应用该项</button>
+</div>
+</div>
+</div>
+</section>
+<!-- Mobile Change Navigation Bar (Sticky Dock above App Bar) -->
+<section class="sticky bottom-16 z-30 px-space-md py-space-xs">
+<div class="w-full rounded-2xl bg-primary-container text-on-primary-container p-space-sm shadow-xl flex flex-col gap-2">
+<!-- Top Row: Stepper & Index Tracker -->
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2">
+<span class="w-2 h-2 rounded-full bg-amber-400"></span>
+<span class="font-headline-sm text-headline-sm text-on-primary font-semibold">本轮改动 3 / 17</span>
+</div>
+<div class="flex items-center gap-1 bg-surface-container-highest/20 rounded-xl p-0.5">
+<button class="w-7 h-7 rounded-lg flex items-center justify-center text-on-primary active:bg-surface-container-highest/30 transition-colors" title="上一项">
+<span class="material-symbols-outlined text-[18px]">chevron_left</span>
+</button>
+<button class="w-7 h-7 rounded-lg flex items-center justify-center text-on-primary active:bg-surface-container-highest/30 transition-colors" title="下一项">
+<span class="material-symbols-outlined text-[18px]">chevron_right</span>
+</button>
+</div>
+</div>
+<!-- Quick Comparison Chip & Safety Action -->
+<div class="flex items-center justify-between gap-space-sm pt-1">
+<div class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-surface-container-highest/15 text-on-primary flex-1 min-w-0">
+<span class="font-code-badge text-code-badge text-amber-300 font-semibold flex-shrink-0">C4</span>
+<div class="flex items-center gap-1 font-code-cell text-code-cell truncate text-on-primary/90">
+<span class="opacity-60 truncate">2026/08/12</span>
+<span class="material-symbols-outlined text-[12px] opacity-70">arrow_forward</span>
+<span class="font-semibold text-tertiary-fixed truncate">2026-08-12</span>
+</div>
+</div>
+<button class="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-surface-container-highest/20 text-on-primary active:bg-surface-container-highest/40 flex-shrink-0 transition-colors">
+<span class="material-symbols-outlined text-[16px] text-primary-fixed-dim">history</span>
+<span class="font-label-sm text-label-sm font-medium">用备份替换</span>
+</button>
+</div>
+</div>
+</section>
+<!-- Quick Floating Pill: Instant Return to Agent Chat -->
+<div class="fixed bottom-24 right-4 z-40">
+<a class="flex items-center gap-2 px-3.5 py-2 rounded-full bg-secondary text-on-secondary shadow-lg active:scale-95 transition-transform" data-path="agent-chat" href="#">
+<span class="material-symbols-outlined text-[18px]">forum</span>
+<span class="font-label-md text-label-md font-semibold">切回对话</span>
+<span class="inline-flex items-center justify-center px-1.5 h-4 rounded-full bg-surface-container-lowest text-secondary font-label-sm text-[10px] font-bold">1</span>
+</a>
+</div>
+</div>
+<script>
+  // Mobile micro-interaction feedback
+  document.getElementById('ask-agent-pill')?.addEventListener('click', () => {
+    const chip = document.querySelector('.animate-pulse');
+    if (chip) {
+      chip.classList.toggle('bg-secondary');
+      chip.classList.toggle('bg-amber-400');
+    }
+  });
+</script></main><nav class="fixed bottom-0 w-full z-50 pb-safe bg-surface/90 backdrop-blur-xl shadow-[0_-2px_12px_rgba(0,0,0,0.04)]" data-active-classes="text-primary font-semibold"><div class="flex items-center justify-around h-16 px-space-xs"><a class="flex flex-col items-center justify-center w-14 h-12 text-on-surface-variant transition-colors" data-path="agent-chat" href="#"><span class="material-symbols-outlined text-[20px]">forum</span><span class="font-label-sm text-label-sm mt-0.5">会话对话</span></a><a aria-current="page" class="flex flex-col items-center justify-center w-14 h-12 transition-colors text-primary font-semibold" data-path="sheet-view" href="#"><span class="material-symbols-outlined text-[20px]">grid_on</span><span class="font-label-sm text-label-sm mt-0.5">表格浏览</span></a><a class="flex flex-col items-center justify-center w-14 h-12 text-on-surface-variant transition-colors relative" data-path="agents-hub" href="#"><span class="material-symbols-outlined text-[20px]">smart_toy</span><span class="font-label-sm text-label-sm mt-0.5">代理团队</span><span class="absolute top-1 right-2 w-1.5 h-1.5 rounded-full bg-secondary"></span></a><a class="flex flex-col items-center justify-center w-14 h-12 text-on-surface-variant transition-colors relative" data-path="approvals-and-changes" href="#"><span class="material-symbols-outlined text-[20px]">rule</span><span class="font-label-sm text-label-sm mt-0.5">审批变动</span><span class="absolute top-0 right-1 px-1 rounded-full bg-error text-on-error font-label-sm text-[9px] leading-tight">14</span></a><a class="flex flex-col items-center justify-center w-14 h-12 text-on-surface-variant transition-colors" data-path="workspace-settings" href="#"><span class="material-symbols-outlined text-[20px]">tune</span><span class="font-label-sm text-label-sm mt-0.5">设置</span></a></div></nav></body></html>

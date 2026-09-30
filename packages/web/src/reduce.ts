@@ -17,6 +17,7 @@ export interface ToolCard {
   args?: string;
   targets?: string[];
   resultSummary?: string;
+  docId?: string;
 }
 
 export interface SessionState {
@@ -44,17 +45,6 @@ export const initialSessionState = (): SessionState => ({
   retry: null,
   error: null,
 });
-
-const seen = new WeakMap<SessionState, Set<number>>();
-
-function seenSet(s: SessionState): Set<number> {
-  let set = seen.get(s);
-  if (!set) {
-    set = new Set();
-    seen.set(s, set);
-  }
-  return set;
-}
 
 function summarizeResult(result: unknown): string {
   try {
@@ -147,9 +137,16 @@ function applyRecord(s: SessionState, type: string, data: Record<string, unknown
         res?.status === "ok"
           ? summarizeResult(res.data)
           : (res?.error?.message ?? res?.status ?? "");
+      const output = res?.data as { docId?: unknown } | undefined;
+      const docId = typeof output?.docId === "string" ? output.docId : undefined;
       const tools = s.tools.map((t) =>
         t.toolCallId === toolCallId
-          ? { ...t, status: status as ToolCard["status"], resultSummary: summary }
+          ? {
+              ...t,
+              status: status as ToolCard["status"],
+              resultSummary: summary,
+              ...(docId ? { docId } : {}),
+            }
           : t,
       );
       if (!tools.some((t) => t.toolCallId === toolCallId)) {
@@ -182,12 +179,10 @@ function applyRecord(s: SessionState, type: string, data: Record<string, unknown
 
 export function reduceSession(state: SessionState, msg: ServerMessage): SessionState {
   if (msg.type === "rec") {
-    const set = seenSet(state);
-    if (set.has(msg.seq)) return state; // seq 幂等
+    if (msg.seq <= state.cursor) return state;
     const next = {
       ...applyRecord(state, msg.record.type, msg.record.data as Record<string, unknown>),
     };
-    seen.set(next, new Set([...set, msg.seq]));
     next.cursor = Math.max(state.cursor, msg.seq);
     return next;
   }
@@ -223,6 +218,61 @@ export function reduceSession(state: SessionState, msg: ServerMessage): SessionS
     return { ...state, streamingText: msg.text, reasoningText: msg.reasoning };
   }
   return state;
+}
+
+/** 文档同步状态（11 §3.6）：rev 跟踪 + 本端 doc.submit 的待确认集。 */
+export interface DocSyncState {
+  rev: number;
+  pending: Record<
+    string,
+    { status: "pending" | "acked" | "rejected"; rev?: number; conflict?: unknown }
+  >;
+}
+
+export const initialDocSync = (rev = 0): DocSyncState => ({ rev, pending: {} });
+
+export function reduceDoc(state: DocSyncState, msg: ServerMessage): DocSyncState {
+  switch (msg.type) {
+    case "sub.ok":
+      return msg.headCursor > state.rev ? { ...state, rev: msg.headCursor } : state;
+    case "doc.op":
+      // 分片的各 chunk 携带同一 rev；按 rev 幂等推进
+      return msg.rev > state.rev ? { ...state, rev: msg.rev } : state;
+    case "doc.ack": {
+      const p = state.pending[msg.clientOpId];
+      if (p?.status !== "pending") return state;
+      return {
+        ...state,
+        rev: Math.max(state.rev, msg.rev),
+        pending: {
+          ...state.pending,
+          [msg.clientOpId]: { status: "acked", rev: msg.rev },
+        },
+      };
+    }
+    case "doc.reject": {
+      const p = state.pending[msg.clientOpId];
+      if (p?.status !== "pending") return state;
+      return {
+        ...state,
+        pending: {
+          ...state.pending,
+          [msg.clientOpId]: { status: "rejected", conflict: msg.conflict },
+        },
+      };
+    }
+    case "doc.reload":
+      return msg.rev > state.rev ? { ...state, rev: msg.rev } : state;
+    default:
+      return state;
+  }
+}
+
+export function trackDocSubmit(state: DocSyncState, clientOpId: string): DocSyncState {
+  return {
+    ...state,
+    pending: { ...state.pending, [clientOpId]: { status: "pending" } },
+  };
 }
 
 /** 排序展示：把工具卡片并入消息流（按序追加在最新消息之后的简化模型）。 */

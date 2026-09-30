@@ -6,9 +6,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ToolContext } from "@excelmanus/kernel";
-import { openDb } from "@excelmanus/kernel";
+import { createReadTable, openDb } from "@excelmanus/kernel";
 import { afterAll, describe, expect, test } from "vitest";
-import { DOCUMENTS_MIGRATION, DocumentService } from "../src/service.ts";
+import { DOC_OPS_MIGRATION, DOCUMENTS_MIGRATION, DocumentService } from "../src/service.ts";
 import { workbookTools } from "../src/tools.ts";
 
 const dirs: string[] = [];
@@ -20,7 +20,7 @@ function setup() {
   const samples = join(dirname(fileURLToPath(import.meta.url)), "../../../../samples");
   cpSync(join(samples, "sales.xlsx"), join(workspaceRoot, "sales.xlsx"));
   cpSync(join(samples, "catalog-gbk.csv"), join(workspaceRoot, "catalog-gbk.csv"));
-  const db = openDb(join(dir, "db.sqlite"), [DOCUMENTS_MIGRATION]);
+  const db = openDb(join(dir, "db.sqlite"), [DOCUMENTS_MIGRATION, DOC_OPS_MIGRATION]);
   const service = new DocumentService(db);
   const tools = workbookTools(service);
   const read = tools.find((t) => t.name === "workbook_read");
@@ -33,6 +33,7 @@ function setup() {
     sessionId: "ses1",
     agentId: "main",
     toolCallId: "tc1",
+    reads: createReadTable(),
   };
   return { read, analyze, service, ctx };
 }

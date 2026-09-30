@@ -22,7 +22,12 @@ import {
 } from "@excelmanus/kernel";
 import { createGateway } from "@excelmanus/models";
 import type { ResolvedModel, ToolSpec } from "@excelmanus/protocol";
-import { DOCUMENTS_MIGRATION, type WorkbookModule, workbookModule } from "@excelmanus/workbook";
+import {
+  DOC_OPS_MIGRATION,
+  DOCUMENTS_MIGRATION,
+  type WorkbookModule,
+  workbookModule,
+} from "@excelmanus/workbook";
 import { serve } from "@hono/node-server";
 import { z } from "zod";
 import { createApp } from "./app.ts";
@@ -73,7 +78,10 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     // workbook 模块需要 db 句柄建 DocumentService：先按静态迁移清单开库，再建模块。
     const migrations = [
       ...KERNEL_MIGRATIONS,
-      ...(opts.modules?.flatMap((m) => m.migrations ?? []) ?? [DOCUMENTS_MIGRATION]),
+      ...(opts.modules?.flatMap((m) => m.migrations ?? []) ?? [
+        DOCUMENTS_MIGRATION,
+        DOC_OPS_MIGRATION,
+      ]),
     ];
     const db = openDb(join(dataDir, "excelmanus.db"), migrations);
     const workbook = opts.modules
@@ -93,11 +101,10 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       projections: [...kernelProjections(), ...modules.flatMap((m) => m.projections ?? [])],
       bus,
     });
-    const recovered = recoverInterruptedAgents({ db, log: sessionLog });
-    if (recovered > 0) emit("agents.recovered", { count: recovered });
-
     const tools = new Map<string, ToolDefinition>();
     for (const m of modules) for (const t of m.tools ?? []) tools.set(t.name, t);
+    const recovered = recoverInterruptedAgents({ db, log: sessionLog, tools });
+    if (recovered > 0) emit("agents.recovered", { count: recovered });
     const specCache = new Map<string, ToolSpec[]>();
     const toolSpecsFor = (role: string): ToolSpec[] => {
       const cached = specCache.get(role);
@@ -170,6 +177,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       webDist: opts.webDist ?? join(dirname(fileURLToPath(import.meta.url)), "../../web/dist"),
       emit,
       allowedHosts,
+      allowedOrigins,
     });
 
     const server = await new Promise<Server>((resolve) => {
@@ -185,6 +193,15 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       allowedHosts,
       allowedOrigins,
       emit,
+      docService: workbook?.service,
+      workspaceRootFor: (docId) => {
+        const row = db
+          .prepare(
+            "SELECT w.path FROM documents d JOIN workspaces w ON w.id = d.workspace_id WHERE d.id = ?",
+          )
+          .get(docId) as { path: string } | undefined;
+        return row?.path;
+      },
     });
     const sweeper = setInterval(() => {
       const now = Date.now();

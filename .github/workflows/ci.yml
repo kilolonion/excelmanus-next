@@ -35,5 +35,8 @@ jobs:
       - name: Licenses
         run: pnpm check:licenses
 
+      - name: Web production build
+        run: pnpm build:web
+
       - name: Unit tests
         run: pnpm test

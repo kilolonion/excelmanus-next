@@ -16,6 +16,7 @@ export const S = {
 
   composerPlaceholder: "输入消息…（Enter 发送，Shift+Enter 换行）",
   send: "发送",
+  sendFailed: "消息未发送。请确认连接和选区后重试，输入内容已保留。",
   stop: "停止",
   queued: "已排队",
   retrying: (attempt: number, waitMs: number) =>
@@ -33,11 +34,14 @@ export const S = {
   files: "文件",
   upload: "上传",
   uploadFailed: "上传失败",
-  openFileHint: "点击左侧 xlsx / csv 文件在此打开（只读）",
-  unsupportedFile: "仅支持 .xlsx / .csv",
+  openFileHint: "点击文件在此打开（只读，支持 xlsx / xlsm / csv / tsv）",
+  unsupportedFile: "仅支持 .xlsx / .xlsm / .csv / .tsv",
+  openReferenceFile: "请先在工作台打开引用所在的文件。",
+  invalidReference: "当前工作簿中找不到该区域，请确认引用所在的文件和工作表。",
   selectedRange: "当前选区",
   noSelection: "未选择",
   docLoading: "正在加载文档…",
+  openWorkbook: "在工作台打开",
   docLoadFailed: "文档打开失败",
 
   settings: "设置",

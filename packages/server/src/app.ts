@@ -1,10 +1,17 @@
 // REST 网关（11 §2、§4）：/api/v1 前缀、Bearer 设备令牌、请求 ID、统一错误体。
 
 import { randomBytes, randomUUID } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { basename, extname, join } from "node:path";
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { newId, nowIso } from "@excelmanus/core";
+import { newId, nowIso, parseRange } from "@excelmanus/core";
 import {
   type AgentRuntime,
   buildSystemPrompt,
@@ -27,6 +34,7 @@ import {
 } from "@excelmanus/protocol";
 import type { DocumentService } from "@excelmanus/workbook";
 import { type Context, Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import type { z } from "zod";
 import {
   createProfile,
@@ -47,6 +55,7 @@ import {
 
 const APP_VERSION = "0.0.0";
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
 
 export interface AppDeps {
   db: DatabaseSync;
@@ -65,6 +74,7 @@ export interface AppDeps {
   webDist?: string;
   emit: (event: string, fields: Record<string, string | number | boolean>) => void;
   allowedHosts(): Set<string>;
+  allowedOrigins(): Set<string>;
 }
 
 type SessionRowLike = {
@@ -148,9 +158,17 @@ export function createApp(deps: AppDeps): Hono {
       emit("http.rejected", { requestId, reason: "host" });
       return fail(c, 403, "forbidden_host", "Host 不被允许");
     }
+    const origin = c.req.header("origin");
+    if (origin !== undefined && !deps.allowedOrigins().has(origin)) {
+      emit("http.rejected", { requestId, reason: "origin" });
+      return fail(c, 403, "forbidden_origin", "Origin 不被允许");
+    }
     const len = Number(c.req.header("content-length") ?? 0);
-    if (len > MAX_BODY_BYTES) {
-      return fail(c, 413, "payload_too_large", "请求体超过 10MB 上限");
+    const upload =
+      c.req.method === "POST" && /^\/api\/v1\/workspaces\/[^/]+\/files\/upload$/.test(c.req.path);
+    const maxSize = upload ? MAX_UPLOAD_BYTES + 64 * 1024 : MAX_BODY_BYTES;
+    if (len > maxSize) {
+      return fail(c, 413, "payload_too_large", "请求体超过大小上限");
     }
     // 只对 /api/ 要求令牌；前端静态资源可被无令牌加载（令牌在 URL fragment，不进请求）
     if (c.req.path.startsWith("/api/") && c.req.path !== "/api/v1/health") {
@@ -166,7 +184,11 @@ export function createApp(deps: AppDeps): Hono {
         return fail(c, 401, "unauthorized", "设备令牌无效");
       }
     }
-    await next();
+    const limitedResponse = await bodyLimit({
+      maxSize,
+      onError: (c) => fail(c, 413, "payload_too_large", "请求体超过大小上限"),
+    })(c, next);
+    if (limitedResponse instanceof Response) return limitedResponse;
     emit("http", {
       requestId,
       method: c.req.method,
@@ -431,10 +453,14 @@ export function createApp(deps: AppDeps): Hono {
       | { id: string; status: string; mode: string; msg: string | null }
       | undefined;
     if (existing) {
-      const oldText = existing.msg
-        ? (JSON.parse(existing.msg) as { text?: string }).text
+      const old = existing.msg
+        ? (JSON.parse(existing.msg) as { text?: string; context?: unknown; mode?: string })
         : undefined;
-      if (oldText !== body.text) {
+      if (
+        old?.text !== body.text ||
+        JSON.stringify(old.context ?? []) !== JSON.stringify(body.context ?? []) ||
+        (old.mode ?? "queue") !== (body.mode ?? "queue")
+      ) {
         return fail(c, 409, "conflict", "clientMessageId 已使用且内容不同");
       }
       return c.json({
@@ -448,6 +474,30 @@ export function createApp(deps: AppDeps): Hono {
         },
         deduplicated: true,
       });
+    }
+
+    for (const ref of body.context ?? []) {
+      const document = db
+        .prepare("SELECT workspace_id FROM documents WHERE id = ?")
+        .get(ref.docId) as { workspace_id: string } | undefined;
+      if (!document || document.workspace_id !== row.workspace_id || !deps.docService) {
+        return fail(c, 400, "bad_request", "选区引用的文档不属于当前工作区");
+      }
+      const workspace = getWorkspace(db, row.workspace_id);
+      if (!workspace) return fail(c, 400, "bad_request", "工作区不存在");
+      try {
+        const { meta, snapshot } = await deps.docService.snapshot(ref.docId, workspace.path);
+        if (meta.rev !== ref.rev) return fail(c, 409, "conflict", "选区修订已变化，请重新选择区域");
+        const range = parseRange(ref.range);
+        if (
+          range.sheet &&
+          !Object.values(snapshot.sheets).some((sheet) => sheet.name === range.sheet)
+        ) {
+          return fail(c, 400, "bad_request", "选区引用的工作表不存在");
+        }
+      } catch {
+        return fail(c, 400, "bad_request", "选区引用无效，请重新打开文档并选择区域");
+      }
     }
 
     const dispatchId = newId("dsp");
@@ -534,20 +584,24 @@ export function createApp(deps: AppDeps): Hono {
     const body = parse(OpenDocBody, await c.req.json().catch(() => null));
     if ("issues" in body) return fail(c, 400, "bad_request", "请求体不合法", body.issues);
     try {
-      const { meta } = svc.open(wsRow.id, wsRow.path, body.path);
+      const { meta } = await svc.open(wsRow.id, wsRow.path, body.path);
       return c.json({ document: docMeta(meta) });
     } catch (e) {
       return docErr(c, e);
     }
   });
 
-  app.get("/api/v1/workspaces/:id/docs/:docId/snapshot", (c) => {
+  app.get("/api/v1/workspaces/:id/docs/:docId/snapshot", async (c) => {
     const svc = deps.docService;
     if (!svc) return fail(c, 501, "not_implemented", "workbook 模块未装配");
     const wsRow = getWorkspace(db, c.req.param("id"));
     if (!wsRow) return fail(c, 404, "not_found", "工作区不存在");
+    const docRow = db
+      .prepare("SELECT workspace_id FROM documents WHERE id = ?")
+      .get(c.req.param("docId")) as { workspace_id: string } | undefined;
+    if (!docRow || docRow.workspace_id !== wsRow.id) return fail(c, 404, "not_found", "文档不存在");
     try {
-      const { meta, snapshot } = svc.snapshot(c.req.param("docId"), wsRow.path);
+      const { meta, snapshot } = await svc.snapshot(c.req.param("docId"), wsRow.path);
       if (meta.workspaceId !== wsRow.id) return fail(c, 404, "not_found", "文档不存在");
       return c.json({ document: docMeta(meta), snapshot });
     } catch (e) {
@@ -565,24 +619,29 @@ export function createApp(deps: AppDeps): Hono {
       if (!st.isDirectory()) return fail(c, 400, "bad_request", "不是目录");
       const items = readdirSync(abs, { withFileTypes: true })
         .filter((d) => !d.name.startsWith("."))
-        .map((d) => {
+        .flatMap((d) => {
           const entryRel = safeRel === "" ? d.name : `${safeRel}/${d.name}`;
           let size: number | undefined;
           let modifiedAt: string | undefined;
+          let kind: "file" | "dir";
           try {
-            const s = statSync(join(abs, d.name));
+            const entry = resolveWorkspacePath(wsRow.path, entryRel);
+            const s = statSync(entry.abs);
             if (s.isFile()) size = s.size;
             modifiedAt = s.mtime.toISOString();
+            kind = s.isDirectory() ? "dir" : "file";
           } catch {
-            // 悬空符号链接等：跳过 stat 字段
+            return [];
           }
-          return {
-            name: d.name,
-            path: entryRel,
-            kind: d.isDirectory() ? ("dir" as const) : ("file" as const),
-            ...(size !== undefined ? { size } : {}),
-            ...(modifiedAt !== undefined ? { modifiedAt } : {}),
-          };
+          return [
+            {
+              name: d.name,
+              path: entryRel,
+              kind,
+              ...(size !== undefined ? { size } : {}),
+              ...(modifiedAt !== undefined ? { modifiedAt } : {}),
+            },
+          ];
         })
         .sort((a, b) =>
           a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "dir" ? -1 : 1,
@@ -599,18 +658,22 @@ export function createApp(deps: AppDeps): Hono {
     const body = await c.req.parseBody().catch(() => null);
     const file = body?.file;
     if (!(file instanceof File)) return fail(c, 400, "bad_request", "缺少 file 字段");
-    if (file.size > MAX_BODY_BYTES) {
-      return fail(c, 413, "payload_too_large", "文件超过 10MB 上限");
+    if (file.size > MAX_UPLOAD_BYTES) {
+      return fail(c, 413, "payload_too_large", "文件超过 200MB 上限");
     }
     const name = basename(file.name || "unnamed");
     if (name.startsWith(".")) return fail(c, 400, "bad_request", "文件名不合法");
     const dir = typeof body?.path === "string" ? body.path : "";
+    const bytes = Buffer.from(await file.arrayBuffer());
     try {
       const { abs } = resolveWorkspacePath(wsRow.path, dir === "" ? `${name}` : `${dir}/${name}`);
-      writeFileSync(abs, Buffer.from(await file.arrayBuffer()));
+      writeFileSync(abs, bytes, { flag: "wx" });
       const { rel } = resolveWorkspacePath(wsRow.path, dir === "" ? `${name}` : `${dir}/${name}`);
       return c.json({ path: rel, size: file.size }, 201);
     } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "EEXIST") {
+        return fail(c, 409, "conflict", "同名文件已存在，请更换文件名后上传");
+      }
       return docErr(c, e);
     }
   });
@@ -618,6 +681,7 @@ export function createApp(deps: AppDeps): Hono {
   // ---------- 前端静态托管（生产：server 直接提供 packages/web/dist） ----------
   const webDist = deps.webDist;
   if (webDist !== undefined && existsSync(join(webDist, "index.html"))) {
+    const distRoot = realpathSync(webDist);
     const MIME: Record<string, string> = {
       ".html": "text/html; charset=utf-8",
       ".js": "text/javascript; charset=utf-8",
@@ -633,8 +697,14 @@ export function createApp(deps: AppDeps): Hono {
       const p = decodeURIComponent(c.req.path);
       if (p.startsWith("/api/")) return fail(c, 404, "not_found", "端点不存在");
       // 防穿越：拼进 dist 后必须仍在 dist 内
-      const target = join(webDist, p.replace(/^\/+/, ""));
-      if (!target.startsWith(webDist)) return fail(c, 403, "forbidden", "非法路径");
+      const target = resolve(distRoot, p.replace(/^\/+/, ""));
+      const outside = (path: string) => {
+        const rel = relative(distRoot, path);
+        return isAbsolute(rel) || rel === ".." || rel.startsWith(`..${sep}`);
+      };
+      if (outside(target)) return fail(c, 403, "forbidden", "非法路径");
+      if (existsSync(target) && outside(realpathSync(target)))
+        return fail(c, 403, "forbidden", "非法路径");
       const file =
         existsSync(target) && statSync(target).isFile() ? target : join(webDist, "index.html"); // SPA 回退
       const body = readFileSync(file);

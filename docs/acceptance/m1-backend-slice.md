@@ -2,12 +2,16 @@
 
 日期：2026-09-30　环境：macOS（Apple Silicon）、Node v24.1.0、pnpm 10.11.0
 
+状态：本文件保留 `af250b6` 的初始实现报告，**不是 M1 全部退出条件已通过的声明**。
+独立审核确认初始门禁与 40 个测试通过，但复现了生产构建失败和文件安全缺陷。
+修复内容、实际执行范围与未验证项目见 [M1 修复记录](m1-repair.md)。
+
 范围：创建模型档案 → 创建会话 → WebSocket 订阅 → 发消息（可带工作簿选区
 context）→ 代理调用只读文件/工作簿工具 → 流式回答 → React SPA 三栏界面
 （会话 / 对话 / 只读表格工作台）。全部走真实 HTTP / WebSocket / SQLite 文件；
 假模型（`ai/test` MockLanguageModelV4）只替代模型输出，不替代任何自有代码。
 
-## 门禁执行结果
+## 初始报告及审核更正
 
 | 项 | 命令 | 结果 |
 | --- | --- | --- |
@@ -15,8 +19,8 @@ context）→ 代理调用只读文件/工作簿工具 → 流式回答 → Reac
 | 单元/集成测试 | `pnpm test` | 40 passed / 7 files（core 8、kernel 2、workbook 7、server 2、web 3、gates 18） |
 | 依赖方向 | `pnpm check:deps` | 通过（176 modules / 274 deps）；module→module 方向门禁含 workbook→files 拒绝用例 |
 | 许可证 | `pnpm check:licenses` | 通过（337 个依赖） |
-| Web 构建 | `pnpm --filter @excelmanus/web build` | 成功（vite 7.3.6 + esbuild JSX，产物 dist/） |
-| 生产启动 | `pnpm start`（EXCELMANUS_HOME=tmp） | `GET /` → 200 index.html（398B）；`/assets/*.js` 200；SPA 回退 `/sessions/abc` 200；`/api/v1/health` → `{ok:true,protocolVersion:1}` |
+| Web 构建 | `pnpm --filter @excelmanus/web build` | 初始报告称成功，独立审核在 `af250b6` 复现失败：`node:crypto.randomBytes` 被浏览器构建引入。不能标记该提交的生产构建通过 |
+| 生产启动 | `pnpm start`（EXCELMANUS_HOME=tmp） | 初始报告记录过 HTTP 200，但没有证据证明来自 `af250b6` 的完整启动流程；该提交会在构建步骤失败。待修复后的完整启动验收 |
 | 截图 | headless Chrome | `docs/acceptance/m1-screenshot.png` |
 
 ## modules/workbook（07 §3、06 §4，ADR 0003 快照定影）
@@ -71,7 +75,9 @@ context）→ 代理调用只读文件/工作簿工具 → 流式回答 → Reac
 - 生产模式 server 托管 `packages/web/dist`；开发 `pnpm dev` 起后端 8787（--dev
   放行 5173 Origin/Host）+ Vite 5173（/api 与 WS 代理）。
 
-## 真实 MiMo 冒烟（packages/server/scripts/smoke-real.ts）
+## 初始报告的真实 MiMo 冒烟（packages/server/scripts/smoke-real.ts）
+
+以下为初始报告，本次独立审核与修复没有重新调用真实模型，不能当作最终修复版本的验证。
 
 配置来源 `~/.config/excelmanus-next/spike.env`（mimo-v2.6-flash）。本轮提问
 "sales.xlsx 每列是什么意思"（工作区放入样例 xlsx），真实模型自主调用

@@ -1,6 +1,6 @@
 // 只读表格工作台：文件列表 + 上传 + Univer 1.0.2 只读查看 + 选区上下文。
 
-import { indexToCol } from "@excelmanus/core";
+import { formatRange, parseRange } from "@excelmanus/core";
 import type { IWorkbookData, Univer } from "@univerjs/core";
 import { UniverSheetsCorePreset } from "@univerjs/preset-sheets-core";
 import zhCN from "@univerjs/preset-sheets-core/locales/zh-CN";
@@ -12,6 +12,8 @@ import { S } from "../strings.ts";
 
 function UniverViewer() {
   const doc = useApp((s) => s.doc);
+  const focus = useApp((s) => s.rangeFocus);
+  const preview = useApp((s) => s.rangePreview);
   const hostRef = useRef<HTMLDivElement>(null);
   const apiRef = useRef<{ univer: Univer; wb: FWorkbook } | null>(null);
 
@@ -40,8 +42,15 @@ function UniverViewer() {
       const sheet = wb.getActiveSheet();
       if (!sel || !sheet) return;
       const name = sheet.getSheetName();
-      const a1 = `${indexToCol(sel.startColumn + 1)}${sel.startRow + 1}:${indexToCol(sel.endColumn + 1)}${sel.endRow + 1}`;
-      setSelection(`${name}!${a1}`);
+      setSelection(
+        formatRange({
+          sheet: name,
+          startCol: sel.startColumn + 1,
+          startRow: sel.startRow + 1,
+          endCol: sel.endColumn + 1,
+          endRow: sel.endRow + 1,
+        }),
+      );
     });
     return () => {
       sub.dispose();
@@ -49,6 +58,50 @@ function UniverViewer() {
       univer.dispose();
     };
   }, [doc]);
+
+  useEffect(() => {
+    const wb = apiRef.current?.wb;
+    if (!wb || !focus) return;
+    const parsed = parseRange(focus.range);
+    const sheet = parsed.sheet ? wb.getSheetByName(parsed.sheet) : wb.getActiveSheet();
+    if (!sheet) return;
+    wb.setActiveSheet(sheet);
+    const range = sheet.getRange(
+      parsed.startRow - 1,
+      parsed.startCol - 1,
+      parsed.endRow - parsed.startRow + 1,
+      parsed.endCol - parsed.startCol + 1,
+    );
+    range.activate();
+    sheet.scrollToCell(parsed.startRow - 1, parsed.startCol - 1);
+    const highlight = range.highlight({ fill: "rgba(255, 200, 0, 0.25)" });
+    const timer = setTimeout(() => highlight.dispose(), 2000);
+    return () => {
+      clearTimeout(timer);
+      highlight.dispose();
+    };
+  }, [focus]);
+
+  useEffect(() => {
+    const wb = apiRef.current?.wb;
+    if (!wb || !preview) return;
+    try {
+      const parsed = parseRange(preview);
+      const sheet = wb.getActiveSheet();
+      if (!sheet || (parsed.sheet && sheet.getSheetName() !== parsed.sheet)) return;
+      const highlight = sheet
+        .getRange(
+          parsed.startRow - 1,
+          parsed.startCol - 1,
+          parsed.endRow - parsed.startRow + 1,
+          parsed.endCol - parsed.startCol + 1,
+        )
+        .highlight({ strokeDash: 4 });
+      return () => highlight.dispose();
+    } catch {
+      return;
+    }
+  }, [preview]);
 
   if (!doc) return <div className="doc-empty muted small">{S.openFileHint}</div>;
   return <div className="univer-host" ref={hostRef} />;
@@ -82,7 +135,7 @@ export function Workbench() {
       {err && <div className="notice error small">{err}</div>}
       <div className="file-list">
         {files.map((f) => {
-          const openable = /\.(xlsx|csv)$/i.test(f.name);
+          const openable = /\.(xlsx|xlsm|csv|tsv)$/i.test(f.name);
           return (
             <button
               key={f.path}

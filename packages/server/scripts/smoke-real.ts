@@ -103,8 +103,13 @@ try {
   console.log(`record 序列：${seq}`);
   for (const r of recs) {
     if (r.record.type === "tool.intent" || r.record.type === "tool.result") {
-      const d = r.record.data as { toolName?: string; status?: string };
-      console.log(`  ${r.record.type} tool=${d.toolName ?? "?"} status=${d.status ?? "-"}`);
+      const d = r.record.data as { toolName?: string; status?: string; result?: unknown };
+      let line = `  ${r.record.type} tool=${d.toolName ?? "?"} status=${d.status ?? "-"}`;
+      if (r.record.type === "tool.result" && d.result !== undefined) {
+        const s = JSON.stringify(d.result);
+        line += ` result=${s.length > 220 ? `${s.slice(0, 220)}…` : s}`;
+      }
+      console.log(line);
     }
   }
   const lastOutput = [...recs].reverse().find((r) => r.record.type === "model.output");

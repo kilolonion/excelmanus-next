@@ -2,8 +2,8 @@
 // xlsx/csv 返回概况提示）与 find（path/glob/contains/depth/limit）。
 
 import { createHash } from "node:crypto";
-import { type Dirent, readdirSync, readFileSync, statSync } from "node:fs";
-import { extname, join } from "node:path";
+import { type Dirent, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { extname, join, relative } from "node:path";
 import type { ToolDefinition } from "@excelmanus/kernel";
 import { PathSafetyError, resolveWorkspacePath } from "@excelmanus/kernel";
 import type { ToolResult } from "@excelmanus/protocol";
@@ -151,8 +151,7 @@ const readTool: ToolDefinition<ReadArgs> = {
           status: "ok",
           data: {
             kind: "workbook",
-            message:
-              "这是工作簿文件。当前版本不提供文本内容；表格读取能力（workbook_read）将在后续版本提供。",
+            message: "这是工作簿文件，请使用 workbook_read 读取总览、区域或查找单元格。",
             sizeBytes: st.size,
           },
         };
@@ -259,6 +258,7 @@ const findTool: ToolDefinition<FindArgs> = {
   execute(args, ctx) {
     try {
       const { abs: rootAbs } = resolveWorkspacePath(ctx.workspaceRoot, args.path ?? ".");
+      const workspaceReal = realpathSync(ctx.workspaceRoot);
       const rootStat = statSync(rootAbs);
       if (!rootStat.isDirectory()) {
         return err("INVALID_ARGUMENT", `${args.path ?? "."} 不是目录`, { field: "path" });
@@ -287,7 +287,15 @@ const findTool: ToolDefinition<FindArgs> = {
         for (const ent of ents) {
           if (out.length >= offset + limit + 1) return;
           const rel = relDir === "" ? ent.name : `${relDir}/${ent.name}`;
-          const p = join(dir, ent.name);
+          let p: string;
+          try {
+            p = resolveWorkspacePath(
+              ctx.workspaceRoot,
+              relative(workspaceReal, join(dir, ent.name)),
+            ).abs;
+          } catch {
+            continue;
+          }
           if (ent.isDirectory()) {
             if (SKIP_DIRS.has(ent.name) || ent.name.startsWith(".")) continue;
             if (matchesName(rel, ent.name) && needle === undefined) {

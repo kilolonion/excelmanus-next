@@ -29,6 +29,12 @@ function isInside(rootReal: string, p: string): boolean {
   return p === rootReal || p.startsWith(rootReal + sep);
 }
 
+function rejectInternal(rootReal: string, p: string): void {
+  if (relative(rootReal, p).split(sep)[0]?.toLowerCase() === ".excelmanus") {
+    throw new PathSafetyError("NOT_FOUND", "路径不存在");
+  }
+}
+
 /**
  * 把工作区内相对路径解析为绝对路径并做安全检查。
  * @returns { abs, rel } abs=实际路径（符号链接已解析），rel=工作区相对路径（展示用）
@@ -59,7 +65,7 @@ export function resolveWorkspacePath(
     throw new PathSafetyError("OUT_OF_WORKSPACE", "路径越出工作区");
   }
   const relParts = normalized.split("/").filter((p) => p !== "" && p !== ".");
-  if (relParts[0] === ".excelmanus") {
+  if (relParts[0]?.toLowerCase() === ".excelmanus") {
     // 内部目录对代理不可见：表现为不存在
     throw new PathSafetyError("NOT_FOUND", "路径不存在");
   }
@@ -86,6 +92,7 @@ export function resolveWorkspacePath(
       if (!isInside(rootReal, target)) {
         throw new PathSafetyError("OUT_OF_WORKSPACE", "符号链接指向工作区外");
       }
+      rejectInternal(rootReal, target);
       resolved = target;
     } else {
       resolved = candidate;
@@ -96,6 +103,7 @@ export function resolveWorkspacePath(
   if (!isInside(rootReal, abs)) {
     throw new PathSafetyError("OUT_OF_WORKSPACE", "路径越出工作区");
   }
+  rejectInternal(rootReal, abs);
   return { abs, rel: relParts.join("/") };
 }
 
