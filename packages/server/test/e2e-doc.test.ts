@@ -180,6 +180,52 @@ describe("e2e：活文档写入 + doc: 同步", () => {
       "turn.completed",
     );
 
+    // 11 §3.4：执行期间推 workbook_activity 瞬时增量（start/end），读与写分别带区域
+    const activity = wsSess.msgs.filter(
+      (m) => m.type === "delta" && (m as { kind?: string }).kind === "workbook_activity",
+    ) as unknown as {
+      payload: {
+        phase: string;
+        toolCallId: string;
+        kind?: string;
+        ranges?: string[];
+        path?: string;
+      };
+    }[];
+    const editStart = activity.find(
+      (m) => m.payload.toolCallId === "tc-edit" && m.payload.phase === "start",
+    );
+    expect(editStart?.payload).toMatchObject({
+      kind: "write",
+      path: "sales.xlsx",
+      ranges: ["销售!D2"],
+    });
+    expect(
+      activity.some((m) => m.payload.toolCallId === "tc-edit" && m.payload.phase === "end"),
+    ).toBe(true);
+    expect(
+      activity.find((m) => m.payload.toolCallId === "tc-read" && m.payload.phase === "start")
+        ?.payload,
+    ).toMatchObject({ kind: "read", ranges: [] });
+    // 瞬时增量不入日志
+    const log = await api.getSessionLog(session.id, { limit: 500 });
+    expect(JSON.stringify(log).includes("workbook_activity")).toBe(false);
+    // tool.result 带执行耗时（不含审批等待）
+    const editResult = wsSess.msgs.find(
+      (m) =>
+        m.type === "rec" &&
+        (m as RecMsg).record.type === "tool.result" &&
+        ((m as RecMsg).record.data as { toolCallId?: string }).toolCallId === "tc-edit",
+    ) as RecMsg;
+    expect(typeof (editResult.record.data as { durationMs?: unknown }).durationMs).toBe("number");
+    // 07 §7.4：修订 1 的修改前的值来自逆操作，等于原文件 D2
+    const orig = importXlsx(readFileSync(SAMPLE_XLSX), "sales.xlsx").snapshot.sheets.s0
+      ?.cellData?.[1]?.[3]?.v;
+    const before = await api.getDocRevBefore(wsId, docId, 1);
+    expect(before.cells).toEqual([
+      expect.objectContaining({ sheet: "销售", row: 1, col: 3, value: orig ?? null }),
+    ]);
+
     // 文档客户端收到 doc.op rev=1
     const op1 = (await wsDoc.waitFor(
       (m) => m.type === "doc.op" && (m as { rev?: number }).rev === 1,
@@ -292,5 +338,5 @@ describe("e2e：活文档写入 + doc: 同步", () => {
         }
       ).sheets[subUnitId]?.cellData[10]?.[0]?.v,
     ).toBe("另一处");
-  });
+  }, 30_000);
 });

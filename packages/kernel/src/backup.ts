@@ -21,7 +21,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { newId, nowIso } from "@excelmanus/core";
 import type { BackupInfo, FileIntentMeta, ToolResult } from "@excelmanus/protocol";
 import type { Migration } from "./db.ts";
-import { resolveWorkspacePath } from "./paths.ts";
+import { isInternalName, listProtectedRoots, resolveWorkspacePath } from "./paths.ts";
 
 export const BACKUPS_MIGRATION: Migration = {
   id: "kernel/backups",
@@ -59,7 +59,7 @@ export function pathVersion(abs: string): string | null {
   if (!st.isDirectory()) throw new FileOperationError("UNSUPPORTED_FEATURE", "不支持特殊文件");
   const hash = createHash("sha256");
   for (const name of readdirSync(abs).sort()) {
-    if (name.toLowerCase() === ".excelmanus")
+    if (isInternalName(name) || listProtectedRoots().includes(join(abs, name)))
       throw new FileOperationError("OUT_OF_WORKSPACE", "内部目录不可访问");
     hash.update(JSON.stringify([name, pathVersion(join(abs, name))]));
   }
@@ -286,6 +286,125 @@ export class BackupService {
       throw e;
     }
   }
+  /** 备份面板与回收站（11 §4）：列出工作区内某类记录。 */
+  listEntries(
+    workspaceId: string,
+    kind: "backup" | "trash",
+  ): (BackupInfo & { kind: string; sessionId: string })[] {
+    const rows = this.db
+      .prepare(
+        "SELECT * FROM backups WHERE workspace_id=? AND kind=? ORDER BY created_at DESC, id DESC LIMIT 500",
+      )
+      .all(workspaceId, kind);
+    return rows.map((r) => ({
+      ...this.info(r),
+      kind: String(r.kind),
+      sessionId: String(r.session_id),
+    }));
+  }
+
+  private entry(workspaceId: string, id: string): Record<string, unknown> | undefined {
+    return this.db
+      .prepare("SELECT * FROM backups WHERE workspace_id=? AND id=? AND kind IN ('backup','trash')")
+      .get(workspaceId, id) as Record<string, unknown> | undefined;
+  }
+
+  private storedAbs(root: string, r: Record<string, unknown>): string {
+    const stored = String(r.backup_path);
+    if (!stored.startsWith(".excelmanus/backups/") && !stored.startsWith(".excelmanus/trash/"))
+      throw new FileOperationError("OUT_OF_WORKSPACE", "备份存储路径不合法");
+    return internalPath(root, stored.slice(".excelmanus/".length));
+  }
+
+  /** 下载用：返回备份内容（只支持文件）。 */
+  readEntry(workspaceId: string, root: string, id: string): { name: string; bytes: Buffer } {
+    const r = this.entry(workspaceId, id);
+    if (!r) throw new FileOperationError("NOT_FOUND", "备份不存在");
+    const abs = this.storedAbs(root, r);
+    if (!existsSync(abs) || !statSync(abs).isFile())
+      throw new FileOperationError("UNSUPPORTED_FEATURE", "只能下载单个文件的备份");
+    return { name: String(r.original_path).split("/").pop() ?? "backup", bytes: readFileSync(abs) };
+  }
+
+  /** 备份/回收站条目对应的原相对路径（替换前由文档服务编排用）。 */
+  entryPath(workspaceId: string, id: string): string | undefined {
+    const r = this.entry(workspaceId, id);
+    return r ? String(r.original_path) : undefined;
+  }
+
+  /** 把不在磁盘上的版本（如活文档中的应用版本）存入备份区（07 §5 外部修改二选一）。 */
+  storeBytes(scope: BackupScope, path: string, bytes: Uint8Array): BackupInfo {
+    const { rel } = resolveWorkspacePath(scope.workspaceRoot, path);
+    const hash = sha256(bytes);
+    const containerRel = `backups/${nowIso().replaceAll(":", "-")}_${newId("b")}`;
+    const container = internalPath(scope.workspaceRoot, containerRel);
+    const storageRel = `${containerRel}/${rel}`;
+    try {
+      const dest = internalPath(scope.workspaceRoot, storageRel);
+      writeFileSync(dest, bytes, { flag: "wx", mode: 0o600 });
+      if (sha256(readFileSync(dest)) !== hash)
+        throw new FileOperationError("INTERNAL", "备份回读校验失败");
+      return this.insert(scope, rel, `.excelmanus/${storageRel}`, "backup", hash, bytes.length);
+    } catch (e) {
+      rmSync(container, { force: true, recursive: true });
+      throw e;
+    }
+  }
+
+  /**
+   * 替换回原文件（14 §5 场景 18）：备份 → 先为当前文件再做一次备份，再原子替换；
+   * 回收站 → 原位置不存在时移回。scope 记录执行者（用户操作记为 user）。
+   */
+  restoreEntry(
+    scope: BackupScope,
+    id: string,
+  ): { path: string; kind: string; backupOfCurrent?: BackupInfo } {
+    const r = this.entry(scope.workspaceId, id);
+    if (!r) throw new FileOperationError("NOT_FOUND", "备份不存在");
+    const src = this.storedAbs(scope.workspaceRoot, r);
+    if (!existsSync(src)) throw new FileOperationError("NOT_FOUND", "备份文件已丢失");
+    if (pathVersion(src) !== String(r.sha256))
+      throw new FileOperationError("VERSION_CONFLICT", "备份内容校验失败，未替换");
+    const rel = String(r.original_path);
+    const { abs } = resolveWorkspacePath(scope.workspaceRoot, rel);
+    if (String(r.kind) === "trash") {
+      if (existsSync(abs))
+        throw new FileOperationError("VERSION_CONFLICT", `原位置已有同名文件：${rel}`);
+      mkdirSync(dirname(abs), { recursive: true });
+      renameSync(src, abs);
+      this.db.prepare("DELETE FROM backups WHERE id=?").run(id);
+      return { path: rel, kind: "trash" };
+    }
+    let backupOfCurrent: BackupInfo | undefined;
+    const current = existsSync(abs) ? pathVersion(abs) : null;
+    if (current !== null && current !== String(r.sha256))
+      backupOfCurrent = this.store(scope, rel, "backup");
+    if (statSync(src).isDirectory()) {
+      const tmp = internalPath(scope.workspaceRoot, `tmp/${newId("tmp")}`);
+      try {
+        cpSync(src, tmp, { recursive: true, errorOnExist: true, force: false });
+        if (existsSync(abs)) rmSync(abs, { recursive: true });
+        mkdirSync(dirname(abs), { recursive: true });
+        renameSync(tmp, abs);
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    } else {
+      atomicWrite(scope.workspaceRoot, rel, readFileSync(src), current);
+    }
+    return { path: rel, kind: "backup", ...(backupOfCurrent ? { backupOfCurrent } : {}) };
+  }
+
+  /** 删除一条备份或永久删除回收站中的条目。 */
+  removeEntry(workspaceId: string, root: string, id: string): boolean {
+    const r = this.entry(workspaceId, id);
+    if (!r) return false;
+    const abs = this.storedAbs(root, r);
+    rmSync(abs, { recursive: true, force: true });
+    this.db.prepare("DELETE FROM backups WHERE id=?").run(id);
+    return true;
+  }
+
   pruneBackups(workspaceId: string, root: string): void {
     const rows = this.db
       .prepare(

@@ -16,7 +16,9 @@
     "dev": "node scripts/dev.ts",
     "start": "pnpm --filter @excelmanus/web build && node packages/server/src/main.ts",
     "check": "pnpm typecheck && pnpm lint && pnpm check:deps && pnpm check:licenses",
-    "check:all": "pnpm check && pnpm build:web && pnpm test"
+    "check:all": "pnpm check && pnpm build:web && pnpm test",
+    "build:desktop": "pnpm build:web && pnpm --filter @excelmanus/desktop build",
+    "pack:desktop": "pnpm build:desktop && pnpm --filter @excelmanus/desktop pack"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.14",

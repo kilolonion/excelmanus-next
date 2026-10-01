@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { ServerMessage } from "@excelmanus/protocol";
 import { describe, expect, test } from "vitest";
 import {
+  agentView,
   displayItems,
   initialDocSync,
   initialSessionState,
@@ -27,7 +28,8 @@ describe("reduceSession", () => {
       s = reduceSession(s, ServerMessage.parse(raw));
     }
     // workbook e2e：一条用户消息 + 一条助手回答
-    const items = displayItems(s);
+    const view = agentView(s, "main");
+    const items = displayItems(view);
     const userMsgs = items.filter((i) => !("kind" in i) && i.role === "user");
     expect(userMsgs.length).toBe(1);
     const assistant = items.filter((i) => !("kind" in i) && i.role === "assistant");
@@ -36,9 +38,9 @@ describe("reduceSession", () => {
       "工作簿已读取",
     );
     // 工具卡片：workbook_read 成功
-    const tool = s.tools.find((t) => t.name === "workbook_read");
+    const tool = view.tools.find((t) => t.name === "workbook_read");
     expect(tool?.status).toBe("ok");
-    expect(s.running).toBe(false);
+    expect(view.running).toBe(false);
     expect(s.cursor).toBeGreaterThan(0);
   });
 
@@ -117,7 +119,7 @@ describe("reduceSession", () => {
     );
     expect(s.approvals[0]?.status).toBe("pending");
     expect(s.questions[0]?.questionType).toBe("range_confirm");
-    expect(s.todos[0]?.title).toBe("检查");
+    expect(s.todos.main?.[0]?.title).toBe("检查");
     s = reduceSession(s, rec(4, "approval.decided", { approvalId: "a1", decision: "approved" }));
     s = reduceSession(
       s,
@@ -247,7 +249,11 @@ describe("reduceSession", () => {
         context: { tokens: 360, window: 400, estimated: false },
       }),
     );
-    expect(s.contextUsage).toEqual({ tokens: 360, window: 400, estimated: false });
+    expect(agentView(s, "main").live.contextUsage).toEqual({
+      tokens: 360,
+      window: 400,
+      estimated: false,
+    });
 
     s = reduceSession(
       s,
@@ -270,7 +276,11 @@ describe("reduceSession", () => {
       estimated: true,
     });
     // 压缩记录本身把占用更新为 afterTokens（窗口沿用已知值）
-    expect(s.contextUsage).toEqual({ tokens: 82, window: 400, estimated: true });
+    expect(agentView(s, "main").live.contextUsage).toEqual({
+      tokens: 82,
+      window: 400,
+      estimated: true,
+    });
     // 压缩块不占 user/assistant 消息计数、不影响排队位置统计
     expect(s.messages.filter((m) => m.role === "user").length).toBe(0);
   });
@@ -293,7 +303,7 @@ describe("reduceSession", () => {
         },
       }),
     );
-    expect(s.contextUsage).toBeNull();
+    expect(agentView(s, "main").live.contextUsage).toBeNull();
   });
 
   test("排队位置：同代理更早且仍 queued 的 queue 消息才计入前面还有 N 条", () => {
@@ -341,6 +351,144 @@ describe("reduceSession", () => {
     expect(queueAhead(s, byId("d2"))).toBe(0);
     expect(queueAhead(s, byId("d3"))).toBe(1);
     expect(queuedCount(s, "main")).toBe(3);
+  });
+
+  test("多代理：交错的 delta/record 分流到各自 agentView（05 §8）", () => {
+    let s = initialSessionState();
+    let seq = 0;
+    const rec = (type: string, data: Record<string, unknown>, agentId = "main") =>
+      ServerMessage.parse({
+        type: "rec",
+        topic: "session:x",
+        seq: ++seq,
+        record: {
+          seq,
+          sessionId: "x",
+          agentId,
+          type,
+          data,
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+      });
+    const delta = (agentId: string, text: string) =>
+      ServerMessage.parse({
+        type: "delta",
+        topic: "session:x",
+        agentId,
+        stepId: `${agentId}-s1`,
+        part: 0,
+        kind: "text",
+        payload: text,
+      });
+    // main 派生 worker-1 与 worker-2
+    s = reduceSession(
+      s,
+      rec("agent.spawned", { name: "查数", role: "worker", parentId: "main" }, "worker-1"),
+    );
+    s = reduceSession(
+      s,
+      rec("agent.spawned", { name: "汇总", role: "reader", parentId: "main" }, "worker-2"),
+    );
+    expect(s.roster["worker-1"]).toMatchObject({
+      name: "查数",
+      role: "worker",
+      parentId: "main",
+    });
+    // 交错：worker-1 开轮 + delta；main 的 delta；worker-2 被闸门拦下为 queued
+    s = reduceSession(s, rec("turn.started", { turnId: "t-w1" }, "worker-1"));
+    s = reduceSession(s, delta("worker-1", "正在读取"));
+    s = reduceSession(s, delta("main", "我派生了"));
+    s = reduceSession(s, rec("agent.status", { status: "queued" }, "worker-2"));
+    s = reduceSession(
+      s,
+      rec("tool.intent", { toolCallId: "tc1", toolName: "workbook_read", args: {} }, "worker-1"),
+    );
+    s = reduceSession(s, delta("worker-1", "两个文件"));
+    const v1 = agentView(s, "worker-1");
+    const v2 = agentView(s, "worker-2");
+    const vm = agentView(s, "main");
+    expect(v1.live.streamingText).toBe("正在读取两个文件");
+    expect(vm.live.streamingText).toBe("我派生了");
+    expect(v2.live.streamingText).toBe("");
+    expect(v1.running).toBe(true);
+    expect(vm.running).toBe(false);
+    // roster：queued 状态与 lastTool
+    expect(s.roster["worker-2"]?.status).toBe("queued");
+    expect(s.roster["worker-1"]?.status).toBe("running");
+    expect(s.roster["worker-1"]?.lastTool).toBe("workbook_read");
+    // 工具卡片只归发起代理
+    expect(v1.tools.map((t) => t.name)).toEqual(["workbook_read"]);
+    expect(vm.tools.length).toBe(0);
+    // turn.completed 把 worker-1 标回 idle 并清空流式残留
+    s = reduceSession(s, rec("turn.completed", { turnId: "t-w1" }, "worker-1"));
+    expect(agentView(s, "worker-1").running).toBe(false);
+    expect(agentView(s, "worker-1").live.streamingText).toBe("");
+    expect(s.roster["worker-1"]?.status).toBe("idle");
+  });
+
+  test("inbox.sent 还原为 internal 消息并归入收发双方视图", () => {
+    let s = initialSessionState();
+    let seq = 0;
+    const rec = (type: string, data: Record<string, unknown>, agentId: string) =>
+      ServerMessage.parse({
+        type: "rec",
+        topic: "session:x",
+        seq: ++seq,
+        record: {
+          seq,
+          sessionId: "x",
+          agentId,
+          type,
+          data,
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+      });
+    s = reduceSession(
+      s,
+      rec("agent.spawned", { name: "子", role: "worker", parentId: "main" }, "child-1"),
+    );
+    s = reduceSession(
+      s,
+      rec(
+        "inbox.sent",
+        {
+          messageId: "inbox-1",
+          fromAgentId: "child-1",
+          toAgentId: "main",
+          kind: "report",
+          message: "子代理「子」本轮已完成。【最终回复】完成",
+        },
+        "child-1",
+      ),
+    );
+    const msg = s.messages.find((m) => m.id === "inbox-1");
+    expect(msg?.role).toBe("internal");
+    expect(msg?.internal).toEqual({ from: "child-1", to: "main", kind: "report" });
+    // 发送方与接收方的视图都可见；无关代理不可见
+    expect(agentView(s, "main").messages.some((m) => m.id === "inbox-1")).toBe(true);
+    expect(agentView(s, "child-1").messages.some((m) => m.id === "inbox-1")).toBe(true);
+    expect(agentView(s, "other").messages.some((m) => m.id === "inbox-1")).toBe(false);
+    // 连续 internal 折叠为一组
+    s = reduceSession(
+      s,
+      rec(
+        "inbox.sent",
+        {
+          messageId: "inbox-2",
+          fromAgentId: "child-1",
+          toAgentId: "main",
+          kind: "report",
+          message: "第二条",
+        },
+        "child-1",
+      ),
+    );
+    const items = displayItems(agentView(s, "main"));
+    const groups = items.filter((i) => "kind" in i && i.kind === "internalGroup");
+    expect(groups.length).toBe(1);
+    expect(
+      "messages" in (groups[0] ?? {}) ? (groups[0] as { messages: unknown[] }).messages.length : 0,
+    ).toBe(2);
   });
 });
 

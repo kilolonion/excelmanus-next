@@ -59,6 +59,8 @@ export class StyleWriter {
     )
       return Number(cell.s.slice(1));
     if (JSON.stringify(a) === JSON.stringify(b)) return rawStyle;
+    // 清除格式：模型里已无任何样式 → 默认 xf 0（原 xf 中模型未建模的边框等一并清除）
+    if (Object.keys(a).length === 0) return 0;
     const key = JSON.stringify([rawStyle, a, b]);
     const cached = this.cache.get(key);
     if (cached !== undefined) return cached;

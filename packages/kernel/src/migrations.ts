@@ -1,6 +1,7 @@
 // 内核基础迁移（10 §3）。具名迁移（ADR 0004 修订）：每条 { id, sql }，
 // 应用状态按 id 记录在 schema_migrations；模块迁移由 server 拼接在本数组之后。
 
+import { CHANGE_SUMMARIES_MIGRATION } from "./change-summary.ts";
 import type { Migration } from "./db.ts";
 import { LEASES_MIGRATION } from "./leases.ts";
 
@@ -191,4 +192,5 @@ export const KERNEL_MIGRATIONS: readonly Migration[] = [
     `,
   },
   LEASES_MIGRATION,
+  CHANGE_SUMMARIES_MIGRATION,
 ];

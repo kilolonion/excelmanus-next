@@ -1,4 +1,5 @@
 export * from "./client.ts";
+export * from "./extensions.ts";
 export * from "./files.ts";
 export * from "./neutral.ts";
 export * from "./records.ts";

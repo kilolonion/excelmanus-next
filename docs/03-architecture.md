@@ -358,7 +358,7 @@ flowchart LR
 | 代码沙箱 | QuickJS（`quickjs-emscripten`）in `worker_threads` | 推荐 | [08](08-sandbox.md) |
 | 前端 | React 19 + Vite；TanStack Router/Query；Zustand | 推荐 | |
 | 表格工作台 | Univer 开源版（与服务端同一版本，锁定） | 推荐 | |
-| UI | Tailwind CSS 4 + shadcn/ui | 开放 | |
+| UI | Tailwind CSS 4 + shadcn/ui | 开放 | 组件为在 Radix 原语上自写的 shadcn 风格层，lightningcss 为负责人批准的构建期许可例外（ADR 0011） |
 | 桌面 | Electron 44+、electron-builder、electron-updater | 推荐 | |
 | MCP | `@ai-sdk/mcp` | 推荐 | 备选 `@modelcontextprotocol/sdk` |
 | 遥测 | OpenTelemetry（`@ai-sdk/otel`） | 推荐 | |

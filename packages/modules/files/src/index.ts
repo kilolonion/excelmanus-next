@@ -3,6 +3,7 @@ import {
   type CapabilityModule,
   type DatabaseSync,
   FileOperationError,
+  isInsidePath,
   resolveWorkspacePath,
   type ToolContext,
 } from "@excelmanus/kernel";
@@ -29,7 +30,8 @@ export function writableFilesModule(db: DatabaseSync, backups: BackupService): C
       rows.some((r) => {
         try {
           const registered = resolveWorkspacePath(ctx.workspaceRoot, r.path).abs;
-          return requested === registered || requested.startsWith(`${registered}/`);
+          // 双向：动到工作簿本身/其下，或动到包含它的上级目录，都会让文档 actor 失去文件
+          return isInsidePath(registered, requested) || isInsidePath(requested, registered);
         } catch {
           return false;
         }

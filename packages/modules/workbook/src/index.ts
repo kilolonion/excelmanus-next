@@ -37,6 +37,7 @@ export {
   compileOps,
   OpCompileError,
 } from "./ops.ts";
+export { buildLayout, displayText, workbookRenderTool } from "./render.ts";
 export {
   CHECKPOINT_MIGRATION,
   DOC_OPS_MIGRATION,

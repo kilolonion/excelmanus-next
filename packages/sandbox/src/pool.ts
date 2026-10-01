@@ -100,13 +100,14 @@ class PoolWorker {
   constructor(
     onMessage: (w: PoolWorker, m: WorkerToMain) => void,
     onDead: (w: PoolWorker) => void,
+    workerUrl?: URL,
   ) {
     this.onMessage = onMessage;
     this.onDead = onDead;
     this.ready = new Promise((r) => {
       this.markReady = r;
     });
-    this.worker = new Worker(new URL("./worker.ts", import.meta.url), {
+    this.worker = new Worker(workerUrl ?? new URL("./worker.ts", import.meta.url), {
       // execArgv 清空：worker 只需要原生类型剥离 + node_modules 解析，
       // 不继承宿主进程（vitest 等）的 loader/execArgv
       execArgv: [],
@@ -156,8 +157,12 @@ export class SandboxPool {
   private readonly size: number;
   private closed = false;
 
-  constructor(opts: { size?: number } = {}) {
+  private readonly workerUrl?: URL;
+
+  /** workerUrl：打包后 worker 为独立产物（桌面安装包），源码形态默认同目录 worker.ts。 */
+  constructor(opts: { size?: number; workerUrl?: URL } = {}) {
     this.size = opts.size ?? 2;
+    this.workerUrl = opts.workerUrl;
     this.ensureSpawn();
   }
 
@@ -217,6 +222,7 @@ export class SandboxPool {
     const w = new PoolWorker(
       (pw, m) => this.onWorkerMessage(pw, m),
       (pw) => this.onWorkerDead(pw),
+      this.workerUrl,
     );
     this.workers.add(w);
     void w.ready.then(() => this.dispatch());

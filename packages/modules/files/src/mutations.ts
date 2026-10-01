@@ -234,9 +234,10 @@ export function mutationTools(
           }
           return { op: o, src, dst };
         });
-        // M2c installs the approval executor. Until then destructive tools fail closed.
+        // 受信标记只由运行时审批门在放行（已批准 / auto / 会话自动批准）后注入；
+        // 未经审批执行器的直接调用一律拒绝删除（fail-closed）。
         if (a.ops.some((o) => o.op === "delete") && !ctx.destructiveApproved)
-          return denied("APPROVAL_DENIED", "删除需要审批；当前审批执行器尚未接入");
+          return denied("APPROVAL_DENIED", "删除未经审批放行，未执行");
         return backups.atomicBatch(() => {
           const results: unknown[] = [];
           for (const { op: o, src, dst } of plan) {

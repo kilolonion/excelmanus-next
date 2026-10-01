@@ -101,6 +101,9 @@ function parseRows(text: string, delim: string): string[][] {
 
 function toCell(s: string): ICellData | null {
   if (s === "") return null;
+  // 只把规范数字文本识别为数值（String(n) 与原文逐字相同），写回时仍逐字还原（07 §9）
+  const n = Number(s);
+  if (/^-?\d/.test(s) && Number.isFinite(n) && String(n) === s) return { v: n, t: 2 };
   return { v: s, t: 1 };
 }
 
@@ -184,7 +187,8 @@ export function exportCsv(
     const row: string[] = [];
     for (let c = 0; c <= maxC; c++) {
       const cell = data[r]?.[c];
-      const v = String(cell?.f ?? cell?.v ?? "");
+      // 导出值：公式格输出计算值（无计算值时为导入缓存），不输出公式文本
+      const v = String(cell?.v ?? "");
       row.push(v.includes(delim) || /["\r\n]/.test(v) ? `"${v.replaceAll('"', '""')}"` : v);
     }
     lines.push(row.join(delim));

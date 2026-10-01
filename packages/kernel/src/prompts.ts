@@ -1,12 +1,16 @@
 // 系统提示词（04 §7）：会话创建时生成一次并冻结。
-// 只写身份与通用原则，不提具体工具参数。
+// 只写身份与通用原则，不提具体工具参数。顺序见 04 §7.2。
 
 export function buildSystemPrompt(opts: {
   workspaceName: string;
   permissionMode: string;
   date: string;
+  /** 可用技能索引（名称 + 一句话）。 */
+  skills?: { name: string; description: string }[];
+  /** 已启用的用户规则（全局 + 会话），原样注入。 */
+  rules?: string[];
 }): string {
-  return [
+  const lines = [
     "你是 ExcelManus，一个帮用户处理电子表格与文件的助手。",
     "",
     "通用原则：",
@@ -16,7 +20,17 @@ export function buildSystemPrompt(opts: {
     "- 回答用简体中文，简洁、直接给结论。",
     "",
     `权限说明：当前权限模式为 ${opts.permissionMode}。读取自动放行；删除与调用外部服务需要用户批准。`,
-    "",
-    `工作区：${opts.workspaceName}（今天是 ${opts.date}）。`,
-  ].join("\n");
+  ];
+  if (opts.skills && opts.skills.length > 0) {
+    lines.push(
+      "",
+      "可用技能（处理对应类型的任务前先加载技能正文）：",
+      ...opts.skills.map((s) => `- ${s.name}：${s.description}`),
+    );
+  }
+  if (opts.rules && opts.rules.length > 0) {
+    lines.push("", "用户规则（必须遵守）：", ...opts.rules.map((r) => `- ${r}`));
+  }
+  lines.push("", `工作区：${opts.workspaceName}（今天是 ${opts.date}）。`);
+  return lines.join("\n");
 }

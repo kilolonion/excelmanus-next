@@ -2,7 +2,7 @@
 
 import { parseRange } from "@excelmanus/core";
 import type {
-  AgentInfo,
+  AttachmentRef,
   FileEntry,
   ModelProfile,
   ProviderPreset,
@@ -18,8 +18,10 @@ import {
   reduceDoc,
   reduceSession,
   type SessionState,
+  seedRoster,
   trackDocSubmit,
 } from "./reduce.ts";
+import { renderLayoutToPng } from "./render.ts";
 import { S } from "./strings.ts";
 import { SyncClient } from "./ws.ts";
 
@@ -51,7 +53,6 @@ interface AppState {
   workspaceId: string;
   hasModelProfile: boolean;
   sessions: SessionSummary[];
-  agents: AgentInfo[];
   sessionId: string | null;
   agentId: string;
   session: SessionState;
@@ -68,6 +69,65 @@ interface AppState {
   referenceError: string | null;
   /** /compact 等斜杠命令的短提示（下一次发送时清除）。 */
   commandNotice: string | null;
+  sidebarCollapsed: boolean;
+  /** 设置中心打开时的初始分页。 */
+  settingsTab: string;
+  appVersion: string;
+  shape: string;
+  /** 本机数据目录（bootstrap.dataDir）。 */
+  dataDir: string | null;
+  onboardingOpen: boolean;
+  /** 输入框上方的选区徽标（02 §3.3）：钉住后不随选区变化；移除后直到选区变化前不附带。 */
+  pinnedSelection: { docId: string; rev: number; range: string } | null;
+  selectionDismissed: boolean;
+  /** 布局（02 §2）：分栏比例、折叠与窄屏标签页，比例与折叠记在本地。 */
+  layout: LayoutPrefs;
+  narrowTab: "sheet" | "chat";
+  /** 用户点「已查看」时的会话游标；"已修改"高亮只显示其后的变更（02 §4.2）。 */
+  changesSeenSeq: number;
+  /** 跟随代理（02 §4.8，默认开，记在本地）。 */
+  followAgent: boolean;
+  /** 输入框里的图片附件（02 §3.3）：上传完成后才有 ref。 */
+  composerAttachments: ComposerAttachment[];
+  /** 需要追加到输入框的文本（拖入表格文件后的 @路径），nonce 递增触发。 */
+  composerAppend: { text: string; nonce: number } | null;
+  /** 已登记的工作区（02 §6 工作区切换器）。 */
+  workspaces: { id: string; name: string; path: string; isDefault: boolean }[];
+}
+
+export interface ComposerAttachment {
+  id: string;
+  name: string;
+  previewUrl: string;
+  status: "uploading" | "ready" | "error";
+  ref?: AttachmentRef;
+  error?: string;
+}
+
+export interface LayoutPrefs {
+  /** 对话面板占主区（工作台 + 对话）宽度的比例。 */
+  chatRatio: number;
+  chatCollapsed: boolean;
+  tableCollapsed: boolean;
+}
+
+const LAYOUT_KEY = "excelmanus.layout";
+function loadLayout(): LayoutPrefs {
+  const fallback: LayoutPrefs = { chatRatio: 0.4, chatCollapsed: false, tableCollapsed: false };
+  try {
+    const raw = JSON.parse(
+      localStorage.getItem(LAYOUT_KEY) ?? "null",
+    ) as Partial<LayoutPrefs> | null;
+    if (!raw) return fallback;
+    const ratio = typeof raw.chatRatio === "number" ? raw.chatRatio : fallback.chatRatio;
+    return {
+      chatRatio: Math.min(0.7, Math.max(0.22, ratio)),
+      chatCollapsed: raw.chatCollapsed === true,
+      tableCollapsed: raw.tableCollapsed === true && raw.chatCollapsed !== true,
+    };
+  } catch {
+    return fallback;
+  }
 }
 
 type Api = ReturnType<typeof apiClient>;
@@ -87,7 +147,6 @@ export const useApp = create<AppState>(() => ({
   workspaceId: "",
   hasModelProfile: false,
   sessions: [],
-  agents: [],
   sessionId: null,
   agentId: "main",
   session: initialSessionState(),
@@ -103,7 +162,135 @@ export const useApp = create<AppState>(() => ({
   rangePreview: null,
   referenceError: null,
   commandNotice: null,
+  sidebarCollapsed: false,
+  settingsTab: "models",
+  appVersion: "",
+  dataDir: null,
+  shape: "local-web",
+  onboardingOpen: false,
+  pinnedSelection: null,
+  selectionDismissed: false,
+  layout:
+    typeof localStorage === "undefined"
+      ? { chatRatio: 0.4, chatCollapsed: false, tableCollapsed: false }
+      : loadLayout(),
+  narrowTab: "chat",
+  changesSeenSeq: 0,
+  workspaces: [],
+  composerAttachments: [],
+  composerAppend: null,
+  followAgent:
+    typeof localStorage === "undefined" || localStorage.getItem("excelmanus.followAgent") !== "0",
 }));
+
+/** 更新并记住布局偏好；两侧不能同时折叠。 */
+export function setLayout(patch: Partial<LayoutPrefs>): void {
+  const next = { ...get().layout, ...patch };
+  if (patch.chatCollapsed) next.tableCollapsed = false;
+  if (patch.tableCollapsed) next.chatCollapsed = false;
+  next.chatRatio = Math.min(0.7, Math.max(0.22, next.chatRatio));
+  localStorage.setItem(LAYOUT_KEY, JSON.stringify(next));
+  set({ layout: next });
+}
+
+export function setNarrowTab(tab: "sheet" | "chat"): void {
+  set({ narrowTab: tab });
+}
+
+const FOLLOW_KEY = "excelmanus.followAgent";
+let lastManualView = 0;
+
+export function setFollowAgent(on: boolean): void {
+  localStorage.setItem(FOLLOW_KEY, on ? "1" : "0");
+  set({ followAgent: on });
+}
+
+/** 用户手动打开文件或切换视图（02 §4.8：5 秒内不被代理跳转打断）。 */
+export function noteManualView(): void {
+  lastManualView = Date.now();
+}
+
+/**
+ * 跟随代理（02 §4.8）：主代理用工作簿工具时自动打开该文件并定位到读写区域。
+ * 不跟随：开关关闭、用户 5 秒内手动切换过视图、子代理的活动、日志回放（记录早于 10 秒）。
+ */
+function followAgentActivity(record: {
+  type: string;
+  agentId: string | null;
+  data: unknown;
+  createdAt: string;
+}): void {
+  const st = get();
+  if (!st.followAgent || record.type !== "tool.intent") return;
+  if ((record.agentId ?? "main") !== "main" || Date.now() - lastManualView < 5000) return;
+  if (Date.now() - Date.parse(record.createdAt) > 10_000) return;
+  const d = record.data as { toolName?: unknown; args?: unknown };
+  if (typeof d.toolName !== "string" || !d.toolName.startsWith("workbook_")) return;
+  const args = (d.args ?? {}) as {
+    path?: unknown;
+    docId?: unknown;
+    range?: unknown;
+    sheet?: unknown;
+    ops?: unknown;
+  };
+  const firstOp = Array.isArray(args.ops)
+    ? (args.ops[0] as { range?: unknown } | undefined)
+    : undefined;
+  const range =
+    typeof args.range === "string"
+      ? args.range
+      : typeof firstOp?.range === "string"
+        ? firstOp.range
+        : null;
+  const docId = typeof args.docId === "string" ? args.docId : null;
+  const path = typeof args.path === "string" ? args.path : null;
+  if (docId === null && path === null) return;
+  const isOpen =
+    st.doc !== null && (docId !== null ? st.doc.docId === docId : st.doc.path === path);
+  const open = isOpen
+    ? Promise.resolve()
+    : docId !== null
+      ? openDocument(docId)
+      : openWorkspaceFile(path as string);
+  void open
+    .then(() => {
+      if (!range) return;
+      const qualified =
+        typeof args.sheet === "string" && !range.includes("!") ? `${args.sheet}!${range}` : range;
+      return focusRange(qualified);
+    })
+    .catch(() => undefined);
+}
+
+/** 「已查看」：清除当前已修改高亮，之后的新变更继续高亮。 */
+export function markChangesSeen(): void {
+  set({ changesSeenSeq: get().session.cursor });
+}
+
+/** 本条消息将附带的区域上下文：钉住优先，其次当前选区（未被移除时）。 */
+export function composerContext(
+  st: Pick<AppState, "pinnedSelection" | "selection" | "selectionDismissed">,
+): { docId: string; rev: number; range: string } | null {
+  if (st.pinnedSelection) return st.pinnedSelection;
+  if (st.selection && !st.selectionDismissed) return st.selection;
+  return null;
+}
+
+export function pinSelection(pin: boolean): void {
+  const cur = composerContext(get());
+  set({ pinnedSelection: pin ? cur : null });
+}
+
+/** 把指定区域钉为本条消息的上下文（`@工作表` 候选）。 */
+export function pinRange(docId: string, range: string): void {
+  const doc = get().doc;
+  if (!doc || doc.docId !== docId) return;
+  set({ pinnedSelection: { docId, rev: doc.rev, range }, selectionDismissed: false });
+}
+
+export function dismissContext(): void {
+  set({ pinnedSelection: null, selectionDismissed: true });
+}
 
 const set = useApp.setState;
 const get = useApp.getState;
@@ -111,6 +298,19 @@ const get = useApp.getState;
 function requireApi(): Api {
   if (!api) throw new Error("API 未初始化");
   return api;
+}
+
+/** 设置中心等自管状态的组件直接经契约客户端访问 REST。 */
+export const apiClientOf = requireApi;
+
+type AppEventListener = (data: { type: string } & Record<string, unknown>) => void;
+const appListeners = new Set<AppEventListener>();
+/** 订阅 app 主题事件（MCP 状态、设置变化等），返回取消函数。 */
+export function onAppEvent(fn: AppEventListener): () => void {
+  appListeners.add(fn);
+  return () => {
+    appListeners.delete(fn);
+  };
 }
 
 async function refreshSessions(): Promise<void> {
@@ -147,7 +347,16 @@ export async function selectSession(sessionId: string): Promise<void> {
     await refreshFiles();
   }
   const detail = await requireApi().getSession(sessionId);
-  set({ sessionId: sessionId, session: initialSessionState(), agents: detail.agents });
+  // 名册以 reduce 的 roster 为准（05 §8）；会话详情只用于预填名字/角色。
+  set({
+    sessionId: sessionId,
+    session: {
+      ...seedRoster(initialSessionState(), detail.agents),
+      permissionMode: detail.session.permissionMode,
+    },
+    agentId: "main",
+    changesSeenSeq: 0,
+  });
   sync?.subscribe(`session:${sessionId}`);
 }
 
@@ -167,7 +376,14 @@ async function initialize(): Promise<void> {
   set({ token });
   try {
     const boot = await api.bootstrap();
-    set({ hasModelProfile: boot.hasModelProfile });
+    set({
+      hasModelProfile: boot.hasModelProfile,
+      appVersion: boot.appVersion,
+      dataDir: boot.dataDir ?? null,
+      shape: boot.shape,
+      // 02 §8：首次使用（未配置模型且未跳过引导）时显示引导
+      onboardingOpen: !boot.hasModelProfile && localStorage.getItem(ONBOARDING_KEY) !== "done",
+    });
   } catch (e) {
     set({ ready: true, fatal: e instanceof Error ? e.message : "bootstrap failed" });
     return;
@@ -186,6 +402,7 @@ async function initialize(): Promise<void> {
       }
       if (msg.type === "rec" || msg.type === "delta" || msg.type === "snapshot") {
         set({ session: reduceSession(get().session, msg) });
+        if (msg.type === "rec") followAgentActivity(msg.record);
       } else if (msg.type === "doc.op" && msg.docId === get().doc?.docId) {
         set({ docSync: reduceDoc(get().docSync, msg) });
         const doc = get().doc;
@@ -236,6 +453,21 @@ async function initialize(): Promise<void> {
       } else if (msg.type === "doc.reload" && msg.docId === get().doc?.docId) {
         set({ docSync: reduceDoc(get().docSync, msg) });
         void reloadDocument(msg.docId).catch(() => set({ referenceError: "invalid-range" }));
+      } else if (msg.type === "render.request") {
+        // workbook_render 截图（ADR 0010）：本页签作为渲染端
+        const requestId = msg.requestId;
+        void renderLayoutToPng(msg.layout, msg.scale ?? 2)
+          .then((png) => sync?.send({ type: "render.result", requestId, png }))
+          .catch((e: unknown) =>
+            sync?.send({
+              type: "render.result",
+              requestId,
+              error: e instanceof Error ? e.message : String(e),
+            }),
+          );
+      } else if (msg.type === "app.event") {
+        for (const fn of appListeners) fn(msg.data);
+        if (msg.data.type === "files.changed") void refreshFiles();
       } else if (msg.type === "hello") {
         syncConnectionId = msg.connectionId;
         set({ connected: true });
@@ -244,6 +476,10 @@ async function initialize(): Promise<void> {
     onState: (connected) => set({ connected }),
   });
   sync.start();
+  sync.subscribe("app");
+  // 对话头部的模型选择需要档案列表；失败不阻断启动
+  void refreshProfiles().catch(() => undefined);
+  void refreshWorkspaces().catch(() => undefined);
   await refreshSessions();
   const first = get().sessions[0];
   if (first) {
@@ -306,8 +542,28 @@ export function submitDocumentMutation(
   return { clientOpId, sent };
 }
 
+export async function refreshWorkspaces(): Promise<void> {
+  const { items } = await requireApi().listWorkspaces();
+  set({ workspaces: items });
+}
+
+/** 切换工作区（02 §6）：打开该工作区最近的会话，没有则新建一个。 */
+export async function switchWorkspace(workspaceId: string): Promise<void> {
+  if (workspaceId === get().workspaceId) return;
+  await refreshSessions();
+  const recent = get().sessions.find((x) => x.workspaceId === workspaceId);
+  if (recent) {
+    await selectSession(recent.id);
+    return;
+  }
+  const { session } = await requireApi().createSession({ workspaceId });
+  await refreshSessions();
+  await selectSession(session.id);
+}
+
 export async function createSession(): Promise<void> {
-  const { session } = await requireApi().createSession({});
+  const ws = get().workspaceId;
+  const { session } = await requireApi().createSession(ws !== "" ? { workspaceId: ws } : {});
   await refreshSessions();
   set({ workspaceId: session.workspaceId });
   await selectSession(session.id);
@@ -330,6 +586,19 @@ export async function send(
   const st = get();
   if (!st.sessionId) return;
   const cmd = text.trim();
+  // /model <档案名>：切换当前代理的模型档案（09 §3），不走消息派发
+  const modelCmd = /^\/model\s+(.+)$/.exec(cmd);
+  if (modelCmd?.[1]) {
+    try {
+      const res = await requireApi().switchAgentModel(st.sessionId, st.agentId, {
+        modelName: modelCmd[1].trim(),
+      });
+      set({ commandNotice: S.modelSwitched(res.name) });
+    } catch (e) {
+      set({ commandNotice: e instanceof Error ? e.message : S.commandFailed });
+    }
+    return;
+  }
   // 斜杠命令不走消息派发（02 §3.2）：/compact 压缩上下文，/resume 继续。
   if (cmd === "/compact" || cmd === "/resume") {
     try {
@@ -352,15 +621,124 @@ export async function send(
     return;
   }
   set({ commandNotice: null });
-  const context = st.selection
-    ? [{ docId: st.selection.docId, rev: st.selection.rev, range: st.selection.range }]
-    : undefined;
+  const ctx = composerContext(st);
+  const context = ctx ? [{ docId: ctx.docId, rev: ctx.rev, range: ctx.range }] : undefined;
+  const sending = st.composerAttachments.filter((a) => a.status === "ready" && a.ref);
+  const attachments = sending.map((a) => a.ref as AttachmentRef);
   seq += 1;
   await requireApi().sendMessage(st.sessionId, st.agentId, {
     clientMessageId: `web-${Date.now()}-${seq}`,
     text,
     mode,
     ...(context !== undefined ? { context } : {}),
+    ...(attachments.length > 0 ? { attachments } : {}),
+  });
+  // 发送成功才清掉已发出的附件（失败时保留，便于重试）
+  const sentIds = new Set(sending.map((a) => a.id));
+  for (const a of sending) URL.revokeObjectURL(a.previewUrl);
+  set({ composerAttachments: get().composerAttachments.filter((a) => !sentIds.has(a.id)) });
+}
+
+const IMAGE_TYPES = /^image\/(png|jpeg|gif|webp)$/;
+let attachSeq = 0;
+
+/** 粘贴/拖入/选择的文件：图片进附件，其余上传到工作区并以 @路径 引用（02 §3.3）。 */
+export async function addComposerFiles(files: File[]): Promise<void> {
+  for (const file of files) {
+    if (!IMAGE_TYPES.test(file.type)) {
+      const existing = get().files.find((f) => f.kind !== "dir" && f.name === file.name);
+      const path = existing ? existing.path : await uploadWorkspaceFileReturningPath(file);
+      set({ composerAppend: { text: `@${path} `, nonce: (get().composerAppend?.nonce ?? 0) + 1 } });
+      continue;
+    }
+    if (get().composerAttachments.length >= 8) {
+      set({ commandNotice: S.attachLimit });
+      return;
+    }
+    attachSeq += 1;
+    const id = `att-${attachSeq}`;
+    const item: ComposerAttachment = {
+      id,
+      name: file.name || "image",
+      previewUrl: URL.createObjectURL(file),
+      status: "uploading",
+    };
+    set({ composerAttachments: [...get().composerAttachments, item] });
+    const patch = (p: Partial<ComposerAttachment>) =>
+      set({
+        composerAttachments: get().composerAttachments.map((a) =>
+          a.id === id ? { ...a, ...p } : a,
+        ),
+      });
+    try {
+      const ref = await requireApi().uploadAttachment({ name: item.name, data: file });
+      patch({ status: "ready", ref });
+    } catch (e) {
+      patch({ status: "error", error: e instanceof Error ? e.message : S.uploadFailed });
+    }
+  }
+}
+
+export function removeComposerAttachment(id: string): void {
+  const a = get().composerAttachments.find((x) => x.id === id);
+  if (a) URL.revokeObjectURL(a.previewUrl);
+  set({ composerAttachments: get().composerAttachments.filter((x) => x.id !== id) });
+}
+
+const attachmentUrls = new Map<string, Promise<string>>();
+/** 已发送消息中的附件缩略图：带令牌取 blob 转 object URL（同一附件只取一次）。 */
+export function attachmentUrl(sha256: string): Promise<string> {
+  let p = attachmentUrls.get(sha256);
+  if (!p) {
+    p = requireApi()
+      .getAttachment(sha256)
+      .then((b) => URL.createObjectURL(b));
+    attachmentUrls.set(sha256, p);
+    p.catch(() => attachmentUrls.delete(sha256));
+  }
+  return p;
+}
+
+/** 会话改名（对齐清单 C6）。 */
+export async function renameSession(title: string): Promise<void> {
+  const st = get();
+  if (!st.sessionId || title.trim() === "") return;
+  await requireApi().updateSession(st.sessionId, { title: title.trim() });
+  await refreshSessions();
+}
+
+/** 本会话权限模式覆盖（04 §5：全局默认之上的会话级覆盖）。 */
+export async function setSessionPermission(mode: "confirm" | "standard" | "auto"): Promise<void> {
+  const st = get();
+  if (!st.sessionId) return;
+  await requireApi().updateSession(st.sessionId, { permissionMode: mode });
+  set({ session: { ...get().session, permissionMode: mode } });
+  await refreshSessions();
+}
+
+/** 切换当前代理的模型档案（与 /model 同一接口，09 §3）。 */
+export async function switchModel(modelProfileId: string): Promise<void> {
+  const st = get();
+  if (!st.sessionId) return;
+  const res = await requireApi().switchAgentModel(st.sessionId, st.agentId, { modelProfileId });
+  set({ commandNotice: S.modelSwitched(res.name) });
+}
+
+/** 立即压缩当前代理上下文（与 /compact 同一接口，04 §6）。 */
+export async function compactNow(): Promise<void> {
+  await send("/compact");
+}
+
+/** 撤销代理保存的记忆（12 §2.2）：删除记忆，界面标记为已撤销。 */
+export async function undoMemory(memoryId: string): Promise<void> {
+  await requireApi().deleteMemory(memoryId);
+  set({
+    session: {
+      ...get().session,
+      messages: get().session.messages.map((m) =>
+        m.memory?.memoryId === memoryId ? { ...m, memory: { ...m.memory, deleted: true } } : m,
+      ),
+    },
   });
 }
 
@@ -382,6 +760,40 @@ export async function resumeAgent(): Promise<void> {
   const st = get();
   if (!st.sessionId) return;
   await requireApi().resumeAgent(st.sessionId, st.agentId);
+}
+
+/** 切换对话面板查看的代理（02 §5 团队视图）。 */
+export function selectAgent(agentId: string): void {
+  set({ agentId });
+}
+
+/** 用户控制任意代理（05 §11）：pause/resume/close。 */
+export async function controlAgent(
+  agentId: string,
+  action: "pause" | "resume" | "close",
+): Promise<void> {
+  const st = get();
+  if (!st.sessionId) return;
+  await requireApi().controlAgent(st.sessionId, agentId, { action });
+}
+
+/** 停止全部运行中代理（11 §147）。 */
+export async function stopAllAgents(): Promise<void> {
+  const st = get();
+  if (!st.sessionId) return;
+  await requireApi().stopAll(st.sessionId);
+}
+
+/** 重启中断横幅的「全部继续」：逐个恢复 interrupted 代理。 */
+export async function resumeInterruptedAgents(): Promise<void> {
+  const st = get();
+  if (!st.sessionId) return;
+  const ids = Object.values(st.session.roster)
+    .filter((a) => a.status === "interrupted")
+    .map((a) => a.id);
+  for (const agentId of ids) {
+    await requireApi().controlAgent(st.sessionId, agentId, { action: "resume" });
+  }
 }
 
 export async function decideApproval(
@@ -537,13 +949,37 @@ export async function focusRange(range: string, docId?: string): Promise<void> {
   }
 }
 
+/** 关闭工作台中的工作簿（只退订与清空本地视图；服务端活文档不受影响）。 */
+export function closeDocument(): void {
+  const doc = get().doc;
+  if (!doc) return;
+  sync?.unsubscribe(`doc:${doc.docId}`);
+  docRequest += 1;
+  set({
+    doc: null,
+    selection: null,
+    pinnedSelection: null,
+    rangeFocus: null,
+    rangePreview: null,
+    docSync: initialDocSync(0),
+  });
+}
+
 export function previewRange(range: string | null): void {
   set({ rangePreview: range });
 }
 
 export async function uploadWorkspaceFile(file: File): Promise<void> {
-  await requireApi().uploadFile(get().workspaceId, { name: file.name, data: file });
+  await uploadWorkspaceFileReturningPath(file);
+}
+
+async function uploadWorkspaceFileReturningPath(file: File): Promise<string> {
+  const { path } = await requireApi().uploadFile(get().workspaceId, {
+    name: file.name,
+    data: file,
+  });
   await refreshFiles();
+  return path;
 }
 
 export function setSelection(range: string | null): void {
@@ -552,7 +988,7 @@ export function setSelection(range: string | null): void {
     set({ selection: null });
     return;
   }
-  set({ selection: { docId: d.docId, rev: d.rev, range } });
+  set({ selection: { docId: d.docId, rev: d.rev, range }, selectionDismissed: false });
 }
 
 export async function refreshProfiles(): Promise<void> {
@@ -560,11 +996,34 @@ export async function refreshProfiles(): Promise<void> {
     requireApi().listModelProfiles(),
     requireApi().listProviders(),
   ]);
-  set({ profiles: profiles.items, providers: providers.items });
+  set({
+    profiles: profiles.items,
+    providers: providers.items,
+    hasModelProfile: profiles.items.length > 0,
+  });
 }
 
-export function setSettingsOpen(open: boolean): void {
-  set({ settingsOpen: open });
+const ONBOARDING_KEY = "excelmanus.onboarding";
+
+export function setOnboardingOpen(open: boolean): void {
+  if (!open) localStorage.setItem(ONBOARDING_KEY, "done");
+  set({ onboardingOpen: open });
+}
+
+/** 引导第 3 步：把内置示例复制进当前工作区并在工作台打开。 */
+export async function openSample(): Promise<string> {
+  const api = requireApi();
+  const { items } = await api.listSamples();
+  const name = items.find((n) => n.endsWith(".xlsx")) ?? items[0];
+  if (!name) throw new Error("没有内置示例");
+  const { path } = await api.addSample(get().workspaceId, name);
+  await refreshFiles();
+  await openWorkspaceFile(path);
+  return path;
+}
+
+export function setSettingsOpen(open: boolean, tab?: string): void {
+  set({ settingsOpen: open, ...(tab ? { settingsTab: tab } : {}) });
   if (open) void refreshProfiles();
 }
 

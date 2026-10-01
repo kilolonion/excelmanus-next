@@ -41,6 +41,7 @@ function setup() {
     sessionId: "s",
     agentId: "main",
     toolCallId: "call",
+    role: "main",
     signal: AbortSignal.timeout(30000),
     reads: createReadTable(),
     backups: backups.bind({

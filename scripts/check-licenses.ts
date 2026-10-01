@@ -1,6 +1,7 @@
 // 许可证门禁：基于 `pnpm licenses list --json`（含传递依赖与 devDependencies）。
 // 白名单外一律失败；硬性黑名单 @univerjs-pro/* 与 hyperformula 出现即失败。
 // 例外清单只豁免"许可证缺失/不规范"的已知传递依赖，精确到版本，黑名单判定不受其影响。
+// 另有一份构建期例外清单（负责人批准，ADR 0011），只放行指定版本的构建工具，且禁止进入生产依赖。
 
 import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -31,6 +32,30 @@ const ACCEPTED_EXCEPTIONS = new Map([
     "无许可证声明（substack 旧包，exceljs→unzipper 传递依赖，仅 spike 使用）；负责人 2026-09-29 接受",
   ],
 ]);
+
+// 负责人批准的构建期许可例外（ADR 0011）：只放行"规范但不在白名单"的构建期依赖，
+// 精确到 包名@版本 且许可字符串必须一致；同时要求这些包不出现在生产依赖报告中。
+const BUILD_TIME_REASON =
+  "MPL-2.0，Tailwind CSS 4 构建期依赖（@tailwindcss/node），不进入产物；负责人 2026-10-01 批准";
+const BUILD_TIME_LICENSE_EXCEPTIONS: ReadonlyMap<string, { license: string; reason: string }> =
+  new Map(
+    [
+      "lightningcss",
+      "lightningcss-android-arm64",
+      "lightningcss-darwin-arm64",
+      "lightningcss-darwin-x64",
+      "lightningcss-freebsd-x64",
+      "lightningcss-linux-arm-gnueabihf",
+      "lightningcss-linux-arm64-gnu",
+      "lightningcss-linux-arm64-musl",
+      "lightningcss-linux-x64-gnu",
+      "lightningcss-linux-x64-musl",
+      "lightningcss-win32-arm64-msvc",
+      "lightningcss-win32-x64-msvc",
+    ].map((name) => [`${name}@1.32.0`, { license: "MPL-2.0", reason: BUILD_TIME_REASON }]),
+  );
+
+export type BuildTimeExceptions = ReadonlyMap<string, { license: string; reason: string }>;
 
 interface LicenseEntry {
   name: string;
@@ -123,6 +148,9 @@ function isAllowedLicenseExpr(expr: string): boolean {
 export function evaluateLicenses(
   report: LicenseReport,
   exceptions: ReadonlyMap<string, string> = ACCEPTED_EXCEPTIONS,
+  buildTime: BuildTimeExceptions = BUILD_TIME_LICENSE_EXCEPTIONS,
+  prodReport?: LicenseReport,
+  usedBuildTime: Set<string> = new Set(),
 ): string[] {
   const violations: string[] = [];
   for (const { name, license, versions } of normalizeReport(report)) {
@@ -136,20 +164,56 @@ export function evaluateLicenses(
       if (vers.length > 0 && vers.every((v) => exceptions.has(`${name}@${v}`))) {
         continue;
       }
+      if (
+        license &&
+        vers.length > 0 &&
+        vers.every((v) => buildTime.get(`${name}@${v}`)?.license === license)
+      ) {
+        for (const v of vers) usedBuildTime.add(`${name}@${v}`);
+        continue;
+      }
       violations.push(`${name}: 许可证 ${license ?? "缺失"} 不在白名单`);
+    }
+  }
+  if (prodReport) {
+    const buildTimeNames = new Set(
+      [...buildTime.keys()].map((k) => k.slice(0, k.lastIndexOf("@"))),
+    );
+    for (const { name, versions } of normalizeReport(prodReport)) {
+      const hits = versions?.length
+        ? versions.filter((v) => buildTime.has(`${name}@${v}`)).map((v) => `${name}@${v}`)
+        : buildTimeNames.has(name)
+          ? [name]
+          : [];
+      for (const hit of hits) {
+        violations.push(`${hit}: 构建期许可例外包出现在生产依赖中`);
+      }
     }
   }
   return violations;
 }
 
-function main(): void {
-  const rootDir = fileURLToPath(new URL("..", import.meta.url));
-  const output = execFileSync("pnpm", ["licenses", "list", "--json"], {
+function listLicenses(rootDir: string, prod: boolean): LicenseReport {
+  const output = execFileSync("pnpm", ["licenses", "list", "--json", ...(prod ? ["--prod"] : [])], {
     cwd: rootDir,
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
   });
-  const violations = evaluateLicenses(JSON.parse(output) as LicenseReport);
+  return JSON.parse(output) as LicenseReport;
+}
+
+function main(): void {
+  const rootDir = fileURLToPath(new URL("..", import.meta.url));
+  const report = listLicenses(rootDir, false);
+  const prodReport = listLicenses(rootDir, true);
+  const used = new Set<string>();
+  const violations = evaluateLicenses(
+    report,
+    ACCEPTED_EXCEPTIONS,
+    BUILD_TIME_LICENSE_EXCEPTIONS,
+    prodReport,
+    used,
+  );
   if (violations.length > 0) {
     console.error("许可证检查失败:");
     for (const v of violations) {
@@ -157,9 +221,8 @@ function main(): void {
     }
     process.exit(1);
   }
-  console.log(
-    `许可证检查通过（${normalizeReport(JSON.parse(output) as LicenseReport).length} 个依赖）`,
-  );
+  const usedText = used.size > 0 ? `；构建期例外：${[...used].sort().join("、")}` : "";
+  console.log(`许可证检查通过（${normalizeReport(report).length} 个依赖${usedText}）`);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {

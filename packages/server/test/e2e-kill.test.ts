@@ -220,4 +220,97 @@ describe("场景 10：写入工具执行中 SIGKILL（14 §5 #10、§3 跨进程
     expect(result?.data.status).toBe("ok");
     expect(prompts(dataDir).length).toBeGreaterThanOrEqual(2); // 批准后续步模型调用发生了
   }, 60_000);
+
+  test("多代理 SIGKILL：queued 子代理恢复为 interrupted，两个 worker resume 后完成", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "excelmanus-kill-team-"));
+    dirs.push(dataDir);
+
+    // 进程 1（team）：main 派生两个 worker；maxConcurrentSubAgents=1，
+    // 一个进永久阻塞的 slow_write，另一个被并发闸门排队。
+    const p1 = await spawnFixture(dataDir, "team");
+    const api1 = createApiClient(p1.url, p1.token);
+    const sessionId = await boot(api1);
+    await api1.sendMessage(sessionId, "main", { clientMessageId: "tk-1", text: "并行做两件事" });
+    await waitLog(
+      api1,
+      sessionId,
+      (i) =>
+        i.some((r) => r.type === "tool.intent" && r.data.toolName === "slow_write") &&
+        i.some(
+          (r) => r.type === "agent.status" && (r.data as { status?: string }).status === "queued",
+        ),
+      "slow_write intent + queued worker",
+    );
+    const detail1 = await api1.getSession(sessionId);
+    const workers = detail1.agents.filter((a) => a.id !== "main");
+    expect(workers).toHaveLength(2);
+    const queuedWorker = workers.find((a) => a.status === "queued");
+    const busyWorker = workers.find((a) => a.status !== "queued");
+    expect(queuedWorker).toBeDefined();
+    expect(busyWorker).toBeDefined();
+    const busyId = String(busyWorker?.id);
+    const queuedId = String(queuedWorker?.id);
+
+    p1.proc.kill("SIGKILL");
+    await p1.exited;
+
+    // 进程 2（text）：两个 worker 都被恢复为 interrupted。
+    const p2 = await spawnFixture(dataDir, "text");
+    const api2 = createApiClient(p2.url, p2.token);
+    const detail2 = await api2.getSession(sessionId);
+    const after = detail2.agents.filter((a) => a.id !== "main");
+    expect(after).toHaveLength(2);
+    for (const a of after) expect(a.status).toBe("interrupted");
+
+    const items2 = (await api2.getSessionLog(sessionId, { limit: 500 })).items;
+    // 执行中的 worker：1 条 intent、1 条合成的 uncertain 结果、1 条 turn.interrupted。
+    expect(items2.filter((r) => r.type === "tool.intent" && r.agentId === busyId)).toHaveLength(1);
+    expect(
+      items2.filter(
+        (r) => r.type === "tool.result" && r.agentId === busyId && r.data.status === "uncertain",
+      ),
+    ).toHaveLength(1);
+    expect(items2.some((r) => r.type === "turn.interrupted" && r.agentId === busyId)).toBe(true);
+    // 排队中的 worker：没有进行中的轮——不写 turn.interrupted，不合成 tool.result。
+    expect(items2.some((r) => r.type === "turn.interrupted" && r.agentId === queuedId)).toBe(false);
+    expect(items2.filter((r) => r.type === "tool.result" && r.agentId === queuedId)).toHaveLength(
+      0,
+    );
+    expect(items2.filter((r) => r.type === "tool.intent" && r.agentId === queuedId)).toHaveLength(
+      0,
+    );
+    // 它的待处理派发保持不动（accepted/queued，未 applied）。
+    const dispatchId = String(
+      items2.find((r) => r.type === "user.message" && r.agentId === queuedId)?.data.dispatchId ??
+        "",
+    );
+    expect(dispatchId).not.toBe("");
+    const dispUpdates = items2.filter(
+      (r) =>
+        r.type === "dispatch.updated" &&
+        (r.data as { dispatchId?: string }).dispatchId === dispatchId,
+    );
+    const lastStatus = String(
+      (dispUpdates.at(-1)?.data as { status?: string } | undefined)?.status ?? "",
+    );
+    expect(["accepted", "queued"]).toContain(lastStatus);
+
+    // 分别 resume：两个 worker 都开新一轮并完成（text 模式永远返回文本）。
+    for (const id of [busyId, queuedId]) {
+      await api2.controlAgent(sessionId, id, { action: "resume" });
+    }
+    const items3 = await waitLog(
+      api2,
+      sessionId,
+      (i) =>
+        [busyId, queuedId].every((id) =>
+          i.some((r) => r.type === "turn.completed" && r.agentId === id),
+        ),
+      "两个 worker 续轮完成",
+      20_000,
+    );
+    for (const id of [busyId, queuedId]) {
+      expect(items3.some((r) => r.type === "turn.started" && r.agentId === id)).toBe(true);
+    }
+  }, 60_000);
 });

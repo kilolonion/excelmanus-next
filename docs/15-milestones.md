@@ -74,6 +74,8 @@ M3 租约、预算、收件箱、子代理工具、恢复和失控检测的实�
 
 ## M5 桌面与扩展
 
+2026-10-01 状态：实现完成，验收见 [M5 验收记录](acceptance/m5.md)；场景 18/20/21 通过，19 部分（真实账号未验证），23 未通过（签名与自动更新）。打包与截图的取舍见 [ADR 0010](decisions/0010-m5-desktop-render-subscription.md)。
+
 - Electron 桌面：自定义协议、`utilityProcess` 后端、离屏截图、`safeStorage`、生命周期、系统通知、打包、签名、自动更新、`--self-test`。
 - ChatGPT/Codex 订阅登录。
 - 技能（内置 9 个 + 导入）、记忆、规则、MCP。

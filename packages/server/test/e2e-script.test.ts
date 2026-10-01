@@ -497,7 +497,37 @@ describe("e2e run_script", () => {
     });
     expect(rB?.status).toBe("uncertain");
     expect(rB?.error?.message).toContain("部分完成");
-    expect(existsSync(stageDirB)).toBe(false);
+    // P1-15：判定不确定时保留暂存（含回滚副本）
+    expect(existsSync(stageDirB)).toBe(true);
+    // 场景C：只写文本的发布做到一半（清单已写、目标已替换）→ uncertain，.orig 保留
+    const stageDirC = join(srv.workspaceRoot, ".excelmanus", "tmp", "script-tcC");
+    mkdirSync(stageDirC, { recursive: true });
+    const sha256 = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
+    writeFileSync(join(srv.workspaceRoot, "t.txt"), "new");
+    writeFileSync(join(stageDirC, "s0.orig"), "old");
+    writeFileSync(
+      join(stageDirC, "publish-texts.json"),
+      JSON.stringify([
+        {
+          rel: "t.txt",
+          before: sha256(new TextEncoder().encode("old")),
+          after: sha256(new TextEncoder().encode("new")),
+          rollbackFile: join(stageDirC, "s0.orig"),
+        },
+      ]),
+    );
+    const rC = tool.recover!({ sessionId, agentId: AGENT, toolCallId: "tcC", args: { code: "x" } });
+    expect(rC?.status).toBe("uncertain");
+    expect(rC?.error?.code).toBe("INTERNAL");
+    expect(existsSync(join(stageDirC, "s0.orig"))).toBe(true);
+    // 场景D：清单存在但半截（无法解析）→ fail-closed：uncertain，暂存与 .orig 保留
+    const stageDirD = join(srv.workspaceRoot, ".excelmanus", "tmp", "script-tcD");
+    mkdirSync(stageDirD, { recursive: true });
+    writeFileSync(join(stageDirD, "s0.orig"), "old");
+    writeFileSync(join(stageDirD, "publish-texts.json"), '[{"rel":"d.txt","bef');
+    const rD = tool.recover!({ sessionId, agentId: AGENT, toolCallId: "tcD", args: { code: "x" } });
+    expect(rD?.status).toBe("uncertain");
+    expect(existsSync(join(stageDirD, "s0.orig"))).toBe(true);
     await svc.discardCreated(created.meta.id, srv.workspaceRoot, sessionId);
     await pool.close();
   }, 60_000);

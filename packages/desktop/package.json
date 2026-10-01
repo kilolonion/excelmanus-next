@@ -3,15 +3,22 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "exports": {
-    ".": "./src/index.ts"
-  },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build": "node scripts/build.ts",
+    "pack": "node scripts/pack.ts",
+    "start": "node scripts/build.ts && electron build/app",
+    "self-test": "node scripts/build.ts && electron build/app --self-test"
   },
   "dependencies": {
-    "@excelmanus/protocol": "workspace:*",
     "@excelmanus/core": "workspace:*",
-    "@excelmanus/server": "workspace:*"
+    "@excelmanus/protocol": "workspace:*",
+    "@excelmanus/server": "workspace:*",
+    "electron-updater": "6.8.9"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "electron": "44.4.3",
+    "esbuild": "0.28.2"
   }
 }

@@ -1,4 +1,4 @@
-import type { FileIntentMeta } from "@excelmanus/protocol";
+import { type FileIntentMeta, type ReplayKind, toToolErrorCode } from "@excelmanus/protocol";
 import {
   type ApprovalCoordinator,
   type ApprovalEffect,
@@ -8,6 +8,7 @@ import {
   needsApproval,
 } from "./approvals.ts";
 import { BackupService } from "./backup.ts";
+import type { BlobStore } from "./blobs.ts";
 import {
   type AgentBudget,
   addUsage,
@@ -16,6 +17,7 @@ import {
   emptyBudgetUsage,
   parseBudget,
 } from "./budget.ts";
+import { type ChangeSummarySource, describeDocChange } from "./change-summary.ts";
 import {
   COMPACTION_PROMPT,
   COMPACTION_SYSTEM,
@@ -40,6 +42,7 @@ import type { QuestionCoordinator } from "./questions.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { newId } from "@excelmanus/core";
 import type {
+  AgentRole,
   ClassifiedError,
   ContextItem,
   DeltaKind,
@@ -56,7 +59,13 @@ import type { SyncBus } from "./bus.ts";
 import type { ModelGateway } from "./model-gateway.ts";
 import type { SessionLog } from "./session-log.ts";
 import type { AgentCoordinator } from "./tools.ts";
-import { createReadTable, type ReadTable, type ToolDefinition } from "./tools.ts";
+import {
+  createReadTable,
+  persistedReads,
+  type ReadTable,
+  type ToolDefinition,
+  type ToolEffect,
+} from "./tools.ts";
 
 export interface AgentRuntimeDeps {
   db: DatabaseSync;
@@ -72,7 +81,11 @@ export interface AgentRuntimeDeps {
   }): ResolvedModel | { error: ClassifiedError };
   workspaceRoot(sessionId: string): string;
   workspaceId(sessionId: string): string;
+  /** 非文件资源读取（skill://，12 §1.2），由装配层提供。 */
+  resolveResource?(sessionId: string, uri: string): { text: string } | { error: ToolResult };
   backups?: BackupService;
+  /** 内容寻址存储：用户消息图片附件在调用模型前从这里读出（01 §3、04 §7）。 */
+  blobs?: BlobStore;
   leases?: LeaseService;
   approval?: ApprovalCoordinator;
   question?: QuestionCoordinator;
@@ -84,8 +97,16 @@ export interface AgentRuntimeDeps {
   maxRetries?: number;
   /** 无 Retry-After 时的指数退避基数（测试可调小）。 */
   retryBaseMs?: number;
-  /** 占用达到窗口 80% 时自动压缩（04 §6.3）；false 关闭。 */
-  autoCompact?: boolean;
+  /** 05 §8：同时运行的子代理数上限（默认 4），超出排队按 FIFO 启动。 */
+  maxConcurrentSubAgents?: number;
+  /** 每轮变更摘要的数据源（04 §11；server 装配 workbook 文档日志实现）。 */
+  changeSummary?: ChangeSummarySource;
+  /** 子代理轮结束、向父代理投递完成报告后唤醒它（server 装配为 enqueueInbox）。 */
+  onInbox?(sessionId: string, agentId: string): void;
+  /** 占用达到窗口 80% 时自动压缩（04 §6.3）；false 关闭；函数形式按设置实时读取。 */
+  autoCompact?: boolean | (() => boolean);
+  /** 上下文压缩摘要使用的模型（09 §3 用途分配）；未设置用本代理模型。 */
+  summaryModel?(): ResolvedModel | undefined;
   emit?: (event: string, fields: Record<string, unknown>) => void;
 }
 
@@ -97,6 +118,7 @@ interface AgentRow {
   model_profile_id: string | null;
   system_prompt: string | null;
   usage: string | null;
+  name?: string | null;
   parent_id?: string | null;
   budget?: string | null;
 }
@@ -143,13 +165,85 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 export class AgentRuntime {
   private readonly deps: AgentRuntimeDeps;
   private readonly actors = new Map<string, AgentActor>();
+  /** 05 §8：被并发闸门拦下的子代理，按会话 FIFO 等待空位。 */
+  private readonly turnWaiters = new Map<string, AgentActor[]>();
+  /**
+   * 05 §11"停止全部"后的会话：收件箱消息（含被停子代理的完成报告）只留在
+   * inbox_pending，不唤醒任何代理，直到用户发消息或继续。
+   */
+  private readonly halted = new Set<string>();
+  /** 已删除的会话：不再创建 actor、不再开轮。 */
+  private readonly deleted = new Set<string>();
 
   constructor(deps: AgentRuntimeDeps) {
     this.deps = deps;
   }
 
+  /**
+   * 子代理开轮闸门：同会话 running 子代理达到上限时把 actor 登记进 FIFO
+   * 并标 agent.status=queued，返回 false。main 与终态/暂停代理不走闸门
+   * （暂停/终态直接返回 false 且不登记，等待 resume/control 唤醒）。
+   * `front`：被唤醒后仍没抢到名额的等待者回到表头，不丢失先后顺序。
+   */
+  acquireTurn(actor: AgentActor, front = false): "go" | "queued" | "blocked" {
+    if (this.deleted.has(actor.sessionId)) return "blocked";
+    const row = this.deps.db
+      .prepare("SELECT role, status FROM agents WHERE session_id = ? AND id = ?")
+      .get(actor.sessionId, actor.agentId) as { role: string; status: string } | undefined;
+    if (row === undefined || row.role === "main") return "go";
+    if (["paused", "closed", "failed"].includes(row.status)) return "blocked";
+    const limit = this.deps.maxConcurrentSubAgents ?? 4;
+    const running = (
+      this.deps.db
+        .prepare(
+          "SELECT COUNT(*) AS c FROM agents WHERE session_id = ? AND role != 'main' AND status = 'running'",
+        )
+        .get(actor.sessionId) as { c: number }
+    ).c;
+    if (running < limit) return "go";
+    if (row.status !== "queued") {
+      this.deps.log.append(actor.sessionId, actor.agentId, [
+        { type: "agent.status", data: { status: "queued" } },
+      ]);
+    }
+    const q = this.turnWaiters.get(actor.sessionId) ?? [];
+    if (!q.includes(actor)) {
+      if (front) q.unshift(actor);
+      else q.push(actor);
+    }
+    this.turnWaiters.set(actor.sessionId, q);
+    return "queued";
+  }
+
+  /** 一轮结束后唤醒同会话 FIFO 表头的等待者（其 pump 会再检查一次闸门）。 */
+  releaseTurn(sessionId: string): void {
+    const q = this.turnWaiters.get(sessionId);
+    if (!q || q.length === 0) return;
+    const next = q.shift();
+    if (q.length === 0) this.turnWaiters.delete(sessionId);
+    next?.wakeFromGate();
+  }
+
+  /** 把 actor 从闸门 FIFO 中移除（停止/关闭/删除）。 */
+  private leaveGate(sessionId: string, actor: AgentActor): void {
+    const q = this.turnWaiters.get(sessionId);
+    if (!q) return;
+    const rest = q.filter((a) => a !== actor);
+    if (rest.length === 0) this.turnWaiters.delete(sessionId);
+    else this.turnWaiters.set(sessionId, rest);
+  }
+
   /** 派发受理后调用：agent 空闲则开始新一轮，运行中按 mode  steer/interrupt/queue 处理。 */
   enqueue(sessionId: string, agentId: string, dispatchId: string, mode: DispatchMode): void {
+    if (this.deleted.has(sessionId)) return;
+    if (this.halted.has(sessionId)) {
+      // 停止全部期间被停代理收尾时派生的子代理：任务派发保持挂起，经继续恢复。
+      const row = this.deps.db
+        .prepare("SELECT client_message_id AS c FROM dispatches WHERE id = ?")
+        .get(dispatchId) as { c: string } | undefined;
+      if (row?.c.startsWith("spawn:")) return;
+      this.halted.delete(sessionId);
+    }
     this.actor(sessionId, agentId).enqueue(dispatchId, mode);
   }
 
@@ -164,6 +258,8 @@ export class AgentRuntime {
    * 继续轮（只用已持久化历史，不重放任何副作用）。
    */
   resumeAgent(sessionId: string, agentId: string): { resumed: number; started: boolean } {
+    if (this.deleted.has(sessionId)) return { resumed: 0, started: false };
+    this.halted.delete(sessionId);
     const actor = this.actor(sessionId, agentId);
     if (actor.running) return { resumed: 0, started: false };
     const rows = this.deps.db
@@ -200,12 +296,64 @@ export class AgentRuntime {
     // 代理间消息不会绕过用户/父代理的 resume；暂停、重启中断或终态代理只保留
     // inbox_pending，避免乒乓检测后又被后续消息偷偷唤醒。
     if (!row || ["paused", "interrupted", "closed", "failed"].includes(row.status)) return;
+    if (this.halted.has(sessionId) || this.deleted.has(sessionId)) return;
     this.actor(sessionId, agentId).enqueueInbox();
   }
 
-  /** 停止：中止当前模型请求/工具，返回是否有运行中的轮。 */
+  /**
+   * 停止：中止当前模型请求/工具，返回是否有运行中的轮。不在运行的 actor 也
+   * 清掉内存队列并退出闸门 FIFO（排队中的派发留在 DB 挂起，经 resume 恢复）。
+   */
   stop(sessionId: string, agentId: string): boolean {
-    return this.actors.get(`${sessionId}/${agentId}`)?.requestStop() ?? false;
+    const actor = this.actors.get(`${sessionId}/${agentId}`);
+    if (!actor) return false;
+    this.leaveGate(sessionId, actor);
+    return actor.requestStop();
+  }
+
+  /**
+   * 停止全部（05 §11）：会话内全部 actor 停止并退出闸门 FIFO；闸门排队中的
+   * 子代理回到 idle（任务派发挂起）；此后收件箱消息不唤醒任何代理，直到用户
+   * 发消息或继续。返回被停止（含被撤出闸门）的 agentId。
+   */
+  stopAll(sessionId: string): string[] {
+    this.halted.add(sessionId);
+    const gated = new Set(this.turnWaiters.get(sessionId) ?? []);
+    this.turnWaiters.delete(sessionId);
+    const stopped: string[] = [];
+    for (const [key, actor] of this.actors) {
+      if (!key.startsWith(`${sessionId}/`)) continue;
+      if (actor.requestStop() || gated.has(actor)) stopped.push(actor.agentId);
+    }
+    const queued = this.deps.db
+      .prepare("SELECT id FROM agents WHERE session_id = ? AND status = 'queued'")
+      .all(sessionId) as { id: string }[];
+    for (const row of queued) {
+      this.deps.log.append(sessionId, row.id, [{ type: "agent.status", data: { status: "idle" } }]);
+      if (!stopped.includes(row.id)) stopped.push(row.id);
+    }
+    return stopped;
+  }
+
+  /**
+   * 删除会话前调用（05 §11"先停止全部代理，再删除"）：停止全部、不再接受
+   * 任何开轮请求，并等待在跑的 actor 收尾（最多 timeoutMs），随后卸下 actor。
+   */
+  async closeSession(sessionId: string, timeoutMs = 10_000): Promise<{ stillRunning: string[] }> {
+    this.deleted.add(sessionId);
+    this.stopAll(sessionId);
+    const prefix = `${sessionId}/`;
+    const deadline = Date.now() + timeoutMs;
+    const running = () =>
+      [...this.actors]
+        .filter(([key, actor]) => key.startsWith(prefix) && actor.running)
+        .map(([, actor]) => actor.agentId);
+    while (running().length > 0 && Date.now() < deadline) await sleep(20);
+    // 超时仍未退出的 actor（工具不响应中止）：信号已中止、之后的日志写入被拒；
+    // 返回给调用方记录，便于排查删除后仍发生的工作区改动（appendix-c 待定是否改为拒绝删除）。
+    const stillRunning = running();
+    for (const key of [...this.actors.keys()]) if (key.startsWith(prefix)) this.actors.delete(key);
+    return { stillRunning };
   }
 
   isRunning(sessionId: string, agentId: string): boolean {
@@ -261,7 +409,7 @@ export class AgentRuntime {
     const key = `${sessionId}/${agentId}`;
     let a = this.actors.get(key);
     if (!a) {
-      a = new AgentActor(this.deps, sessionId, agentId);
+      a = new AgentActor(this.deps, sessionId, agentId, this);
       this.actors.set(key, a);
     }
     return a;
@@ -287,18 +435,23 @@ class AgentActor {
   private callAbort: AbortController | null = null;
   private currentTurnId: string | null = null;
   private readonly deps: AgentRuntimeDeps;
-  private readonly sessionId: string;
-  private readonly agentId: string;
-  /** 本代理的文档读集（07 §10；actor 卸下即丢弃）。 */
-  private readonly reads: ReadTable = createReadTable();
+  readonly sessionId: string;
+  readonly agentId: string;
+  /** 回指宿主运行时：并发闸门与轮结束唤醒。 */
+  private readonly host: AgentRuntime;
+  /** 本代理的文档读集（07 §10；首次使用时从 agent_context 重建，10 §3.4）。 */
+  private readonly reads: ReadTable = createReadTable(() =>
+    persistedReads(this.deps.db, this.sessionId, this.agentId),
+  );
   /** 本轮与历史累计预算；每次 usage.updated 同事务持久化。 */
   private budgetUsage: BudgetUsage = emptyBudgetUsage();
   private budget: AgentBudget = {};
 
-  constructor(deps: AgentRuntimeDeps, sessionId: string, agentId: string) {
+  constructor(deps: AgentRuntimeDeps, sessionId: string, agentId: string, host: AgentRuntime) {
     this.deps = deps;
     this.sessionId = sessionId;
     this.agentId = agentId;
+    this.host = host;
   }
 
   get running(): boolean {
@@ -324,6 +477,11 @@ class AgentActor {
     void this.pump();
   }
 
+  /** 并发闸门空出位置后被运行时唤醒：重新 pump（会再过一次闸门）。 */
+  wakeFromGate(): void {
+    void this.pump(true);
+  }
+
   dropDispatch(dispatchId: string): void {
     this.queue = this.queue.filter((e) => "inbox" in e || e.dispatchId !== dispatchId);
   }
@@ -344,6 +502,9 @@ class AgentActor {
     if (!tool) return;
     const parsed = tool.input.safeParse(spec.args);
     if (!parsed.success) return;
+    // 已有结果（停止时已收口等）或所属轮已结束：不再追加第二条结果、不复活旧轮
+    if (this.hasToolResult(spec.toolCallId) || this.turnEnded(spec.turnId)) return;
+    const roleAllowed = (tool.roles as readonly string[]).includes(this.agent()?.role ?? "main");
     this._running = true;
     this.currentTurnId = spec.turnId ?? null;
     try {
@@ -352,11 +513,21 @@ class AgentActor {
         workspaceRoot: this.deps.workspaceRoot(this.sessionId),
         sessionId: this.sessionId,
         agentId: this.agentId,
+        ...(this.deps.resolveResource
+          ? {
+              resolveResource: (uri: string) =>
+                (this.deps.resolveResource as NonNullable<AgentRuntimeDeps["resolveResource"]>)(
+                  this.sessionId,
+                  uri,
+                ),
+            }
+          : {}),
       };
       let result: ToolResult = {
         status: "error",
         error: { code: "INTERNAL", message: "工具未执行", retryable: false },
       };
+      let durationMs: number | undefined;
       if (row.status === "denied") {
         result = {
           status: "error",
@@ -366,8 +537,18 @@ class AgentActor {
             retryable: false,
           },
         };
+      } else if (!roleAllowed) {
+        result = {
+          status: "error",
+          error: {
+            code: "INVALID_ARGUMENT",
+            message: `工具 ${spec.toolName} 不存在`,
+            retryable: false,
+          },
+        };
       } else {
         const ctrl = new AbortController();
+        const startedAt = Date.now();
         try {
           if (
             this.deps.leases &&
@@ -382,6 +563,7 @@ class AgentActor {
             ...scope,
             signal: AbortSignal.any([ctrl.signal, AbortSignal.timeout(tool.timeoutMs)]),
             toolCallId: spec.toolCallId,
+            role: (this.agent()?.role ?? "main") as AgentRole,
             reads: this.reads,
             backups: (this.deps.backups ?? new BackupService(this.deps.db)).bind(scope),
             leases: this.deps.leases,
@@ -389,7 +571,9 @@ class AgentActor {
             rawArgs: spec.args,
             destructiveApproved: true,
           });
+          durationMs = Date.now() - startedAt;
         } catch (err) {
+          durationMs = Date.now() - startedAt;
           result = {
             status: "error",
             ...(err instanceof FileLeaseError
@@ -413,6 +597,7 @@ class AgentActor {
           };
         }
       }
+      result = withVocabularyCode(result);
       this.deps.log.append(this.sessionId, this.agentId, [
         {
           type: "tool.result",
@@ -421,6 +606,7 @@ class AgentActor {
             toolName: spec.toolName,
             status: result.status,
             result,
+            ...(durationMs !== undefined ? { durationMs } : {}),
           },
         },
       ]);
@@ -442,7 +628,10 @@ class AgentActor {
       }
     } finally {
       this._running = false;
+      const finishedTurn = this.currentTurnId;
       this.currentTurnId = null;
+      this.afterTurn(finishedTurn);
+      this.host.releaseTurn(this.sessionId);
       // 审批决定后让等待期间排队的派发继续运行（04 §4.1 注：steer/queue 在决定后继续）
       void this.pump();
     }
@@ -472,6 +661,27 @@ class AgentActor {
       ).map((r) => r.id),
     );
     return tail.filter((c) => !answered.has(c.id));
+  }
+
+  private hasToolResult(toolCallId: string): boolean {
+    return (
+      this.deps.db
+        .prepare(
+          "SELECT 1 FROM session_log WHERE session_id = ? AND agent_id = ? AND type = 'tool.result' AND json_extract(data, '$.toolCallId') = ? LIMIT 1",
+        )
+        .get(this.sessionId, this.agentId, toolCallId) !== undefined
+    );
+  }
+
+  private turnEnded(turnId: string | undefined): boolean {
+    if (turnId === undefined) return false;
+    return (
+      this.deps.db
+        .prepare(
+          "SELECT 1 FROM session_log WHERE session_id = ? AND agent_id = ? AND type IN ('turn.completed','turn.failed','turn.interrupted') AND json_extract(data, '$.turnId') = ? LIMIT 1",
+        )
+        .get(this.sessionId, this.agentId, turnId) !== undefined
+    );
   }
 
   /** 日志中该轮已发出的 step.started 条数，恢复路径据此续算步数。 */
@@ -511,6 +721,12 @@ class AgentActor {
     const toolCallId =
       row.tool_call_id ?? (typeof meta.toolCallId === "string" ? meta.toolCallId : undefined);
     if (!toolCallId) return;
+    // 停止/打断已收口该调用或所属轮已结束：回答只落在问题投影，不再追加结果、不复活旧轮
+    if (
+      this.hasToolResult(toolCallId) ||
+      this.turnEnded(typeof meta.turnId === "string" ? meta.turnId : undefined)
+    )
+      return;
     this._running = true;
     try {
       const result: ToolResult = {
@@ -548,18 +764,21 @@ class AgentActor {
       }
     } finally {
       this._running = false;
+      const finishedTurn = this.currentTurnId;
       this.currentTurnId = null;
+      this.afterTurn(finishedTurn);
+      this.host.releaseTurn(this.sessionId);
       void this.pump();
     }
   }
 
   requestStop(): boolean {
+    // 停止后排队中的消息不自动开始（04 §4.2）：内存队列清空，DB 里保持
+    // queued 即挂起，只经 resume 恢复。不在运行（如闸门排队）时同样清空。
+    this.queue = [];
     if (!this._running) return false;
     this.stopRequested = true;
     this.abortReason = "代理已停止";
-    // 停止后排队中的消息不自动开始（04 §4.2）：内存队列清空，DB 里保持
-    // queued 即挂起，只经 resume 恢复。
-    this.queue = [];
     this.callAbort?.abort();
     return true;
   }
@@ -607,7 +826,9 @@ class AgentActor {
 
   /** auto 触发条件：窗口已知且占用 ≥ 80%（04 §6.3）。 */
   private shouldAutoCompact(model: ResolvedModel): boolean {
-    if (this.deps.autoCompact === false || model.contextWindow === undefined) return false;
+    const auto =
+      typeof this.deps.autoCompact === "function" ? this.deps.autoCompact() : this.deps.autoCompact;
+    if (auto === false || model.contextWindow === undefined) return false;
     return this.contextUsage(model).tokens >= 0.8 * model.contextWindow;
   }
 
@@ -634,7 +855,7 @@ class AgentActor {
     const plan = planCompaction(parsed, keepBudgetTokens(model.contextWindow, beforeTokens));
     if (plan === null) return false;
     const summary = await this.callSummaryModel(
-      model,
+      this.deps.summaryModel?.() ?? model,
       transcriptForSummary(plan.old.map((r) => r.item)),
     );
     const summaryItem: ContextItem = { kind: "user", text: `<summary>\n${summary}\n</summary>` };
@@ -749,11 +970,37 @@ class AgentActor {
     );
   }
 
-  private async pump(): Promise<void> {
-    if (this._running) return;
-    if (this.awaitingInteraction()) return;
+  /** 内存队列里是否还有可开轮的条目（顺带丢弃已撤回/已应用的派发）。 */
+  private hasWork(): boolean {
+    this.queue = this.queue.filter((e) => "inbox" in e || this.dispatchAlive(e.dispatchId));
+    return this.queue.length > 0;
+  }
+
+  /**
+   * `fromGate`：由闸门唤醒。被唤醒却用不上名额（没有任务、在跑、等交互、已暂停/
+   * 关闭）时把唤醒转交给下一个等待者，避免排在后面的代理无人唤醒。
+   */
+  private async pump(fromGate = false): Promise<void> {
+    const handOff = () => {
+      if (fromGate) this.host.releaseTurn(this.sessionId);
+    };
+    if (this._running || this.awaitingInteraction()) return handOff();
+    // 05 §3、§8：先看有没有任务再过闸门——没有任务的代理不排队；曾在闸门
+    // 排队、任务已撤回/被停止的代理回到 idle。
+    if (!this.hasWork()) {
+      if (this.agent()?.status === "queued") {
+        this.deps.log.append(this.sessionId, this.agentId, [
+          { type: "agent.status", data: { status: "idle" } },
+        ]);
+      }
+      return handOff();
+    }
+    // 05 §8：子代理并发闸门——running 子代理到上限时排入 FIFO，等空位再开轮。
+    const gate = this.host.acquireTurn(this, fromGate);
+    if (gate === "blocked") return handOff();
+    if (gate === "queued") return;
     const dispatchIds = this.takeBatch();
-    if (dispatchIds === null) return;
+    if (dispatchIds === null) return handOff();
     this._running = true;
     this.stopRequested = false;
     this.interruptRequested = false;
@@ -764,7 +1011,10 @@ class AgentActor {
       this.failInternal(err);
     } finally {
       this._running = false;
+      const finishedTurn = this.currentTurnId;
       this.currentTurnId = null;
+      this.afterTurn(finishedTurn);
+      this.host.releaseTurn(this.sessionId);
       void this.pump();
     }
   }
@@ -781,7 +1031,19 @@ class AgentActor {
         "SELECT item FROM agent_context WHERE session_id = ? AND agent_id = ? AND superseded = 0 ORDER BY idx",
       )
       .all(this.sessionId, this.agentId) as { item: string }[];
-    return rows.map((r) => JSON.parse(r.item) as ContextItem);
+    return rows.map((r) => {
+      const item = JSON.parse(r.item) as ContextItem;
+      // 图片附件：按引用读出 base64；blob 丢失时不带 data，网关以文字说明代替
+      if (item.kind !== "user" || !item.images || !this.deps.blobs) return item;
+      const blobs = this.deps.blobs;
+      return {
+        ...item,
+        images: item.images.map((img) => {
+          const bytes = blobs.get(img.sha256);
+          return bytes ? { ...img, data: bytes.toString("base64") } : img;
+        }),
+      };
+    });
   }
 
   private delta(stepId: string, part: number, kind: DeltaKind, payload: unknown): void {
@@ -966,6 +1228,8 @@ class AgentActor {
       let sawContent = false;
       let text = "";
       let reasoning = "";
+      let reasoningStart: number | undefined;
+      let reasoningEnd: number | undefined;
       let reasoningProviderOptions: Record<string, unknown> | undefined;
       let usage: Usage | undefined;
       let finish: FinishReason | undefined;
@@ -988,7 +1252,13 @@ class AgentActor {
           model,
           system: agent.system_prompt ?? undefined,
           history: prompt,
-          tools: forceFinal ? undefined : this.deps.toolSpecsFor(agent.role),
+          tools: forceFinal
+            ? undefined
+            : model.vision === false
+              ? this.deps
+                  .toolSpecsFor(agent.role)
+                  .filter((t) => this.deps.tools.get(t.name)?.requiresVision !== true)
+              : this.deps.toolSpecsFor(agent.role),
           providerOptions: model.providerOptions,
           signal: ctrl.signal,
         };
@@ -1003,6 +1273,8 @@ class AgentActor {
             case "reasoning.delta":
               sawContent = true;
               reasoning += ev.text;
+              reasoningStart ??= Date.now();
+              reasoningEnd = Date.now();
               if (ev.providerMetadata !== undefined) {
                 reasoningProviderOptions = ev.providerMetadata as Record<string, unknown>;
               }
@@ -1062,6 +1334,9 @@ class AgentActor {
               ...(reasoning !== "" ? { reasoning } : {}),
               ...(reasoningProviderOptions !== undefined ? { reasoningProviderOptions } : {}),
               ...(toolCalls.length > 0 ? { toolCalls } : {}),
+              ...(reasoningStart !== undefined && reasoningEnd !== undefined
+                ? { reasoningMs: reasoningEnd - reasoningStart }
+                : {}),
             },
           },
         ]);
@@ -1198,6 +1473,10 @@ class AgentActor {
             continue;
           }
         }
+        // 04 §8.4：失败轮已流出的内容同样作废（P1-41，分支 models-ext-desktop 最小插入）
+        if (overflowCompacted && sawContent) {
+          log.append(topic, this.agentId, [{ type: "attempt.discarded", data: { stepId } }]);
+        }
         this.failTurn(turnId, classified);
         return "failed";
       }
@@ -1223,6 +1502,10 @@ class AgentActor {
           return "interrupted";
         }
         continue;
+      }
+      // 04 §8.4：失败轮已流出的内容同样作废（P1-41，分支 models-ext-desktop 最小插入）
+      if (sawContent) {
+        log.append(topic, this.agentId, [{ type: "attempt.discarded", data: { stepId } }]);
       }
       this.failTurn(turnId, classified);
       return "failed";
@@ -1261,11 +1544,16 @@ class AgentActor {
     );
   }
 
-  /** 步骤边界把收件箱 pending 标记为 delivered；内容已由 inbox projection 注入 agent_context。 */
+  /**
+   * 步骤边界投递（05 §4.2）：本代理全部待投递的收件箱消息与环境通知按优先级
+   * （urgent > 用户 > report/notice > 代理消息）一次写出 inbox.delivered；
+   * agent_context 投影据此把这一批合并为一条 <inbox> 追加到对话末尾。
+   */
   private deliverInbox(): void {
     const rows = this.deps.db
       .prepare(
-        "SELECT message_id, to_agent_id FROM inbox_pending WHERE session_id = ? AND to_agent_id = ? AND status = 'pending' ORDER BY urgent DESC, created_at",
+        `SELECT message_id, to_agent_id FROM inbox_pending WHERE session_id = ? AND to_agent_id = ? AND status = 'pending'
+         ORDER BY CASE WHEN urgent = 1 THEN 0 WHEN kind = 'user' THEN 1 WHEN kind IN ('report', 'notice') THEN 2 ELSE 3 END, created_at, rowid`,
       )
       .all(this.sessionId, this.agentId) as { message_id: string; to_agent_id: string }[];
     if (rows.length === 0) return;
@@ -1277,6 +1565,170 @@ class AgentActor {
         data: { messageId: row.message_id, toAgentId: row.to_agent_id },
       })),
     );
+  }
+
+  /**
+   * afterTurn（04 §11）：异步收尾，不阻塞下一轮。
+   * 1. 本轮工具调用提交的文档修订 → 从文档日志生成变更摘要，写 change.summary；
+   * 2. 完成报告（05 §4.3、§3）：非 main 且有 parent_id 的代理每结束一轮，向父代理
+   *    写一条 kind=report 的 inbox.sent 并唤醒它。结束原因取本轮终止记录；最终
+   *    回复取本轮最后一条带 text 的 model.output；变更摘要复用第 1 步的文档摘要，
+   *    非工作簿写入取本轮 status=ok 且 effect 为 write/destructive 的 tool.result。
+   * 进程重启时由 recoverInterruptedAgents 合成的 turn.interrupted 不经此路径。
+   */
+  private afterTurn(turnId: string | null): void {
+    if (turnId === null) return;
+    void this.finishTurn(turnId).catch((err: unknown) => {
+      this.deps.emit?.("turn.after_failed", {
+        sessionId: this.sessionId,
+        agentId: this.agentId,
+        name: err instanceof Error ? err.name : "unknown",
+      });
+    });
+  }
+
+  private async finishTurn(turnId: string): Promise<void> {
+    const { db } = this.deps;
+    const start = db
+      .prepare(
+        "SELECT seq FROM session_log WHERE session_id = ? AND agent_id = ? AND type = 'turn.started' AND json_extract(data, '$.turnId') = ? ORDER BY seq DESC LIMIT 1",
+      )
+      .get(this.sessionId, this.agentId, turnId) as { seq: number } | undefined;
+    const term = db
+      .prepare(
+        "SELECT seq, type, data FROM session_log WHERE session_id = ? AND agent_id = ? AND type IN ('turn.completed','turn.failed','turn.interrupted') AND json_extract(data, '$.turnId') = ? ORDER BY seq DESC LIMIT 1",
+      )
+      .get(this.sessionId, this.agentId, turnId) as
+      | { seq: number; type: string; data: string }
+      | undefined;
+    if (!start || !term) return;
+
+    // 1. 变更摘要：本轮全部工具调用提交的文档修订（不来自模型自述）。
+    const toolCallIds = (
+      db
+        .prepare(
+          "SELECT DISTINCT json_extract(data, '$.toolCallId') AS id FROM session_log WHERE session_id = ? AND agent_id = ? AND type = 'tool.result' AND seq > ? AND seq <= ?",
+        )
+        .all(this.sessionId, this.agentId, start.seq, term.seq) as { id: unknown }[]
+    ).flatMap((r) => (typeof r.id === "string" ? [r.id] : []));
+    const docs =
+      this.deps.changeSummary && toolCallIds.length > 0
+        ? await this.deps.changeSummary.summarize({
+            sessionId: this.sessionId,
+            workspaceRoot: this.deps.workspaceRoot(this.sessionId),
+            toolCallIds,
+          })
+        : [];
+    if (docs.length > 0) {
+      this.deps.log.append(this.sessionId, this.agentId, [
+        {
+          type: "change.summary",
+          data: {
+            docRevs: Object.fromEntries(docs.map((d) => [d.docId, d.toRev])),
+            changes: { turnId, docs },
+          },
+        },
+      ]);
+    }
+
+    // 2. 完成报告（仅子代理）。
+    const agent = this.agent();
+    if (!agent || agent.role === "main" || !agent.parent_id) return;
+    const termData = JSON.parse(term.data) as {
+      reason?: string;
+      error?: { message?: string };
+    };
+    const reason =
+      term.type === "turn.completed"
+        ? termData.reason === "budget_exceeded"
+          ? "预算耗尽"
+          : "已完成"
+        : term.type === "turn.failed"
+          ? `出错：${termData.error?.message ?? "未知错误"}`
+          : "被停止";
+
+    const replyRow = db
+      .prepare(
+        "SELECT json_extract(data, '$.text') AS t FROM session_log WHERE session_id = ? AND agent_id = ? AND type = 'model.output' AND seq > ? AND seq <= ? AND json_extract(data, '$.text') IS NOT NULL ORDER BY seq DESC LIMIT 1",
+      )
+      .get(this.sessionId, this.agentId, start.seq, term.seq) as { t: string | null } | undefined;
+    let reply = replyRow?.t ?? "无";
+    if (reply.length > 4000) {
+      reply = `${reply.slice(0, 4000)}（已截断，可用 agent_status 查看全文）`;
+    }
+
+    const lines: string[] = docs.map(describeDocChange);
+    const docPaths = new Set(docs.map((d) => d.path));
+    const results = db
+      .prepare(
+        "SELECT data FROM session_log WHERE session_id = ? AND agent_id = ? AND type = 'tool.result' AND seq > ? AND seq <= ? ORDER BY seq",
+      )
+      .all(this.sessionId, this.agentId, start.seq, term.seq) as { data: string }[];
+    for (const row of results) {
+      const rec = JSON.parse(row.data) as {
+        toolCallId?: string;
+        toolName?: string;
+        status?: string;
+        result?: ToolResult;
+      };
+      if (rec.status !== "ok" || typeof rec.toolCallId !== "string") continue;
+      const toolName = rec.toolName ?? "";
+      const tool = this.deps.tools.get(toolName);
+      if (!tool) continue;
+      const intent = db
+        .prepare(
+          "SELECT json_extract(data, '$.args') AS a FROM session_log WHERE session_id = ? AND agent_id = ? AND type = 'tool.intent' AND json_extract(data, '$.toolCallId') = ? ORDER BY seq LIMIT 1",
+        )
+        .get(this.sessionId, this.agentId, rec.toolCallId) as { a: string | null } | undefined;
+      const intentArgs = intent?.a ? JSON.parse(intent.a) : undefined;
+      let effect: ToolEffect;
+      try {
+        effect =
+          typeof tool.effect === "function"
+            ? (tool.effect as (args: never) => ToolEffect)(intentArgs as never)
+            : tool.effect;
+      } catch {
+        continue;
+      }
+      if (effect !== "write" && effect !== "destructive") continue;
+      const data = (rec.result?.data ?? {}) as Record<string, unknown>;
+      const docRevs = data.docRevs as Record<string, number> | undefined;
+      const published = Array.isArray(data.published)
+        ? (data.published as { path?: unknown; rev?: unknown }[])
+        : [];
+      const paths = new Set<string>();
+      if (typeof data.path === "string") paths.add(data.path);
+      if (typeof data.to === "string") paths.add(data.to);
+      for (const p of published) {
+        if (typeof p?.path === "string") paths.add(p.path);
+      }
+      const changes =
+        data.changes !== undefined ? ` ${JSON.stringify(data.changes).slice(0, 200)}` : "";
+      for (const path of paths) {
+        if (docPaths.has(path)) continue;
+        const pub = published.find((p) => p.path === path);
+        const rev =
+          (typeof pub?.rev === "number" ? pub.rev : undefined) ??
+          (typeof data.rev === "number" ? data.rev : undefined) ??
+          (typeof data.docId === "string" ? docRevs?.[data.docId] : undefined);
+        lines.push(`${path}${rev !== undefined ? `（修订 rev${rev}）` : ""}${changes}`);
+      }
+    }
+
+    const message = `子代理「${agent.name ?? this.agentId}」本轮${reason}。\n【最终回复】\n${reply}\n【变更摘要】\n${lines.length > 0 ? lines.join("\n") : "无写入"}`;
+    this.deps.log.append(this.sessionId, this.agentId, [
+      {
+        type: "inbox.sent",
+        data: {
+          messageId: newId("msg"),
+          fromAgentId: this.agentId,
+          toAgentId: agent.parent_id,
+          kind: "report",
+          message,
+        },
+      },
+    ]);
+    this.deps.onInbox?.(this.sessionId, agent.parent_id);
   }
 
   /** Executing：顺序执行本步工具调用（04 §3；M1 顺序，只读工具可并行属 P1 优化）。 */
@@ -1316,7 +1768,8 @@ class AgentActor {
           input.effect === "external") &&
         !input.leased
       ) &&
-      !isAutoApproved(this.deps.db, this.sessionId, input.toolName, input.targets);
+      !isAutoApproved(this.deps.db, this.sessionId, input.toolName, input.targets, input.effect) &&
+      this.deps.tools.get(input.toolName)?.autoApproved?.() !== true;
     if (!needed || approval === undefined) {
       return { required: false, decision: "approved" };
     }
@@ -1358,6 +1811,7 @@ class AgentActor {
     calls: ToolCall[],
   ): Promise<StepOutcome> {
     const { log, tools } = this.deps;
+    const agentRole = (this.agent()?.role ?? "main") as AgentRole;
     const finishInterrupted = (from: number) => {
       const records = [
         ...calls.slice(from).map((c) => ({
@@ -1386,33 +1840,57 @@ class AgentActor {
       if (this.stopRequested || this.interruptRequested) return finishInterrupted(i);
       const call = calls[i];
       if (!call) continue;
-      const tool = tools.get(call.name);
+      // 06 §1.2/§8：执行时同样按 roles 裁剪；角色不可用的工具按"不存在"处理。
+      const declared = tools.get(call.name);
+      const tool =
+        declared !== undefined && (declared.roles as readonly string[]).includes(agentRole)
+          ? declared
+          : undefined;
+      // 06 §2.1：targets/replay/effect 只对校验通过的参数求值；非法参数照常写 intent。
+      const parsedArgs = tool?.input.safeParse(call.args);
       let targets: string[] = [];
-      try {
-        targets = tool?.targets(call.args) ?? [];
-      } catch {
-        targets = [];
+      let replay: ReplayKind = "unknown";
+      if (tool !== undefined && parsedArgs?.success) {
+        try {
+          targets = tool.targets(parsedArgs.data) ?? [];
+        } catch {
+          targets = [];
+        }
+        try {
+          replay =
+            typeof tool.replay === "function"
+              ? (tool.replay as (args: unknown) => ReplayKind)(parsedArgs.data)
+              : tool.replay;
+        } catch {
+          replay = "unknown";
+        }
       }
-      const replay =
-        tool === undefined
-          ? "unknown"
-          : typeof tool.replay === "function"
-            ? (tool.replay as (args: unknown) => string)(call.args)
-            : tool.replay;
       const scope = {
         workspaceId: this.deps.workspaceId(this.sessionId),
         workspaceRoot: this.deps.workspaceRoot(this.sessionId),
         sessionId: this.sessionId,
         agentId: this.agentId,
+        ...(this.deps.resolveResource
+          ? {
+              resolveResource: (uri: string) =>
+                (this.deps.resolveResource as NonNullable<AgentRuntimeDeps["resolveResource"]>)(
+                  this.sessionId,
+                  uri,
+                ),
+            }
+          : {}),
       };
-      // 发布时审批的工具在执行内自请审批；等待挂在执行信号上（stop 同时取消等待与工具）。
-      let execSignal: AbortSignal | undefined;
+      // 发布时审批的工具在执行内自请审批（04 §5.2、08 §6）：等待只响应停止/打断，
+      // 等待期间暂停工具超时计时，脚本超时单独计算。
+      let stopSignal: AbortSignal | undefined;
+      let execTimer: PausableTimeout | undefined;
       const ctx = {
         ...scope,
         signal: AbortSignal.timeout(tool?.timeoutMs ?? 30000),
         toolCallId: call.id,
         turnId,
         stepId,
+        role: agentRole,
         reads: this.reads,
         backups: (this.deps.backups ?? new BackupService(this.deps.db)).bind(scope),
         leases: this.deps.leases,
@@ -1424,8 +1902,9 @@ class AgentActor {
                 targets: string[];
                 args: unknown;
                 effect: ApprovalEffect;
-              }) =>
-                this.gateApproval({
+              }) => {
+                execTimer?.pause();
+                return this.gateApproval({
                   toolCallId: call.id,
                   toolName: call.name,
                   args: req.args,
@@ -1435,21 +1914,29 @@ class AgentActor {
                   stepId,
                   // 发布计划的目标租约由工具在批准后自查；这里只为"发布"动作判定审批
                   leased: true,
-                  waitSignal: execSignal,
-                }).then((g) => ({
-                  decision: g.decision,
-                  ...(g.reason !== undefined ? { reason: g.reason } : {}),
-                })),
+                  waitSignal: stopSignal,
+                })
+                  .then((g) => ({
+                    decision: g.decision,
+                    ...(g.reason !== undefined ? { reason: g.reason } : {}),
+                  }))
+                  .finally(() => execTimer?.resume());
+              },
             }
           : {}),
       };
       let intentMeta: FileIntentMeta | undefined;
-      let metaFailed = false;
+      let metaError: { code: string; message: string } | undefined;
+      let durationMs: number | undefined;
       try {
-        const valid = tool?.input.safeParse(call.args);
-        if (valid?.success) intentMeta = tool?.intentMeta?.(valid.data, ctx);
-      } catch {
-        metaFailed = true;
+        if (parsedArgs?.success) intentMeta = tool?.intentMeta?.(parsedArgs.data, ctx);
+      } catch (err) {
+        // 保留原错误码（如越界路径 OUT_OF_WORKSPACE），未知异常按参数问题报告
+        const code = (err as { code?: unknown } | null)?.code;
+        metaError = {
+          code: typeof code === "string" ? toToolErrorCode(code) : "INVALID_ARGUMENT",
+          message: err instanceof Error ? err.message : "无法读取执行前文件状态，未执行写入",
+        };
       }
       log.append(this.sessionId, this.agentId, [
         {
@@ -1470,203 +1957,245 @@ class AgentActor {
         status: "error",
         error: { code: "INTERNAL", message: "工具未执行", retryable: false },
       };
-      if (metaFailed) {
-        result = {
-          status: "error",
-          error: {
-            code: "INVALID_ARGUMENT",
-            message: "无法读取执行前文件状态，未执行写入",
-            retryable: false,
-          },
-        };
-      } else if (!tool) {
-        result = {
-          status: "error",
-          error: {
-            code: "INVALID_ARGUMENT",
-            message: `工具 ${call.name} 不存在`,
-            retryable: false,
-          },
-        };
-      } else {
-        const parsed = tool.input.safeParse(call.args);
-        if (!parsed.success) {
-          const issue = parsed.error.issues[0];
+      try {
+        if (metaError) {
+          result = {
+            status: "error",
+            error: { code: metaError.code, message: metaError.message, retryable: false },
+          };
+        } else if (!tool || !parsedArgs) {
           result = {
             status: "error",
             error: {
               code: "INVALID_ARGUMENT",
-              message: `参数不合法：${issue?.message ?? "schema 校验失败"}`,
-              ...(issue?.path !== undefined && issue.path.length > 0
-                ? { field: issue.path.join(".") }
-                : {}),
+              message: `工具 ${call.name} 不存在`,
               retryable: false,
             },
           };
         } else {
-          const effect =
-            typeof tool.effect === "function"
-              ? (tool.effect as (args: unknown) => string)(parsed.data)
-              : tool.effect;
-          let leased = false;
-          if (
-            this.deps.leases &&
-            (effect === "write" || effect === "destructive" || effect === "external")
-          ) {
-            try {
-              this.deps.leases.assertAvailable(
-                { sessionId: this.sessionId, agentId: this.agentId, targets },
-                { mainBypass: true },
-              );
-              leased = true;
-            } catch (err) {
-              if (err instanceof FileLeaseError) {
-                result = {
-                  status: "error",
-                  data: {
-                    target: err.target,
-                    holder: { agentId: err.holder.agent_id, path: err.holder.path },
-                  },
-                  error: {
-                    code: "FILE_LEASED",
-                    message: err.message,
-                    hint: "把修改内容发消息给持有租约的代理",
-                    retryable: false,
-                  },
-                };
-              } else {
-                result = {
-                  status: "error",
-                  error: {
-                    code: "INTERNAL",
-                    message: "写入前租约检查失败，未执行工具",
-                    retryable: false,
-                  },
-                };
-              }
-            }
-          }
-          // approval:"publish" 的工具跳过执行前审批，由工具在发布前经 ctx.requestApproval 自请。
-          const gate =
-            tool.approval === "publish"
-              ? { required: false, decision: "approved" as const }
-              : await this.gateApproval({
-                  toolCallId: call.id,
-                  toolName: call.name,
-                  args: parsed.data,
-                  targets,
-                  effect: effect as ApprovalEffect,
-                  turnId,
-                  stepId,
-                  leased,
-                });
-          const approved = gate.required && gate.decision === "approved";
-          if (gate.required && gate.decision !== "approved") {
+          const parsed = parsedArgs;
+          if (!parsed.success) {
+            const issue = parsed.error.issues[0];
             result = {
               status: "error",
               error: {
-                code: "APPROVAL_DENIED",
-                message: gate.reason ? `用户拒绝：${gate.reason}` : "用户拒绝了此操作",
+                code: "INVALID_ARGUMENT",
+                message: `参数不合法：${issue?.message ?? "schema 校验失败"}`,
+                ...(issue?.path !== undefined && issue.path.length > 0
+                  ? { field: issue.path.join(".") }
+                  : {}),
                 retryable: false,
               },
             };
-          }
-          if (
-            gate.decision === "approved" &&
-            (leased ||
-              !this.deps.leases ||
-              effect === "read" ||
-              effect === "state" ||
-              effect === "interactive" ||
-              effect === "agent")
-          ) {
-            const ctrl = new AbortController();
-            this.callAbort = ctrl;
-            const signal = AbortSignal.any([ctrl.signal, AbortSignal.timeout(tool.timeoutMs)]);
-            execSignal = signal;
-            try {
-              result = await tool.execute(parsed.data, {
-                ...ctx,
-                signal,
-                ...(approved ? { destructiveApproved: true } : {}),
-              });
-              const questionId =
-                result.status === "ok" &&
-                result.data !== null &&
-                typeof result.data === "object" &&
-                typeof (result.data as { questionId?: unknown }).questionId === "string" &&
-                (result.data as { status?: unknown }).status === "pending"
-                  ? (result.data as { questionId: string }).questionId
-                  : undefined;
-              if (questionId && this.deps.question) {
-                const pendingData = result.data as Record<string, unknown>;
-                const timeoutSeconds =
-                  typeof pendingData.timeoutSeconds === "number"
-                    ? pendingData.timeoutSeconds
-                    : undefined;
-                const waitSignal =
-                  timeoutSeconds !== undefined
-                    ? AbortSignal.any([signal, AbortSignal.timeout(timeoutSeconds * 1000)])
-                    : signal;
-                const resolution = await this.deps.question.wait(questionId, waitSignal);
-                if (resolution.aborted) {
-                  // 问题自身超时后收口 pending 投影，避免稍后的用户回答重复恢复
-                  // 已经结束的工具调用。
-                  if (!this.stopRequested && !signal.aborted) {
-                    try {
-                      this.deps.question.answer(questionId, null);
-                    } catch {
-                      // 竞态下可能已由 REST 回答，继续记录本次超时结果即可。
-                    }
-                  }
+          } else {
+            const effect =
+              typeof tool.effect === "function"
+                ? (tool.effect as (args: unknown) => string)(parsed.data)
+                : tool.effect;
+            let leased = false;
+            if (
+              this.deps.leases &&
+              (effect === "write" || effect === "destructive" || effect === "external")
+            ) {
+              try {
+                this.deps.leases.assertAvailable(
+                  { sessionId: this.sessionId, agentId: this.agentId, targets },
+                  { mainBypass: true },
+                );
+                leased = true;
+              } catch (err) {
+                if (err instanceof FileLeaseError) {
                   result = {
                     status: "error",
+                    data: {
+                      target: err.target,
+                      holder: { agentId: err.holder.agent_id, path: err.holder.path },
+                    },
                     error: {
-                      code: this.stopRequested || signal.aborted ? "CANCELLED" : "TIMEOUT",
-                      message:
-                        this.stopRequested || signal.aborted ? "已被用户停止" : "等待用户回答超时",
+                      code: "FILE_LEASED",
+                      message: err.message,
+                      hint: "把修改内容发消息给持有租约的代理",
                       retryable: false,
                     },
                   };
                 } else {
                   result = {
-                    ...result,
-                    data: {
-                      ...(result.data as Record<string, unknown>),
-                      status: "answered",
-                      ...(Object.hasOwn(resolution, "answer") ? { answer: resolution.answer } : {}),
-                      ...(resolution.rev !== undefined ? { rev: resolution.rev } : {}),
+                    status: "error",
+                    error: {
+                      code: "INTERNAL",
+                      message: "写入前租约检查失败，未执行工具",
+                      retryable: false,
                     },
                   };
                 }
               }
-            } catch (err) {
-              const cancelled = this.stopRequested || this.interruptRequested;
-              const timedOut = err instanceof Error && err.name === "TimeoutError";
+            }
+            // approval:"publish" 的工具跳过执行前审批，由工具在发布前经 ctx.requestApproval 自请。
+            const gate =
+              tool.approval === "publish"
+                ? { required: false, decision: "approved" as const }
+                : await this.gateApproval({
+                    toolCallId: call.id,
+                    toolName: call.name,
+                    args: parsed.data,
+                    targets,
+                    effect: effect as ApprovalEffect,
+                    turnId,
+                    stepId,
+                    leased,
+                  });
+            // 04 §5.1：审批门放行（已批准、auto 模式或会话自动批准规则）即受信，
+            // destructive 调用据此执行；未装配审批执行器时保持 fail-closed。
+            // publish 工具的门是占位放行，不得注入（该标记对它表示"重启后已批准恢复"）。
+            const approved =
+              gate.decision === "approved" &&
+              effect === "destructive" &&
+              tool.approval !== "publish" &&
+              this.deps.approval !== undefined;
+            if (gate.required && gate.decision !== "approved") {
               result = {
                 status: "error",
                 error: {
-                  code: cancelled ? "CANCELLED" : timedOut ? "TIMEOUT" : "INTERNAL",
-                  message: cancelled
-                    ? this.abortReason
-                    : timedOut
-                      ? `工具执行超过 ${tool.timeoutMs}ms`
-                      : err instanceof Error
-                        ? err.message
-                        : String(err),
+                  code: "APPROVAL_DENIED",
+                  message: gate.reason ? `用户拒绝：${gate.reason}` : "用户拒绝了此操作",
                   retryable: false,
                 },
               };
-            } finally {
-              this.callAbort = null;
+            }
+            if (
+              gate.decision === "approved" &&
+              (leased ||
+                !this.deps.leases ||
+                effect === "read" ||
+                effect === "state" ||
+                effect === "interactive" ||
+                effect === "agent")
+            ) {
+              const ctrl = new AbortController();
+              this.callAbort = ctrl;
+              execTimer = pausableTimeout(tool.timeoutMs);
+              stopSignal = ctrl.signal;
+              const signal = AbortSignal.any([ctrl.signal, execTimer.signal]);
+              const startedAt = Date.now();
+              let activity: ReturnType<NonNullable<typeof tool.activity>> = null;
+              try {
+                activity = tool.activity?.(parsed.data as never) ?? null;
+              } catch {
+                activity = null;
+              }
+              if (activity)
+                this.delta(stepId, 0, "workbook_activity", {
+                  phase: "start",
+                  toolCallId: call.id,
+                  ...activity,
+                });
+              try {
+                result = await tool.execute(parsed.data, {
+                  ...ctx,
+                  signal,
+                  ...(approved ? { destructiveApproved: true } : {}),
+                });
+                durationMs = Date.now() - startedAt;
+                const questionId =
+                  result.status === "ok" &&
+                  result.data !== null &&
+                  typeof result.data === "object" &&
+                  typeof (result.data as { questionId?: unknown }).questionId === "string" &&
+                  (result.data as { status?: unknown }).status === "pending"
+                    ? (result.data as { questionId: string }).questionId
+                    : undefined;
+                if (questionId && this.deps.question) {
+                  const pendingData = result.data as Record<string, unknown>;
+                  const timeoutSeconds =
+                    typeof pendingData.timeoutSeconds === "number"
+                      ? pendingData.timeoutSeconds
+                      : undefined;
+                  const waitSignal =
+                    timeoutSeconds !== undefined
+                      ? AbortSignal.any([signal, AbortSignal.timeout(timeoutSeconds * 1000)])
+                      : signal;
+                  const resolution = await this.deps.question.wait(questionId, waitSignal);
+                  if (resolution.aborted) {
+                    // 超时、停止、打断都收口 pending 投影（与审批一致，04 §8.1）：
+                    // 之后的用户回答返回幂等结果，不再恢复已结束的工具调用。
+                    try {
+                      this.deps.question.answer(questionId, null);
+                    } catch {
+                      // 竞态下可能已由 REST 回答，继续记录本次中止结果即可。
+                    }
+                    const cancelled =
+                      this.stopRequested || this.interruptRequested || ctrl.signal.aborted;
+                    result = {
+                      status: "error",
+                      error: {
+                        code: cancelled ? "CANCELLED" : "TIMEOUT",
+                        message: cancelled ? this.abortReason : "等待用户回答超时",
+                        retryable: false,
+                      },
+                    };
+                  } else {
+                    result = {
+                      ...result,
+                      data: {
+                        ...(result.data as Record<string, unknown>),
+                        status: "answered",
+                        ...(Object.hasOwn(resolution, "answer")
+                          ? { answer: resolution.answer }
+                          : {}),
+                        ...(resolution.rev !== undefined ? { rev: resolution.rev } : {}),
+                      },
+                    };
+                  }
+                }
+              } catch (err) {
+                durationMs = Date.now() - startedAt;
+                const cancelled = this.stopRequested || this.interruptRequested;
+                const timedOut = err instanceof Error && err.name === "TimeoutError";
+                result = {
+                  status: "error",
+                  error: {
+                    code: cancelled ? "CANCELLED" : timedOut ? "TIMEOUT" : "INTERNAL",
+                    message: cancelled
+                      ? this.abortReason
+                      : timedOut
+                        ? `工具执行超过 ${tool.timeoutMs}ms`
+                        : err instanceof Error
+                          ? err.message
+                          : String(err),
+                    retryable: false,
+                  },
+                };
+              } finally {
+                execTimer?.clear();
+                this.callAbort = null;
+                if (activity)
+                  this.delta(stepId, 0, "workbook_activity", { phase: "end", toolCallId: call.id });
+              }
             }
           }
         }
+      } catch (err) {
+        // 审批/租约等执行器自身出错也必须写出 tool.result（04 §8.1），不能留下缺结果的调用
+        result = {
+          status: "error",
+          error: {
+            code: "INTERNAL",
+            message: err instanceof Error ? err.message : String(err),
+            retryable: false,
+          },
+        };
       }
+      result = withVocabularyCode(result);
       log.append(this.sessionId, this.agentId, [
         {
           type: "tool.result",
-          data: { toolCallId: call.id, toolName: call.name, status: result.status, result },
+          data: {
+            toolCallId: call.id,
+            toolName: call.name,
+            status: result.status,
+            result,
+            ...(durationMs !== undefined ? { durationMs } : {}),
+          },
         },
       ]);
       if (this.stopRequested || this.interruptRequested) return finishInterrupted(i + 1);
@@ -1685,6 +2214,13 @@ class AgentActor {
           actions: GUIDANCE_ACTIONS[kind] ?? [],
         },
       },
+      // 轮失败时最近一步仍缺结果的工具调用补 not_executed（04 §8.1），历史保持可发送
+      ...missingResultRecords(
+        this.deps.db,
+        this.sessionId,
+        this.agentId,
+        "本轮已失败，该工具未执行",
+      ),
       { type: "turn.failed", data: { turnId, error } },
     ]);
   }
@@ -1704,6 +2240,91 @@ class AgentActor {
   }
 }
 
+/** 可暂停的超时（04 §5.2）：等待审批期间不计入工具执行超时。 */
+interface PausableTimeout {
+  signal: AbortSignal;
+  pause(): void;
+  resume(): void;
+  clear(): void;
+}
+
+function pausableTimeout(ms: number): PausableTimeout {
+  const ctrl = new AbortController();
+  let remaining = ms;
+  let startedAt = Date.now();
+  const fire = () => ctrl.abort(new DOMException(`超过 ${ms}ms`, "TimeoutError"));
+  let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(fire, ms);
+  return {
+    signal: ctrl.signal,
+    pause() {
+      if (timer === undefined) return;
+      clearTimeout(timer);
+      timer = undefined;
+      remaining -= Date.now() - startedAt;
+    },
+    resume() {
+      if (timer !== undefined || ctrl.signal.aborted) return;
+      startedAt = Date.now();
+      timer = setTimeout(fire, Math.max(0, remaining));
+    },
+    clear() {
+      if (timer !== undefined) clearTimeout(timer);
+      timer = undefined;
+    },
+  };
+}
+
+/** 写 tool.result 前把错误码收敛到 06 §9 词表（日志 schema 强制校验）。 */
+function withVocabularyCode(result: ToolResult): ToolResult {
+  if (!result.error) return result;
+  const code = toToolErrorCode(result.error.code);
+  return code === result.error.code ? result : { ...result, error: { ...result.error, code } };
+}
+
+/**
+ * 最近一条 model.output 中既没有 tool.result、也不在 `skip` 里的工具调用，
+ * 合成 not_executed 结果记录（04 §8.1：每个调用都要有结果，否则历史不可再发送）。
+ */
+function missingResultRecords(
+  db: DatabaseSync,
+  sessionId: string,
+  agentId: string,
+  message: string,
+  skip: ReadonlySet<string> = new Set(),
+): { type: string; data: unknown }[] {
+  const row = db
+    .prepare(
+      "SELECT seq, data FROM session_log WHERE session_id = ? AND agent_id = ? AND type = 'model.output' ORDER BY seq DESC LIMIT 1",
+    )
+    .get(sessionId, agentId) as { seq: number; data: string } | undefined;
+  if (!row) return [];
+  const calls = (JSON.parse(row.data) as { toolCalls?: ToolCall[] }).toolCalls ?? [];
+  if (calls.length === 0) return [];
+  const answered = new Set(
+    (
+      db
+        .prepare(
+          "SELECT json_extract(data, '$.toolCallId') AS id FROM session_log WHERE session_id = ? AND agent_id = ? AND type = 'tool.result' AND seq > ?",
+        )
+        .all(sessionId, agentId, row.seq) as { id: string | null }[]
+    ).map((r) => r.id),
+  );
+  return calls
+    .filter((c) => !answered.has(c.id) && !skip.has(c.id))
+    .map((c) => ({
+      type: "tool.result",
+      data: {
+        toolCallId: c.id,
+        toolName: c.name,
+        status: "not_executed",
+        result: {
+          status: "not_executed",
+          error: { code: "CANCELLED", message, retryable: false },
+        },
+      },
+    }));
+}
+
 /**
  * 启动恢复（04 §8.2）：running/waiting 代理的 open_intents 逐个处理——工具声明了
  * recover 钩子就让它判定（workbook_edit 等已落库的写返回其结果），否则
@@ -1714,6 +2335,16 @@ export function recoverInterruptedAgents(deps: {
   log: SessionLog;
   tools?: ReadonlyMap<string, ToolDefinition>;
 }): number {
+  // queued 子代理（05 §8 闸门排队）没有 open intents 也没有进行中的轮：
+  // 只恢复为 interrupted 等待 resume，不写 turn.interrupted、不合成 tool.result。
+  const queuedOnly = deps.db
+    .prepare("SELECT id, session_id FROM agents WHERE status = 'queued'")
+    .all() as { id: string; session_id: string }[];
+  for (const agent of queuedOnly) {
+    deps.log.append(agent.session_id, agent.id, [
+      { type: "agent.status", data: { status: "interrupted" } },
+    ]);
+  }
   const running = deps.db
     .prepare("SELECT id, session_id FROM agents WHERE status IN ('running', 'waiting')")
     .all() as { id: string; session_id: string }[];
@@ -1774,10 +2405,21 @@ export function recoverInterruptedAgents(deps: {
           toolCallId: it.tool_call_id,
           toolName: it.tool_name,
           status: result.status,
-          result,
+          result: withVocabularyCode(result),
         },
       };
     });
+    // model.output 之后、后续调用写 tool.intent 之前被杀：这些调用既无 intent 也无
+    // result，同样补 not_executed（04 §8.2"已流出的工具调用标记为未执行"）。
+    records.push(
+      ...missingResultRecords(
+        deps.db,
+        agent.session_id,
+        agent.id,
+        "进程中断，该工具未执行",
+        new Set(intents.map((it) => it.tool_call_id)),
+      ),
+    );
     const turn = deps.db
       .prepare(
         "SELECT data FROM session_log WHERE session_id = ? AND agent_id = ? AND type = 'turn.started' ORDER BY seq DESC LIMIT 1",
@@ -1791,5 +2433,5 @@ export function recoverInterruptedAgents(deps: {
     }
     if (records.length > 0) deps.log.append(agent.session_id, agent.id, records);
   }
-  return running.length;
+  return running.length + queuedOnly.length;
 }

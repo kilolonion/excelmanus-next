@@ -43,6 +43,7 @@ function setup() {
     sessionId: "ses1",
     agentId: "main",
     toolCallId: "tc1",
+    role: "main",
     reads: createReadTable(),
     backups: new BackupService(db).bind({
       workspaceId: "ws1",
@@ -149,7 +150,7 @@ describe("workbook 工具", () => {
       ctx,
     );
     expect(r.status).toBe("error");
-    if (r.status === "error") expect(r.error?.code).toBe("SQL_FORBIDDEN");
+    if (r.status === "error") expect(r.error?.code).toBe("INVALID_ARGUMENT");
   });
 
   test("profile：列画像", async () => {

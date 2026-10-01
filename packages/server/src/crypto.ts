@@ -14,6 +14,13 @@ export function loadMasterKey(dataDir: string): Buffer {
     }
     return key;
   }
+  // 10 §4：桌面版把主密钥加密存为 master.key.enc（并删除明文）。此时新建密钥会让已存凭据
+  // 全部解不开，故拒绝启动（P1-47，分支 models-ext-desktop 最小插入）。
+  if (existsSync(join(dataDir, "master.key.enc"))) {
+    throw new Error(
+      `数据目录 ${dataDir} 的主密钥由桌面版加密保存（master.key.enc），本机 Web 形态无法读取。请用桌面版打开，或用 --data-dir / EXCELMANUS_HOME 指定其他数据目录`,
+    );
+  }
   const key = randomBytes(32);
   writeFileSync(p, key, { mode: 0o600 });
   chmodSync(p, 0o600);
@@ -42,6 +49,7 @@ export function decryptSecret(masterKey: Buffer, ciphertext: Buffer, nonce: Buff
 
 /** 掩码：只显示末 4 位，短于 8 位全掩。 */
 export function maskSecret(plaintext: string): string {
-  if (plaintext.length <= 4) return "••••";
+  // 短值不应因“保留末四位”而泄露大部分凭据（10 §4）。
+  if (plaintext.length <= 8) return "••••";
   return `••••${plaintext.slice(-4)}`;
 }

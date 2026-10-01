@@ -126,7 +126,7 @@ const BUILTIN_NUMFMT: Record<number, string> = {
 
 interface StylesOut {
   /** Univer styles 表：key = `s{cellXfs 下标}`。 */
-  styles: Record<string, { n?: { pattern: string } }>;
+  styles: Record<string, { n?: { pattern: string } } & Record<string, unknown>>;
   /** 单元格 s 属性（cellXfs 下标）→ Univer 样式 id；无格式则 undefined。 */
   xfToStyle: (xfIndex: number) => string | undefined;
 }
@@ -141,12 +141,45 @@ function readStyles(xml: Xml | undefined): StylesOut {
   }
   const styles: StylesOut["styles"] = {};
   const xfStyle = new Map<number, string>();
+  const fonts = asArr<Xml>((sheet.fonts as Xml | undefined)?.font as Xml[] | undefined);
+  const fills = asArr<Xml>((sheet.fills as Xml | undefined)?.fill as Xml[] | undefined);
+  const rgb = (node: unknown): { rgb: string } | undefined => {
+    const v = node && typeof node === "object" ? attr(node as Xml, "rgb") : undefined;
+    return v && /^[\da-f]{6}([\da-f]{2})?$/i.test(v) ? { rgb: `#${v.slice(-6)}` } : undefined;
+  };
+  const on = (node: unknown): boolean =>
+    node !== undefined &&
+    !(typeof node === "object" && node && ["0", "false"].includes(attr(node as Xml, "val") ?? ""));
   const xfs = asArr<Xml>((sheet.cellXfs as Xml | undefined)?.xf as Xml[] | undefined);
   xfs.forEach((xf, i) => {
     const numFmtId = Number(attr(xf, "numFmtId") ?? 0);
     const pattern = numfmts.get(numFmtId) ?? BUILTIN_NUMFMT[numFmtId];
     const key = `s${i}`;
-    styles[key] = pattern === undefined ? {} : { n: { pattern } };
+    // 字体、纯色填充、对齐：映射为 Univer 样式，供工作台、截图与代理读取（07 §4.4）
+    const style: Record<string, unknown> = pattern === undefined ? {} : { n: { pattern } };
+    const font = fonts[Number(attr(xf, "fontId") ?? 0)];
+    if (font) {
+      if (on(font.b)) style.bl = 1;
+      if (on(font.i)) style.it = 1;
+      const sz = Number(attr((font.sz as Xml | undefined) ?? {}, "val"));
+      if (Number.isFinite(sz) && sz > 0) style.fs = sz;
+      const ff = attr((font.name as Xml | undefined) ?? {}, "val");
+      if (ff) style.ff = ff;
+      const cl = rgb(font.color);
+      if (cl) style.cl = cl;
+    }
+    const pf = fills[Number(attr(xf, "fillId") ?? 0)]?.patternFill as Xml | undefined;
+    const bg = pf && attr(pf, "patternType") === "solid" ? rgb(pf.fgColor) : undefined;
+    if (bg) style.bg = bg;
+    const al = xf.alignment as Xml | undefined;
+    if (al) {
+      const ht = { left: 1, center: 2, right: 3 }[attr(al, "horizontal") ?? ""];
+      if (ht) style.ht = ht;
+      const vt = { top: 1, center: 2, bottom: 3 }[attr(al, "vertical") ?? ""];
+      if (vt) style.vt = vt;
+      if (["1", "true"].includes(attr(al, "wrapText") ?? "")) style.tb = 3;
+    }
+    styles[key] = style as StylesOut["styles"][string];
     xfStyle.set(i, key);
   });
   return { styles, xfToStyle: (i) => xfStyle.get(i) };

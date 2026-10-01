@@ -56,6 +56,7 @@ async function setup(file = fixture) {
     sessionId: "session",
     agentId: "main",
     toolCallId: "call",
+    role: "main" as const,
     signal: AbortSignal.timeout(30000),
     reads: createReadTable(),
     backups: new BackupService(db).bind({
@@ -223,6 +224,39 @@ describe("M2b checkpoints at real file/SQLite boundaries", () => {
     expect(
       db.prepare("SELECT head_rev,checkpoint_rev FROM documents WHERE id=?").get(meta.id),
     ).toMatchObject({ head_rev: 2, checkpoint_rev: 1 });
+    // P0-07：重启后仍能打开（处于待选择状态），保留应用版本：外部版本进备份区、应用版本写回、写入恢复
+    await svc.close().catch(() => {});
+    const svc2 = new DocumentService(db);
+    const reopened = await svc2.open("ws", dir, name);
+    expect(reopened.meta.externalConflict).toBe(true);
+    const kept = await svc2.resolveExternal(meta.id, dir, "keepApp");
+    expect(readFileSync(join(dir, kept.backup.backupPath))).toEqual(Buffer.from(external));
+    expect(svc2.opsAfter(meta.id, 2)[0]).toMatchObject({ sourceKind: "external", rev: 3 });
+    expect(kept.meta).toMatchObject({ rev: 3, checkpointRev: 3 });
+    expect(kept.meta.externalConflict).toBeUndefined();
+    const back = importXlsx(readFileSync(join(dir, name)), name).snapshot;
+    expect(back.sheets[back.sheetOrder[0] ?? ""]?.cellData?.[59]?.[0]?.v).toBe("durable");
+    // 载入外部版本：应用版本进备份区，内容换成外部文件
+    await svc2.submit(meta.id, dir, {
+      baseRev: 3,
+      source,
+      sessionId: "session",
+      ops: [{ op: "cells.set", range: "销售!A61", values: [["app-only"]] }],
+    });
+    writeFileSync(join(dir, name), external);
+    const loaded = await svc2.resolveExternal(meta.id, dir, "loadExternal");
+    expect(existsSync(join(dir, loaded.backup.backupPath))).toBe(true);
+    const after = await svc2.snapshot(meta.id, dir);
+    expect(after.snapshot.sheets.s0?.cellData?.[60]?.[0]?.v).toBeUndefined();
+    expect(
+      await svc2.submit(meta.id, dir, {
+        baseRev: after.meta.rev,
+        source,
+        sessionId: "session",
+        ops: [{ op: "cells.set", range: "销售!A62", values: [["resumed"]] }],
+      }),
+    ).toMatchObject({ ok: true });
+    await svc2.close().catch(() => {});
   });
 
   test("new-file create/dryRun, export and SQL saveTo are executable; no backup for same-session creation", async () => {

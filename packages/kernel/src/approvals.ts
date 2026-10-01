@@ -63,21 +63,42 @@ function globMatches(pattern: string, value: string): boolean {
   return new RegExp(`^${escaped}$`).test(value);
 }
 
-/** 数据库中的会话级自动批准规则匹配。 */
+/** 被记住的 effect 是否覆盖本次 effect：同级，或记住删除时覆盖写入；external 只认同级。 */
+function effectCovered(remembered: string | undefined, requested: string): boolean {
+  if (remembered === requested) return true;
+  return remembered === "destructive" && requested === "write";
+}
+
+/**
+ * 会话级自动批准（04 §5.1"工具名 + 目标路径模式"）：本次每个目标都必须被同一工具、
+ * effect 不低于本次的规则覆盖；没有目标的调用只认 "*" 规则。规则的 effect 取自
+ * 生成它的审批记录（规则 id = `<审批 id>:rule[:n]`）。
+ */
 export function isAutoApproved(
   db: DatabaseSync,
   sessionId: string,
   toolName: string,
   targets: string[],
+  effect: ApprovalEffect | string,
 ): boolean {
-  const rows = db
-    .prepare("SELECT tool_name, path_pattern FROM auto_approve_rules WHERE session_id = ?")
-    .all(sessionId) as { tool_name: string; path_pattern: string }[];
-  return rows.some(
-    (row) =>
-      row.tool_name === toolName &&
-      (targets.length === 0 || targets.some((target) => globMatches(row.path_pattern, target))),
-  );
+  const rows = (
+    db
+      .prepare(
+        "SELECT id, path_pattern FROM auto_approve_rules WHERE session_id = ? AND tool_name = ?",
+      )
+      .all(sessionId, toolName) as { id: string; path_pattern: string }[]
+  ).filter((row) => {
+    const approvalId = row.id.slice(0, Math.max(0, row.id.indexOf(":rule")));
+    const spec = db.prepare("SELECT spec FROM pending_interactions WHERE id = ?").get(approvalId) as
+      | { spec: string }
+      | undefined;
+    if (!spec) return false;
+    const remembered = (JSON.parse(spec.spec) as { effect?: unknown }).effect;
+    return effectCovered(typeof remembered === "string" ? remembered : undefined, effect);
+  });
+  if (rows.length === 0) return false;
+  if (targets.length === 0) return rows.some((row) => row.path_pattern === "*");
+  return targets.every((target) => rows.some((row) => globMatches(row.path_pattern, target)));
 }
 
 /** 审批持久化协调器：日志是事实源，waiter 只保存进程内的暂停 continuation。 */

@@ -1,6 +1,8 @@
+import { posix } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { newId, nowIso } from "@excelmanus/core";
 import type { Migration } from "./db.ts";
+import { resolveWorkspacePath } from "./paths.ts";
 
 /** M3 文件租约表。租约是协调提示，默认没有租约的写入仍然允许。 */
 export const LEASES_MIGRATION: Migration = {
@@ -47,17 +49,35 @@ export class FileLeaseError extends Error {
   }
 }
 
-function normalizeTarget(target: string): string {
-  return target.trim().replaceAll("\\", "/").replace(/^\.\//, "");
+/**
+ * 租约目标规范化：路径部分按工作区规范 rel（大小写/别名归一、`..` 折叠），去尾斜杠；
+ * 工作区未知或路径不可解析时退回文本规范化。区域后缀（!Sheet!A1）原样保留。
+ */
+export function normalizeLeaseTarget(target: string, workspaceRoot?: string): string {
+  const raw = target.trim().replaceAll("\\", "/");
+  if (raw === "") return "";
+  const bang = raw.indexOf("!");
+  const pathPart = bang < 0 ? raw : raw.slice(0, bang);
+  const suffix = bang < 0 ? "" : raw.slice(bang);
+  let path: string | undefined;
+  if (workspaceRoot !== undefined) {
+    try {
+      path = resolveWorkspacePath(workspaceRoot, pathPart === "" ? "." : pathPart).rel;
+    } catch {
+      path = undefined;
+    }
+  }
+  path ??= posix.normalize(pathPart === "" ? "." : pathPart).replace(/\/+$/, "");
+  if (path === "" || path === "./" || path === ".") path = ".";
+  return `${path}${suffix}`;
 }
 
 /** 区域租约使用常见的 path!Sheet!A1:B2 形状；解析失败时按整路径保守处理。 */
-function targetParts(target: string): {
+function targetParts(normalized: string): {
   path: string;
   sheet?: string;
   range?: { r0: number; c0: number; r1: number; c1: number };
 } {
-  const normalized = normalizeTarget(target);
   const bang = normalized.indexOf("!");
   if (bang < 0) return { path: normalized };
   const path = normalized.slice(0, bang);
@@ -133,14 +153,39 @@ export class LeaseService {
     return rows as unknown as LeaseRow[];
   }
 
+  private workspaceRoot(sessionId: string): string | undefined {
+    try {
+      const row = this.db
+        .prepare(
+          "SELECT w.path AS path FROM sessions s JOIN workspaces w ON w.id = s.workspace_id WHERE s.id = ?",
+        )
+        .get(sessionId) as { path: string } | undefined;
+      return row?.path;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** 已登记租约与请求目标同口径比较（旧行可能未规范化）。 */
+  private conflictFor(
+    req: LeaseRequest,
+    target: string,
+    root: string | undefined,
+  ): LeaseRow | undefined {
+    return this.list(req.sessionId).find(
+      (row) =>
+        row.agent_id !== req.agentId && overlaps(target, normalizeLeaseTarget(row.path, root)),
+    );
+  }
+
   /** 先检查整批目标，再一次性登记，避免部分租约留下。 */
   acquire(req: LeaseRequest): LeaseRow[] {
-    const targets = [...new Set(req.targets.map(normalizeTarget).filter(Boolean))];
-    const existing = this.list(req.sessionId);
+    const root = this.workspaceRoot(req.sessionId);
+    const targets = [
+      ...new Set(req.targets.map((t) => normalizeLeaseTarget(t, root)).filter(Boolean)),
+    ];
     for (const target of targets) {
-      const conflict = existing.find(
-        (row) => row.agent_id !== req.agentId && overlaps(target, row.path),
-      );
+      const conflict = this.conflictFor(req, target, root);
       if (conflict) throw new FileLeaseError(conflict, target);
     }
     const now = nowIso();
@@ -166,11 +211,10 @@ export class LeaseService {
   /** 写工具执行前调用；主代理可选择跳过（主代理不受租约限制）。 */
   assertAvailable(req: LeaseRequest, opts: { mainBypass?: boolean } = {}): void {
     if (opts.mainBypass && req.agentId === "main") return;
-    for (const target of req.targets.map(normalizeTarget)) {
+    const root = this.workspaceRoot(req.sessionId);
+    for (const target of req.targets.map((t) => normalizeLeaseTarget(t, root))) {
       if (!target) continue;
-      const conflict = this.list(req.sessionId).find(
-        (row) => row.agent_id !== req.agentId && overlaps(target, row.path),
-      );
+      const conflict = this.conflictFor(req, target, root);
       if (conflict) throw new FileLeaseError(conflict, target);
     }
   }

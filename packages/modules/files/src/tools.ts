@@ -15,6 +15,15 @@ const MAX_FILE_BYTES = 50 * 1024 * 1024;
 const MAX_FIND_RESULTS = 500;
 const SPREADSHEET_EXTS = new Set([".xlsx", ".xlsm", ".xls"]);
 const CSV_EXTS = new Set([".csv", ".tsv"]);
+/** 图片作为视觉输入返回（06 §3）；模型不支持视觉时由运行时裁剪。 */
+const IMAGE_TYPES: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+};
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const BINARY_EXTS = new Set([
   ".png",
   ".jpg",
@@ -51,6 +60,11 @@ const ReadInput = z.object({
   path: z.string().describe("工作区内相对路径"),
   offset: z.int().min(1).optional().describe("起始行号（1 起算），用于分页续读"),
   limit: z.int().min(1).max(10_000).optional().describe(`最多返回行数，默认 ${DEFAULT_READ_LINES}`),
+  charOffset: z
+    .int()
+    .min(0)
+    .optional()
+    .describe("起始行内的字符偏移（0 起算），用于续读超长行；取上次结果的 nextCharOffset"),
 });
 type ReadArgs = z.infer<typeof ReadInput>;
 
@@ -61,6 +75,7 @@ const ReadOutput = z.object({
   shownLines: z.number().optional(),
   totalLines: z.number().optional(),
   nextOffset: z.number().nullable().optional(),
+  nextCharOffset: z.number().optional(),
   truncated: z.boolean().optional(),
   message: z.string().optional(),
   sizeBytes: z.number().optional(),
@@ -82,7 +97,17 @@ function readText(args: ReadArgs, abs: string, rel: string, size: number): ToolR
   if (!isProbablyText(buf)) {
     return err("UNSUPPORTED_FEATURE", `${rel} 是二进制文件，暂不支持读取`);
   }
-  const all = buf.toString("utf8").split("\n");
+  const result = readTextContent(args, buf.toString("utf8"), rel);
+  if (result.status !== "ok") return result;
+  return {
+    ...result,
+    data: { ...(result.data as Record<string, unknown>), sizeBytes: size },
+    versions: { [rel]: createHash("sha256").update(buf).digest("hex") },
+  };
+}
+
+function readTextContent(args: ReadArgs, text: string, _source: string): ToolResult {
+  const all = text.split("\n");
   const totalLines = all.length;
   const offset = args.offset ?? 1;
   const limit = args.limit ?? DEFAULT_READ_LINES;
@@ -94,15 +119,28 @@ function readText(args: ReadArgs, abs: string, rel: string, size: number): ToolR
   const shown: string[] = [];
   let chars = 0;
   let end = offset - 1;
+  // 超长单行：按字符切片返回，游标落在同一行的行内偏移，保证每次续读都前进。
+  let nextChar: number | undefined;
   while (end < totalLines && shown.length < limit) {
-    const line = all[end] ?? "";
-    if (chars + line.length + 1 > MAX_READ_CHARS) break;
+    const full = all[end] ?? "";
+    const start = end === offset - 1 ? Math.min(args.charOffset ?? 0, full.length) : 0;
+    const line = full.slice(start);
+    if (chars + line.length + 1 > MAX_READ_CHARS) {
+      if (shown.length === 0) {
+        let cut = MAX_READ_CHARS;
+        const code = line.charCodeAt(cut - 1);
+        if (code >= 0xd800 && code <= 0xdbff) cut -= 1; // 不切断代理对
+        shown.push(line.slice(0, cut));
+        nextChar = start + cut;
+      }
+      break;
+    }
     shown.push(line);
     chars += line.length + 1;
     end += 1;
   }
   const hasMore = end < totalLines;
-  const cursor = String(end + 1);
+  const cursor = nextChar === undefined ? String(end + 1) : `${end + 1}:${nextChar}`;
   return {
     status: "ok",
     data: {
@@ -112,10 +150,9 @@ function readText(args: ReadArgs, abs: string, rel: string, size: number): ToolR
       shownLines: shown.length,
       totalLines,
       nextOffset: hasMore ? end + 1 : null,
+      ...(nextChar !== undefined ? { nextCharOffset: nextChar } : {}),
       truncated: hasMore,
-      sizeBytes: size,
     },
-    versions: { [rel]: createHash("sha256").update(buf).digest("hex") },
     ...(hasMore ? { truncated: { shown: shown.length, total: totalLines, cursor } } : {}),
   };
 }
@@ -124,9 +161,9 @@ const readTool: ToolDefinition<ReadArgs> = {
   name: "read",
   title: "读取文件",
   description: `读取工作区内文件的内容。
-何时使用：查看文本文件内容；大文件按行分页读取。
+何时使用：查看文本文件内容；大文件按行分页读取；图片（png/jpg/gif/webp）作为视觉输入返回；技能资源用 skill://<技能名>/<路径> 读取。
 不要用于：列出目录或按名字/内容找文件（改用 find）；xlsx/xlsm 工作簿请先看本工具返回的概况提示，再决定后续方式。
-参数要点：path 为工作区内相对路径；offset 从 1 开始；结果超限时响应带 cursor，把它的值作为下一次 offset 继续读。
+参数要点：path 为工作区内相对路径；offset 从 1 开始；结果超限时把 nextOffset 作为下一次 offset 继续读；单行超过 16000 字符时按字符分段返回，同时把 nextCharOffset 作为 charOffset 传入。
 常见错误：NOT_FOUND → 先用 find 确认路径；OUT_OF_WORKSPACE → 只用工作区内路径。
 示例：{"path": "notes/a.txt", "limit": 200}`,
   input: ReadInput,
@@ -137,6 +174,12 @@ const readTool: ToolDefinition<ReadArgs> = {
   timeoutMs: 30_000,
   roles: ["main", "lead", "worker", "reader"],
   execute(args, ctx) {
+    if (args.path.startsWith("skill://")) {
+      const res = ctx.resolveResource?.(args.path);
+      if (!res) return err("NOT_FOUND", "技能资源不可用");
+      if ("error" in res) return res.error;
+      return readTextContent(args, res.text, args.path);
+    }
     try {
       const { abs, rel } = resolveWorkspacePath(ctx.workspaceRoot, args.path);
       const st = statSync(abs);
@@ -154,6 +197,19 @@ const readTool: ToolDefinition<ReadArgs> = {
             message: "这是工作簿文件，请使用 workbook_read 读取总览、区域或查找单元格。",
             sizeBytes: st.size,
           },
+        };
+      }
+      const imageType = IMAGE_TYPES[ext];
+      if (imageType) {
+        if (st.size > MAX_IMAGE_BYTES) {
+          return err("LIMIT_EXCEEDED", `图片 ${st.size} 字节，超过 ${MAX_IMAGE_BYTES} 上限`);
+        }
+        const buf = readFileSync(abs);
+        return {
+          status: "ok",
+          data: { kind: "image", mediaType: imageType, sizeBytes: st.size },
+          versions: { [rel]: createHash("sha256").update(buf).digest("hex") },
+          images: [{ mediaType: imageType, data: buf.toString("base64") }],
         };
       }
       if (CSV_EXTS.has(ext)) {
@@ -230,8 +286,6 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp(`^${re}$`);
 }
 
-const SKIP_DIRS = new Set([".excelmanus"]);
-
 interface WalkEntry {
   path: string;
   kind: "file" | "dir";
@@ -258,7 +312,7 @@ const findTool: ToolDefinition<FindArgs> = {
   execute(args, ctx) {
     try {
       const { abs: rootAbs } = resolveWorkspacePath(ctx.workspaceRoot, args.path ?? ".");
-      const workspaceReal = realpathSync(ctx.workspaceRoot);
+      const workspaceReal = realpathSync.native(ctx.workspaceRoot);
       const rootStat = statSync(rootAbs);
       if (!rootStat.isDirectory()) {
         return err("INVALID_ARGUMENT", `${args.path ?? "."} 不是目录`, { field: "path" });
@@ -297,7 +351,7 @@ const findTool: ToolDefinition<FindArgs> = {
             continue;
           }
           if (ent.isDirectory()) {
-            if (SKIP_DIRS.has(ent.name) || ent.name.startsWith(".")) continue;
+            if (ent.name.startsWith(".")) continue;
             if (matchesName(rel, ent.name) && needle === undefined) {
               out.push({ path: rel, kind: "dir" });
             }

@@ -10,10 +10,13 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@excelmanus/kernel": "workspace:*",
-    "@excelmanus/protocol": "workspace:*",
     "@excelmanus/core": "workspace:*",
+    "@excelmanus/kernel": "workspace:*",
     "@excelmanus/models": "workspace:*",
-    "@excelmanus/sandbox": "workspace:*"
+    "@excelmanus/protocol": "workspace:*",
+    "@excelmanus/sandbox": "workspace:*",
+    "fflate": "0.8.3",
+    "yaml": "2.9.1",
+    "zod": "4.6.5"
   }
 }

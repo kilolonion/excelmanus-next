@@ -1,10 +1,11 @@
 // 配置与状态的数据访问（直接 node:sqlite 预编译语句，ADR 0006）。
 
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { newId, nowIso } from "@excelmanus/core";
+import type { Migration, SessionLog } from "@excelmanus/kernel";
 import type {
   ClassifiedError,
   CreateModelProfileBody,
@@ -14,19 +15,43 @@ import type {
 } from "@excelmanus/protocol";
 import { decryptSecret, encryptSecret, maskSecret } from "./crypto.ts";
 
+/** 装配层自有迁移：档案的额外请求头、并发上限与能力记录（09 §3）。 */
+export const SERVER_MIGRATIONS: Migration[] = [
+  {
+    id: "server/001-profile-extras",
+    sql: `
+ALTER TABLE model_profiles ADD COLUMN extra_headers TEXT;
+ALTER TABLE model_profiles ADD COLUMN max_concurrency INTEGER;
+ALTER TABLE model_profiles ADD COLUMN capabilities TEXT;
+`,
+  },
+];
+
+export interface CapabilityRecord {
+  value: boolean | null;
+  source: "catalog" | "probe" | "manual" | null;
+  checkedAt: string | null;
+  detail?: string;
+}
+export type CapabilityMap = Record<string, CapabilityRecord> & { _probeKey?: never };
+
+/** 解析档案时的外部依赖：订阅令牌、代理 fetch、模型目录默认值。 */
+export interface ResolveDeps {
+  subscription?(credentialId: string): ResolvedModel["subscription"];
+  fetch?: typeof fetch;
+  catalog?(provider: string, model: string): { contextWindow?: number } | undefined;
+}
+
 export const sha256 = (s: string): string => createHash("sha256").update(s).digest("hex");
 
 // ---------- devices / token ----------
 
+/**
+ * 本机设备令牌每次启动轮换（01 §5.3【硬性】）：库中只存哈希，明文不落盘；
+ * 旧版本遗留的 `local-token` 明文文件一并删除。
+ */
 export function ensureDeviceToken(dataDir: string, db: DatabaseSync): string {
-  const tokenPath = join(dataDir, "local-token");
-  if (existsSync(tokenPath)) {
-    const token = readFileSync(tokenPath, "utf8").trim();
-    const row = db
-      .prepare("SELECT id FROM devices WHERE token_hash = ? AND revoked_at IS NULL")
-      .get(sha256(token));
-    if (token !== "" && row) return token;
-  }
+  rmSync(join(dataDir, "local-token"), { force: true });
   const token = randomBytes(32).toString("base64url");
   const existing = db
     .prepare("SELECT id FROM devices WHERE kind = 'local' AND revoked_at IS NULL")
@@ -36,7 +61,6 @@ export function ensureDeviceToken(dataDir: string, db: DatabaseSync): string {
     `INSERT INTO devices (id, name, kind, token_hash, created_at) VALUES (?, ?, 'local', ?, ?)
      ON CONFLICT(id) DO UPDATE SET token_hash = excluded.token_hash`,
   ).run(id, "本机", sha256(token), nowIso());
-  writeFileSync(tokenPath, token, { mode: 0o600 });
   return token;
 }
 
@@ -90,6 +114,9 @@ interface ProfileRow {
   max_output_tokens: number | null;
   reasoning: string | null;
   provider_options: string | null;
+  extra_headers?: string | null;
+  max_concurrency?: number | null;
+  capabilities?: string | null;
   is_default: number;
   created_at: string;
   updated_at: string;
@@ -97,11 +124,86 @@ interface ProfileRow {
 
 interface CredentialRow {
   id: string;
+  kind?: string;
   ciphertext: Buffer;
   nonce: Buffer;
 }
 
-function profileToDto(row: ProfileRow, masked: string | null): ModelProfile {
+function credentialKind(db: DatabaseSync, id: string | null): string | null {
+  if (id === null) return null;
+  const row = db.prepare("SELECT kind FROM credentials WHERE id = ?").get(id) as
+    | { kind: string }
+    | undefined;
+  return row?.kind ?? null;
+}
+
+function sealHeaders(
+  masterKey: Buffer,
+  headers: Record<string, string>,
+  prev?: Record<string, string>,
+): string {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers)) {
+    if (v === "••••" && prev?.[k] !== undefined) {
+      out[k] = prev[k];
+      continue;
+    }
+    const { ciphertext, nonce } = encryptSecret(masterKey, v);
+    out[k] = `${nonce.toString("base64")}.${ciphertext.toString("base64")}`;
+  }
+  return JSON.stringify(out);
+}
+
+function openHeaders(
+  masterKey: Buffer,
+  raw: string | null | undefined,
+): Record<string, string> | undefined {
+  if (!raw) return undefined;
+  const sealed = JSON.parse(raw) as Record<string, string>;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(sealed)) {
+    const [n, c] = v.split(".");
+    try {
+      out[k] = decryptSecret(
+        masterKey,
+        Buffer.from(c ?? "", "base64"),
+        Buffer.from(n ?? "", "base64"),
+      );
+    } catch {
+      out[k] = "";
+    }
+  }
+  return out;
+}
+
+export function profileCapabilities(row: {
+  capabilities?: string | null;
+}): Record<string, CapabilityRecord> {
+  if (!row.capabilities) return {};
+  try {
+    return JSON.parse(row.capabilities) as Record<string, CapabilityRecord>;
+  } catch {
+    return {};
+  }
+}
+
+export function setProfileCapabilities(
+  db: DatabaseSync,
+  id: string,
+  caps: Record<string, CapabilityRecord>,
+): void {
+  db.prepare("UPDATE model_profiles SET capabilities = ?, updated_at = ? WHERE id = ?").run(
+    JSON.stringify(caps),
+    nowIso(),
+    id,
+  );
+}
+
+function profileToDto(row: ProfileRow, masked: string | null, kind?: string | null): ModelProfile {
+  const headers = row.extra_headers
+    ? (JSON.parse(row.extra_headers) as Record<string, string>)
+    : undefined;
+  const caps = profileCapabilities(row);
   return {
     id: row.id,
     name: row.name,
@@ -109,7 +211,19 @@ function profileToDto(row: ProfileRow, masked: string | null): ModelProfile {
     model: row.model,
     ...(row.base_url !== null ? { baseUrl: row.base_url } : {}),
     hasCredential: row.credential_id !== null,
-    apiKeyMasked: masked,
+    apiKeyMasked: kind === "oauth" ? null : masked,
+    accountId: kind === "oauth" ? row.credential_id : null,
+    ...(headers
+      ? { extraHeaders: Object.fromEntries(Object.keys(headers).map((k) => [k, "••••"])) }
+      : {}),
+    ...(row.max_concurrency != null ? { maxConcurrency: row.max_concurrency } : {}),
+    ...(Object.keys(caps).length > 0
+      ? {
+          capabilities: Object.fromEntries(
+            Object.entries(caps).filter(([k]) => !k.startsWith("_")),
+          ),
+        }
+      : {}),
     ...(row.context_window !== null ? { contextWindow: row.context_window } : {}),
     ...(row.max_output_tokens !== null ? { maxOutputTokens: row.max_output_tokens } : {}),
     ...(row.reasoning !== null ? { reasoning: row.reasoning as ModelProfile["reasoning"] } : {}),
@@ -126,15 +240,17 @@ export function listProfiles(db: DatabaseSync, masterKey: Buffer): ModelProfile[
   const rows = db
     .prepare("SELECT * FROM model_profiles ORDER BY created_at")
     .all() as unknown as ProfileRow[];
-  return rows.map((r) => profileToDto(r, maskedOf(db, masterKey, r.credential_id)));
+  return rows.map((r) =>
+    profileToDto(r, maskedOf(db, masterKey, r.credential_id), credentialKind(db, r.credential_id)),
+  );
 }
 
 function maskedOf(db: DatabaseSync, masterKey: Buffer, credentialId: string | null): string | null {
   if (credentialId === null) return null;
   const cred = db
-    .prepare("SELECT ciphertext, nonce FROM credentials WHERE id = ?")
+    .prepare("SELECT kind, ciphertext, nonce FROM credentials WHERE id = ?")
     .get(credentialId) as CredentialRow | undefined;
-  if (!cred) return null;
+  if (!cred || cred.kind === "oauth") return null;
   try {
     return maskSecret(
       decryptSecret(masterKey, Buffer.from(cred.ciphertext), Buffer.from(cred.nonce)),
@@ -154,7 +270,13 @@ export function getProfile(
   id: string,
 ): ModelProfile | undefined {
   const row = getProfileRow(db, id);
-  return row ? profileToDto(row, maskedOf(db, masterKey, row.credential_id)) : undefined;
+  return row
+    ? profileToDto(
+        row,
+        maskedOf(db, masterKey, row.credential_id),
+        credentialKind(db, row.credential_id),
+      )
+    : undefined;
 }
 
 export function createProfile(
@@ -163,8 +285,11 @@ export function createProfile(
   body: CreateModelProfileBody,
 ): ModelProfile {
   const now = nowIso();
-  let credentialId: string | null = null;
-  if (body.apiKey !== undefined && body.apiKey !== "") {
+  let credentialId: string | null = body.accountId ?? null;
+  if (credentialId !== null && credentialKind(db, credentialId) !== "oauth") {
+    throw new Error("订阅账号不存在");
+  }
+  if (credentialId === null && body.apiKey !== undefined && body.apiKey !== "") {
     const { ciphertext, nonce } = encryptSecret(masterKey, body.apiKey);
     credentialId = newId("cred");
     db.prepare(
@@ -189,12 +314,23 @@ export function createProfile(
     now,
     now,
   );
+  if (body.extraHeaders !== undefined || body.maxConcurrency !== undefined) {
+    db.prepare("UPDATE model_profiles SET extra_headers = ?, max_concurrency = ? WHERE id = ?").run(
+      body.extraHeaders ? sealHeaders(masterKey, body.extraHeaders) : null,
+      body.maxConcurrency ?? null,
+      id,
+    );
+  }
   if (body.isDefault || countProfiles(db) === 1) {
     setDefaultProfile(db, id);
   }
   const row = getProfileRow(db, id);
   if (!row) throw new Error("profile insert failed");
-  return profileToDto(row, maskedOf(db, masterKey, row.credential_id));
+  return profileToDto(
+    row,
+    maskedOf(db, masterKey, row.credential_id),
+    credentialKind(db, row.credential_id),
+  );
 }
 
 function countProfiles(db: DatabaseSync): number {
@@ -211,7 +347,7 @@ export function updateProfile(
   if (!row) return undefined;
   const now = nowIso();
   let credentialId = row.credential_id;
-  if (body.apiKey !== undefined) {
+  if (body.apiKey !== undefined && credentialKind(db, credentialId) !== "oauth") {
     // 清除旧凭据
     if (credentialId !== null) {
       db.prepare("DELETE FROM credentials WHERE id = ?").run(credentialId);
@@ -256,17 +392,48 @@ export function updateProfile(
     now,
     id,
   );
+  if (body.extraHeaders !== undefined) {
+    const prev = openHeaders(masterKey, row.extra_headers);
+    db.prepare("UPDATE model_profiles SET extra_headers = ? WHERE id = ?").run(
+      body.extraHeaders === null ? null : sealHeaders(masterKey, body.extraHeaders, prev),
+      id,
+    );
+  }
+  if (body.maxConcurrency !== undefined) {
+    db.prepare("UPDATE model_profiles SET max_concurrency = ? WHERE id = ?").run(
+      body.maxConcurrency,
+      id,
+    );
+  }
+  // 模型/提供商/地址/凭据变化使探测结果失效（09 §6 缓存键）
+  if (
+    body.model !== undefined ||
+    body.provider !== undefined ||
+    body.baseUrl !== undefined ||
+    body.apiKey !== undefined
+  ) {
+    const caps = profileCapabilities(row);
+    for (const k of Object.keys(caps)) if (caps[k]?.source === "probe") delete caps[k];
+    setProfileCapabilities(db, id, caps);
+  }
   const updated = getProfileRow(db, id);
   return updated
-    ? profileToDto(updated, maskedOf(db, masterKey, updated.credential_id))
+    ? profileToDto(
+        updated,
+        maskedOf(db, masterKey, updated.credential_id),
+        credentialKind(db, updated.credential_id),
+      )
     : undefined;
 }
 
 export function deleteProfile(db: DatabaseSync, id: string): boolean {
   const row = getProfileRow(db, id);
   if (!row) return false;
-  if (row.credential_id !== null) {
+  // 订阅账号凭据属于账号，不随档案删除
+  if (row.credential_id !== null && credentialKind(db, row.credential_id) !== "oauth") {
+    db.prepare("DELETE FROM model_profiles WHERE id = ?").run(id);
     db.prepare("DELETE FROM credentials WHERE id = ?").run(row.credential_id);
+    return true;
   }
   db.prepare("DELETE FROM model_profiles WHERE id = ?").run(id);
   return true;
@@ -289,6 +456,7 @@ export function resolveProfileModel(
   db: DatabaseSync,
   masterKey: Buffer,
   profileId: string | null,
+  deps: ResolveDeps = {},
 ): ResolvedModel | { error: ClassifiedError } {
   const row =
     profileId !== null
@@ -306,7 +474,20 @@ export function resolveProfileModel(
     };
   }
   let apiKey = "";
-  if (row.credential_id !== null) {
+  let subscription: ResolvedModel["subscription"];
+  const kind = credentialKind(db, row.credential_id);
+  if (row.provider === "chatgpt" || kind === "oauth") {
+    subscription = row.credential_id !== null ? deps.subscription?.(row.credential_id) : undefined;
+    if (!subscription) {
+      return {
+        error: {
+          kind: "auth",
+          retryable: false,
+          message: "该档案的订阅账号未登录或已删除，请在设置 → 订阅账号中重新登录",
+        },
+      };
+    }
+  } else if (row.credential_id !== null) {
     const cred = db
       .prepare("SELECT ciphertext, nonce FROM credentials WHERE id = ?")
       .get(row.credential_id) as CredentialRow | undefined;
@@ -331,13 +512,19 @@ export function resolveProfileModel(
       };
     }
   }
+  const contextWindow =
+    row.context_window ?? deps.catalog?.(row.provider, row.model)?.contextWindow ?? null;
+  const extraHeaders = openHeaders(masterKey, row.extra_headers);
   return {
     profileId: row.id,
     provider: row.provider,
     model: row.model,
     ...(row.base_url !== null ? { baseUrl: row.base_url } : {}),
     apiKey,
-    ...(row.context_window !== null ? { contextWindow: row.context_window } : {}),
+    ...(subscription ? { subscription } : {}),
+    ...(extraHeaders ? { extraHeaders } : {}),
+    ...(deps.fetch ? { fetch: deps.fetch } : {}),
+    ...(contextWindow !== null ? { contextWindow } : {}),
     ...(row.provider_options !== null
       ? { providerOptions: JSON.parse(row.provider_options) as Record<string, unknown> }
       : {}),
@@ -377,18 +564,12 @@ export function listAgents(db: DatabaseSync, sessionId: string): AgentRowOut[] {
     .all(sessionId) as unknown as AgentRowOut[];
 }
 
-export function deleteSessionData(db: DatabaseSync, sessionId: string): void {
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    db.prepare("DELETE FROM session_log WHERE session_id = ?").run(sessionId);
-    db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId);
-    db.prepare("DELETE FROM agents WHERE session_id = ?").run(sessionId);
-    db.prepare("DELETE FROM agent_context WHERE session_id = ?").run(sessionId);
-    db.prepare("DELETE FROM dispatches WHERE session_id = ?").run(sessionId);
-    db.prepare("DELETE FROM open_intents WHERE session_id = ?").run(sessionId);
-    db.exec("COMMIT");
-  } catch (err) {
-    db.exec("ROLLBACK");
-    throw err;
-  }
+/**
+ * 删除会话数据（10 §6）：会话日志 + 全部已注册投影（含待处理交互、收件箱、待办、
+ * 自动批准规则、变更摘要与模块投影）+ 租约，同一事务。不删工作区文件、备份与文档日志。
+ */
+export function deleteSessionData(log: SessionLog, sessionId: string): void {
+  log.deleteSession(sessionId, (db) => {
+    db.prepare("DELETE FROM leases WHERE session_id = ?").run(sessionId);
+  });
 }

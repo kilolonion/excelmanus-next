@@ -6,8 +6,13 @@ import { publishNew, workbookExportTool } from "./export.ts";
 
 import { DatabaseSync } from "node:sqlite";
 import { formatRange, indexToCol, parseRange, type RangeRef } from "@excelmanus/core";
-import type { ToolContext, ToolDefinition } from "@excelmanus/kernel";
-import { AnalyzeSaveTo, type ToolResult } from "@excelmanus/protocol";
+import type { ToolContext, ToolDefinition, WorkbookActivity } from "@excelmanus/kernel";
+import {
+  AnalyzeSaveTo,
+  type ToolErrorCode,
+  type ToolResult,
+  toToolErrorCode,
+} from "@excelmanus/protocol";
 import type { ICellData, IWorkbookData, IWorksheetData } from "@univerjs/core";
 import { z } from "zod";
 import { workbookEditTool } from "./edit.ts";
@@ -66,6 +71,12 @@ async function openDoc(
 }
 
 const docRevsOf = (docId: string, rev: number) => ({ docRevs: { [docId]: rev } });
+
+/** 异常自带的错误码（FileOperationError 等）收敛到 06 §9 词表；没有码时用 fallback。 */
+const codeOf = (e: unknown, fallback: ToolErrorCode): ToolErrorCode => {
+  const code = (e as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? toToolErrorCode(code) : fallback;
+};
 
 // ---------- range 读取 ----------
 
@@ -367,6 +378,30 @@ const analyzeInput = z.object({
 
 // ---------- 工具定义 ----------
 
+/** 工作簿活动（11 §3.4）：给界面叠加层的"正在读取/写入"区域。 */
+function activityOf(
+  kind: "read" | "write",
+  a: {
+    docId?: string | undefined;
+    path?: string | undefined;
+    sheet?: string | undefined;
+    range?: string | undefined;
+  },
+): WorkbookActivity | null {
+  if (!a.docId && !a.path) return null;
+  const range = a.range
+    ? a.sheet && !a.range.includes("!")
+      ? `${a.sheet}!${a.range}`
+      : a.range
+    : null;
+  return {
+    kind,
+    ...(a.docId ? { docId: a.docId } : {}),
+    ...(a.path ? { path: a.path } : {}),
+    ranges: range ? [range] : [],
+  };
+}
+
 export function workbookTools(svc: DocumentService): ToolDefinition[] {
   const workbookRead: ToolDefinition = {
     name: "workbook_read",
@@ -378,9 +413,13 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
     effect: "read",
     targets: (a) =>
       typeof (a as { path?: unknown }).path === "string" ? [(a as { path: string }).path] : [],
+    activity: (a: z.infer<typeof readInput>) =>
+      a.mode === "search"
+        ? activityOf("read", { docId: a.docId, path: a.path })
+        : activityOf("read", a),
     replay: "safe",
     timeoutMs: 60_000,
-    roles: ["main", "reader"],
+    roles: ["main", "lead", "worker", "reader"],
     async execute(args, ctx): Promise<ToolResult> {
       const a = readInput.parse(args);
       try {
@@ -479,13 +518,13 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
         if (e instanceof DocNotFoundError) {
           return {
             status: "error",
-            error: { code: "DOC_NOT_FOUND", message: e.message, retryable: false },
+            error: { code: "NOT_FOUND", message: e.message, retryable: false },
           };
         }
         return {
           status: "error",
           error: {
-            code: "READ_FAILED",
+            code: codeOf(e, "INTERNAL"),
             message: e instanceof Error ? e.message : String(e),
             retryable: false,
           },
@@ -501,16 +540,23 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
       "对工作簿区域做分析。mode=sql 把指定工作表/区域（首行为表头）装入内存 SQLite 执行只读 SELECT/WITH 查询，预览 ≤200 行；mode=profile 返回每列的类型/非空数/去重数/min/max/mean/top 值。输入 docId 或工作区相对 path。",
     input: analyzeInput,
     output: z.record(z.string(), z.unknown()),
-    effect: (a: z.infer<typeof analyzeInput>) => (a.saveTo ? "write" : "read"),
+    effect: (a: z.infer<typeof analyzeInput> | null) => (a?.saveTo ? "write" : "read"),
     targets: (a) => {
       const q = analyzeInput.parse(a);
       return [...(q.path ? [q.path] : []), ...(q.saveTo?.path ? [q.saveTo.path] : [])];
     },
-    replay: (a: z.infer<typeof analyzeInput>) => (a.saveTo ? "unsafe" : "safe"),
+    activity: (a: z.infer<typeof analyzeInput>) => activityOf("read", a),
+    replay: (a: z.infer<typeof analyzeInput> | null) => (a?.saveTo ? "unsafe" : "safe"),
     timeoutMs: 60_000,
-    roles: ["main"],
+    roles: ["main", "lead", "worker", "reader"],
     async execute(args, ctx): Promise<ToolResult> {
       const a = analyzeInput.parse(args);
+      if (a.saveTo && ctx.role === "reader") {
+        return {
+          status: "error",
+          error: { code: "INVALID_ARGUMENT", message: "reader 角色不能写入", retryable: false },
+        };
+      }
       try {
         const doc = await openDoc(svc, ctx, a.docId, a.path);
         const base = { docId: doc.docId, path: doc.path, ...docRevsOf(doc.docId, doc.rev) };
@@ -520,7 +566,7 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
           if (bad !== undefined) {
             return {
               status: "error",
-              error: { code: "SQL_FORBIDDEN", message: bad, retryable: false },
+              error: { code: "INVALID_ARGUMENT", message: bad, field: "sql", retryable: false },
             };
           }
           const mem = new DatabaseSync(":memory:");
@@ -595,7 +641,11 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
                 if (!result.ok)
                   return {
                     status: "error",
-                    error: { code: result.code, message: result.message, retryable: false },
+                    error: {
+                      code: toToolErrorCode(result.code),
+                      message: result.message,
+                      retryable: false,
+                    },
                   };
                 saved = {
                   docId: doc.docId,
@@ -634,13 +684,14 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
         if (e instanceof DocNotFoundError) {
           return {
             status: "error",
-            error: { code: "DOC_NOT_FOUND", message: e.message, retryable: false },
+            error: { code: "NOT_FOUND", message: e.message, retryable: false },
           };
         }
+        // 未带码的异常多为 SQL 语法/缺参数，按参数问题报告让模型修正
         return {
           status: "error",
           error: {
-            code: "ANALYZE_FAILED",
+            code: codeOf(e, "INVALID_ARGUMENT"),
             message: e instanceof Error ? e.message : String(e),
             retryable: false,
           },

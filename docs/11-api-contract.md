@@ -130,7 +130,7 @@
 | 资源 | 端点 | 动作 |
 | --- | --- | --- |
 | 健康 | `GET /health` | 免鉴权，只返回 `ok` 与版本 |
-| 启动信息 | `GET /bootstrap` | 协议版本、应用版本、形态、是否已配置模型、已启用模块、功能开关 |
+| 启动信息 | `GET /bootstrap` | 协议版本、应用版本、形态、是否已配置模型、已启用模块、功能开关、本机数据目录 `dataDir`（需鉴权，仅供设置页展示） |
 | 同步票据 | `POST /sync/ticket` | 见 §3.1 |
 | 设置 | `GET/PATCH /settings` | 只提交修改的键；响应附"需要重启"的键 |
 | 模型档案 | `/model-profiles` | CRUD、设为默认；`POST /{id}/test`；`POST /{id}/probe`（进度在 `app` 主题） |
@@ -138,7 +138,7 @@
 | 订阅账号 | `/accounts` | 列表；`POST /accounts/{provider}/login`（授权 URL 或设备码）；`POST /accounts/{provider}/login/poll`；`POST /{id}/refresh`；`DELETE /{id}` |
 | 工作区 | `/workspaces` | 列表、添加、改名、删除登记、排序 |
 | 文件 | `/workspaces/{id}/files` | `GET ?path=` 列目录；`POST /upload`；`GET /download?path=`；`POST /manage`（批量 mkdir/copy/move/delete，与 `files` 工具同一实现） |
-| 文档 | `/workspaces/{id}/docs` | `POST /open`（返回 `docId`、`rev`）；`GET /{docId}/snapshot?rev=&window=`（快照，大文件按窗口）；`POST /{docId}/render`（截图）。编辑只经同步通道的 `doc.submit` |
+| 文档 | `/workspaces/{id}/docs` | `POST /open`（返回 `docId`、`rev`）；`GET /{docId}/snapshot?rev=&window=`（快照，大文件按窗口）；`POST /{docId}/render`（截图）；`GET /{docId}/revs/{rev}/before`（该修订改动单元格的修改前的值，来自逆操作，07 §7.4）。编辑只经同步通道的 `doc.submit` |
 | 备份与回收站 | `/workspaces/{id}/backups`、`/trash` | 列表、下载、替换回原文件、删除 |
 | 会话 | `/sessions` | 列表（搜索、分页）、创建、改名、删除、导出 Markdown；`GET /{id}`（摘要、代理、待处理交互、`headSeq`） |
 | 会话日志 | `GET /sessions/{id}/log?before=&limit=` | 向前分页读取历史（打开旧会话时按需加载，之后靠同步通道） |
@@ -149,7 +149,7 @@
 | 提问 | `POST /questions/{id}` | 回答（区域题型含文档、工作表、区域、修订号） |
 | 代理控制 | `POST /sessions/{id}/agents/{agentId}/control` | pause / resume / close |
 | 压缩 | `POST /sessions/{id}/agents/{agentId}/compact` | |
-| 附件 | `POST /attachments` | 返回内容哈希 ID |
+| 附件 | `POST /attachments`；`GET /attachments/{sha256}` | multipart `file`，返回附件引用 `{sha256, mediaType, name, size}`（内容寻址去重，存 `blobs/`）；v1 只接受 PNG/JPEG/GIF/WebP 图片、≤ 10 MB，类型按文件内容判定。消息体 `attachments` 最多 8 个，受理前校验已上传；表格等文件走工作区上传并以 `@路径` 引用（02 §3.3） |
 | 技能 | `/skills` | 列表、详情、启用/禁用、导入、删除用户技能 |
 | 记忆 | `/memories` | 列表、搜索、编辑、删除 |
 | 规则 | `/rules` | CRUD |

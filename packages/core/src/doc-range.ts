@@ -67,25 +67,34 @@ export function transformRange(range: RangeRef, op: StructuralOp): RangeRef | "d
     case "renameSheet":
     case "moveRange":
       return range;
-    case "insertRows": {
-      if (range.r0 >= op.index) {
-        return { ...range, r0: range.r0 + op.count, r1: range.r1 + op.count };
-      }
-      if (range.r1 >= op.index) return { ...range, r1: range.r1 + op.count };
-      return range;
-    }
-    case "insertCols": {
-      if (range.c0 >= op.index) {
-        return { ...range, c0: range.c0 + op.count, c1: range.c1 + op.count };
-      }
-      if (range.c1 >= op.index) return { ...range, c1: range.c1 + op.count };
-      return range;
-    }
+    case "insertRows":
+      return transformInsert(range, op.index, op.count, "row");
+    case "insertCols":
+      return transformInsert(range, op.index, op.count, "col");
     case "deleteRows":
       return transformDelete(range, op.index, op.count, "row");
     case "deleteCols":
       return transformDelete(range, op.index, op.count, "col");
   }
+}
+
+// 整行/整列（该轴从 0 到上限）不随该轴的插入/删除变化；到上限的区域插入/删除后仍到上限，
+// 被挤出上限之外的区域视为删除（P1-37）。
+function transformInsert(
+  range: RangeRef,
+  index: number,
+  count: number,
+  axis: "row" | "col",
+): RangeRef | "deleted" {
+  const max = axis === "row" ? MAX_R : MAX_C;
+  const s0 = axis === "row" ? range.r0 : range.c0;
+  const s1 = axis === "row" ? range.r1 : range.c1;
+  if ((s0 === 0 && s1 === max) || s1 < index) return range;
+  const n0 = s0 >= index ? s0 + count : s0;
+  if (n0 > max) return "deleted";
+  const n1 = s1 === max ? max : Math.min(s1 + count, max);
+  if (axis === "row") return { ...range, r0: n0, r1: n1 };
+  return { ...range, c0: n0, c1: n1 };
 }
 
 function transformDelete(
@@ -94,8 +103,10 @@ function transformDelete(
   count: number,
   axis: "row" | "col",
 ): RangeRef | "deleted" {
+  const max = axis === "row" ? MAX_R : MAX_C;
   const s0 = axis === "row" ? range.r0 : range.c0;
   const s1 = axis === "row" ? range.r1 : range.c1;
+  if (s0 === 0 && s1 === max) return range;
   const d0 = index;
   const d1 = index + count - 1;
   let n0: number;
@@ -113,8 +124,46 @@ function transformDelete(
     n0 = s0 < d0 ? s0 : d0;
     n1 = s1 > d1 ? s1 - count : d0 - 1;
   }
+  if (s1 === max) n1 = max;
   if (axis === "row") return { ...range, r0: n0, r1: n1 };
   return { ...range, c0: n0, c1: n1 };
+}
+
+/** 依次应用多条结构操作；任一步 "deleted" 即删除。 */
+export function transformRangeAll(
+  range: RangeRef,
+  ops: readonly StructuralOp[],
+): RangeRef | "deleted" {
+  let cur = range;
+  for (const op of ops) {
+    const t = transformRange(cur, op);
+    if (t === "deleted") return "deleted";
+    cur = t;
+  }
+  return cur;
+}
+
+/**
+ * 结构操作是否改动区域内部（区域不能整体平移）：删除与区域在该轴上重叠，
+ * 或插入点严格落在区域内部。整行/整列区域只受删除影响。
+ */
+export function structuralTouchesInterior(range: RangeRef, op: StructuralOp): boolean {
+  if (range.sheetId !== op.sheetId) return false;
+  const rowAxis = op.kind === "insertRows" || op.kind === "deleteRows";
+  if (!rowAxis && op.kind !== "insertCols" && op.kind !== "deleteCols") return false;
+  const s0 = rowAxis ? range.r0 : range.c0;
+  const s1 = rowAxis ? range.r1 : range.c1;
+  const max = rowAxis ? MAX_R : MAX_C;
+  if (op.kind === "deleteRows" || op.kind === "deleteCols")
+    return s0 <= op.index + op.count - 1 && op.index <= s1;
+  if (s0 === 0 && s1 === max) return false;
+  return op.index > s0 && op.index <= s1;
+}
+
+/** a 是否完整包含 b（同表；"*" 通配）。 */
+export function rangeContains(a: RangeRef, b: RangeRef): boolean {
+  if (a.sheetId !== b.sheetId && a.sheetId !== "*") return false;
+  return a.r0 <= b.r0 && a.c0 <= b.c0 && a.r1 >= b.r1 && a.c1 >= b.c1;
 }
 
 /** 0 基 RangeRef → A1 记法（工作表名由调用方解析；不传则只输出区域）。 */

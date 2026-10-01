@@ -2,7 +2,12 @@
 
 import { randomBytes, randomUUID } from "node:crypto";
 import {
+  closeSync,
+  createReadStream,
   existsSync,
+  constants as fsConstants,
+  fstatSync,
+  openSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -11,27 +16,32 @@ import {
 } from "node:fs";
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { Readable } from "node:stream";
 import { newId, nowIso, parseRange } from "@excelmanus/core";
 import {
   type AgentRuntime,
   type ApprovalCoordinator,
   approvalDto,
+  type BlobStore,
   buildSystemPrompt,
   type ModelGateway,
   PathSafetyError,
   resolveWorkspacePath,
   type SessionLog,
   type SyncBus,
+  type TeamCoordinator,
 } from "@excelmanus/kernel";
-import { PROVIDER_PRESETS } from "@excelmanus/models";
+import { PROVIDER_PRESETS, redactSecrets } from "@excelmanus/models";
 import type { StepEvent } from "@excelmanus/protocol";
 import {
   ApprovalDecisionBody,
+  ControlBody,
   CreateModelProfileBody,
   CreateSessionBody,
   OpenDocBody,
   protocolVersion,
   QuestionAnswerBody,
+  ResolveExternalBody,
   SendMessageBody,
   UpdateModelProfileBody,
   UpdateSessionBody,
@@ -51,6 +61,7 @@ import {
   getWorkspace,
   listAgents,
   listProfiles,
+  type ResolveDeps,
   resolveProfileModel,
   setDefaultProfile,
   sha256,
@@ -68,7 +79,11 @@ export interface AppDeps {
   log: SessionLog;
   runtime: AgentRuntime;
   approvals: ApprovalCoordinator;
+  /** 代理团队协调（05 §11 用户控制入口）。 */
+  team: TeamCoordinator;
   gateway: ModelGateway;
+  /** 解析档案的外部依赖（订阅令牌、代理 fetch、目录）；测试连接与运行时共用（09 §4、§7）。 */
+  resolveDeps?: ResolveDeps;
   tickets: Map<string, number>;
   ticketTtlMs: number;
   defaultWorkspaceId: string;
@@ -80,7 +95,49 @@ export interface AppDeps {
   emit: (event: string, fields: Record<string, string | number | boolean>) => void;
   allowedHosts(): Set<string>;
   allowedOrigins(): Set<string>;
+  /** 部署形态（bootstrap.shape）。 */
+  shape?: string;
+  /** 附件内容寻址存储（10 §2 blobs）。 */
+  blobs?: BlobStore;
+  /** 本机数据目录（只回给已鉴权的本机客户端）。 */
+  dataDir?: string;
+  /** M5 扩展端点（规则/记忆/技能/MCP/账号/设置等），挂在鉴权之后。 */
+  extensions?(fail: FailFn): Hono;
+  /** 新会话冻结系统提示词所需的环境（技能索引、规则）与默认权限模式。 */
+  sessionEnv?(workspaceRoot: string): {
+    skills: { name: string; description: string }[];
+    rules: string[];
+    hashes: Record<string, string>;
+    defaultPermissionMode: "confirm" | "standard" | "auto";
+  };
+  /**
+   * 受理用户消息前：追加环境变化说明，选出相关记忆，解析 /<技能名>。
+   * 返回 error 时拒绝（如技能不存在）。
+   */
+  prepareMessage?(input: {
+    sessionId: string;
+    agentId: string;
+    workspaceId: string;
+    workspaceRoot: string;
+    text: string;
+  }):
+    | {
+        text: string;
+        memories?: { id: string; category: string; content: string }[];
+        skill?: { name: string; body: string };
+      }
+    | { error: string };
+  /** 会话删除后的附带清理（会话规则）。 */
+  onSessionDeleted?(sessionId: string): void;
 }
+
+export type FailFn = (
+  c: Context,
+  status: 400 | 401 | 403 | 404 | 409 | 413 | 500 | 501 | 502,
+  code: string,
+  message: string,
+  details?: unknown,
+) => Response;
 
 type SessionRowLike = {
   id: string;
@@ -128,9 +185,23 @@ export function createApp(deps: AppDeps): Hono {
   const app = new Hono();
   const { db, emit } = deps;
 
+  const redactValue = (value: unknown): unknown => {
+    if (typeof value === "string") return redactSecrets(value);
+    if (Array.isArray(value)) return value.map(redactValue);
+    if (value && typeof value === "object") {
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).map(([k, v]) => [
+          redactSecrets(k),
+          redactValue(v),
+        ]),
+      );
+    }
+    return value;
+  };
+
   const fail = (
     c: Context,
-    status: 400 | 401 | 403 | 404 | 409 | 413 | 500 | 501 | 502,
+    status: 400 | 401 | 403 | 404 | 409 | 413 | 415 | 500 | 501 | 502,
     code: string,
     message: string,
     details?: unknown,
@@ -139,8 +210,8 @@ export function createApp(deps: AppDeps): Hono {
       {
         error: {
           code,
-          message,
-          ...(details !== undefined ? { details } : {}),
+          message: redactSecrets(message),
+          ...(details !== undefined ? { details: redactValue(details) } : {}),
           requestId: c.get("requestId" as never) as string,
         },
       },
@@ -154,6 +225,30 @@ export function createApp(deps: AppDeps): Hono {
     const r = schema.safeParse(data);
     return r.success ? (r.data as z.infer<S>) : { issues: r.error.issues };
   };
+
+  // 桌面版（13 §1.1）：前端来自 app://excelmanus，跨源访问 127.0.0.1 后端。
+  // 只对白名单中的非 http 源回 CORS 头；预检不需要令牌。
+  const corsOrigin = (origin: string | undefined) =>
+    origin !== undefined && !origin.startsWith("http") && deps.allowedOrigins().has(origin)
+      ? origin
+      : undefined;
+  app.use("*", async (c, next) => {
+    const origin = corsOrigin(c.req.header("origin"));
+    if (origin !== undefined) {
+      c.header("Access-Control-Allow-Origin", origin);
+      c.header("Vary", "Origin");
+      if (c.req.method === "OPTIONS") {
+        c.header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
+        c.header(
+          "Access-Control-Allow-Headers",
+          "authorization, content-type, x-request-id, idempotency-key",
+        );
+        c.header("Access-Control-Max-Age", "600");
+        return c.body(null, 204);
+      }
+    }
+    await next();
+  });
 
   app.use("*", async (c, next) => {
     const requestId = c.req.header("x-request-id") ?? randomUUID();
@@ -202,9 +297,94 @@ export function createApp(deps: AppDeps): Hono {
     });
   });
 
+  // ---------- 幂等（11 §2：创建类请求接受 Idempotency-Key；P1-40） ----------
+  // 进程内保存 24 小时；同一键 + 同一请求体重放首次的成功响应，同一键不同请求体返回 409；
+  // 首次未成功（非 2xx）不缓存，允许用同一键重试。
+  const IDEMPOTENT_CREATE =
+    /^\/api\/v1\/(sessions|model-profiles|rules|memories|mcp-servers|workspaces)$/;
+  const IDEMPOTENCY_TTL_MS = 24 * 3600_000;
+  const MAX_IDEMPOTENCY_ENTRIES = 1000;
+  type IdemResult = { status: number; body: string; contentType: string } | undefined;
+  const idempotency = new Map<
+    string,
+    { bodyHash: string; at: number; done: Promise<IdemResult> }
+  >();
+  app.use("/api/v1/*", async (c, next) => {
+    const key = c.req.header("idempotency-key");
+    if (c.req.method !== "POST" || key === undefined || !IDEMPOTENT_CREATE.test(c.req.path)) {
+      return next();
+    }
+    if (key === "" || key.length > 200) {
+      return fail(c, 400, "bad_request", "Idempotency-Key 长度应为 1–200");
+    }
+    const bodyHash = sha256(await c.req.raw.clone().text());
+    const now = Date.now();
+    for (const [k, v] of idempotency) {
+      if (now - v.at > IDEMPOTENCY_TTL_MS || idempotency.size > MAX_IDEMPOTENCY_ENTRIES) {
+        idempotency.delete(k);
+      } else break;
+    }
+    const slot = `${c.req.path}\n${key}`;
+    const hit = idempotency.get(slot);
+    if (hit) {
+      if (hit.bodyHash !== bodyHash) {
+        return fail(c, 409, "conflict", "Idempotency-Key 已用于内容不同的请求");
+      }
+      const prev = await hit.done;
+      if (prev) {
+        return new Response(prev.body, {
+          status: prev.status,
+          headers: { "content-type": prev.contentType, "idempotent-replayed": "true" },
+        });
+      }
+    }
+    let settle: (r: IdemResult) => void = () => {};
+    idempotency.set(slot, {
+      bodyHash,
+      at: now,
+      done: new Promise<IdemResult>((r) => {
+        settle = r;
+      }),
+    });
+    try {
+      await next();
+    } finally {
+      const res = c.res;
+      if (res.status >= 200 && res.status < 300) {
+        settle({
+          status: res.status,
+          body: await res.clone().text(),
+          contentType: res.headers.get("content-type") ?? "application/json",
+        });
+      } else {
+        idempotency.delete(slot);
+        settle(undefined);
+      }
+    }
+  });
+
   // ---------- 基础 ----------
 
   app.get("/api/v1/health", (c) => c.json({ ok: true, protocolVersion, version: APP_VERSION }));
+
+  // 契约入口：开发/测试客户端可取得机器可读的 API 描述（11 §1）。
+  // 路由仍由 protocol 包中的 Zod 契约定义；这里仅发布版本与资源索引，避免复制 DTO。
+  app.get("/api/docs", (c) =>
+    c.json({
+      openapi: "3.1.0",
+      info: { title: "ExcelManus API", version: APP_VERSION },
+      servers: [{ url: "/api/v1" }],
+      paths: {
+        "/health": { get: {} },
+        "/bootstrap": { get: {} },
+        "/sessions": { get: {}, post: {} },
+        "/workspaces": { get: {}, post: {} },
+        "/attachments": { post: {} },
+      },
+      security: [{ bearerAuth: [] }],
+      components: { securitySchemes: { bearerAuth: { type: "http", scheme: "bearer" } } },
+    }),
+  );
 
   app.get("/api/v1/bootstrap", (c) => {
     const hasModelProfile =
@@ -212,10 +392,16 @@ export function createApp(deps: AppDeps): Hono {
     return c.json({
       protocolVersion,
       appVersion: APP_VERSION,
-      shape: "local-web",
+      shape: deps.shape ?? "local-web",
       hasModelProfile,
       modules: deps.moduleIds,
-      features: {},
+      ...(deps.dataDir !== undefined ? { dataDir: deps.dataDir } : {}),
+      features: {
+        subscriptionLogin: deps.extensions !== undefined,
+        skills: deps.extensions !== undefined,
+        memory: deps.extensions !== undefined,
+        mcp: deps.extensions !== undefined,
+      },
     });
   });
 
@@ -276,7 +462,7 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   app.post("/api/v1/model-profiles/:id/test", async (c) => {
-    const resolved = resolveProfileModel(db, deps.masterKey, c.req.param("id"));
+    const resolved = resolveProfileModel(db, deps.masterKey, c.req.param("id"), deps.resolveDeps);
     if ("error" in resolved) {
       return c.json({
         ok: false,
@@ -313,6 +499,11 @@ export function createApp(deps: AppDeps): Hono {
   app.get("/api/v1/sessions", (c) => {
     const limit = Math.min(Number(c.req.query("limit") ?? 50), 200);
     const cursor = c.req.query("cursor");
+    // 11 §4 会话列表搜索：按标题子串匹配（不区分大小写，% _ 按字面匹配）
+    const q = c.req.query("q")?.trim() ?? "";
+    const like = `%${q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+    const search = q === "" ? "" : "AND COALESCE(title, '') LIKE ? ESCAPE '\\'";
+    const searchArgs = q === "" ? [] : [like];
     let rows: SessionRowLike[];
     if (cursor !== undefined) {
       const sep = cursor.indexOf("~");
@@ -320,14 +511,16 @@ export function createApp(deps: AppDeps): Hono {
       const id = cursor.slice(sep + 1);
       rows = db
         .prepare(
-          `SELECT * FROM sessions WHERE (updated_at < ? OR (updated_at = ? AND id < ?))
+          `SELECT * FROM sessions WHERE (updated_at < ? OR (updated_at = ? AND id < ?)) ${search}
            ORDER BY updated_at DESC, id DESC LIMIT ?`,
         )
-        .all(u, u, id, limit + 1) as unknown as SessionRowLike[];
+        .all(u, u, id, ...searchArgs, limit + 1) as unknown as SessionRowLike[];
     } else {
       rows = db
-        .prepare("SELECT * FROM sessions ORDER BY updated_at DESC, id DESC LIMIT ?")
-        .all(limit + 1) as unknown as SessionRowLike[];
+        .prepare(
+          `SELECT * FROM sessions WHERE 1 = 1 ${search} ORDER BY updated_at DESC, id DESC LIMIT ?`,
+        )
+        .all(...searchArgs, limit + 1) as unknown as SessionRowLike[];
     }
     const items = rows.slice(0, limit);
     const last = items[items.length - 1];
@@ -345,17 +538,27 @@ export function createApp(deps: AppDeps): Hono {
       body.workspaceId !== undefined ? getWorkspace(db, body.workspaceId) : defaultWorkspace(db);
     if (!ws) return fail(c, 400, "bad_request", "工作区不存在");
     const sessionId = newId("ses");
-    const permissionMode = body.permissionMode ?? "standard";
+    const env = deps.sessionEnv?.(ws.path);
+    const permissionMode = body.permissionMode ?? env?.defaultPermissionMode ?? "standard";
+    if (body.modelProfileId !== undefined && !getProfile(db, deps.masterKey, body.modelProfileId)) {
+      return fail(c, 400, "bad_request", "模型档案不存在");
+    }
     const modelProfileId = body.modelProfileId ?? defaultProfileId(db);
     const systemPrompt = buildSystemPrompt({
       workspaceName: ws.name,
       permissionMode,
       date: nowIso().slice(0, 10),
+      ...(env ? { skills: env.skills, rules: env.rules } : {}),
     });
     deps.log.append(sessionId, null, [
       {
         type: "session.created",
-        data: { workspaceId: ws.id, title: body.title ?? null, permissionMode },
+        data: {
+          workspaceId: ws.id,
+          title: body.title ?? null,
+          permissionMode,
+          ...(env ? { envHashes: env.hashes } : {}),
+        },
       },
     ]);
     deps.log.append(sessionId, "main", [
@@ -381,10 +584,67 @@ export function createApp(deps: AppDeps): Hono {
   app.get("/api/v1/sessions/:id", (c) => {
     const row = getSession(db, c.req.param("id"));
     if (!row) return fail(c, 404, "not_found", "会话不存在");
+    const pending = db
+      .prepare(
+        `SELECT id, kind, agent_id, tool_call_id, created_at FROM pending_interactions
+         WHERE session_id = ? AND status = 'pending' ORDER BY created_at, id`,
+      )
+      .all(row.id) as {
+      id: string;
+      kind: "approval" | "question";
+      agent_id: string;
+      tool_call_id: string | null;
+      created_at: string;
+    }[];
     return c.json({
       session: sessionDto(row),
       agents: listAgents(db, row.id).map(agentDto),
       headSeq: row.last_seq,
+      // 11 §4：待处理交互（P1-40）
+      pendingInteractions: pending.map((p) => ({
+        id: p.id,
+        kind: p.kind,
+        agentId: p.agent_id,
+        toolCallId: p.tool_call_id,
+        createdAt: p.created_at,
+      })),
+    });
+  });
+
+  // 11 §4 会话导出 Markdown（P1-40）：用户消息、代理回复、工具调用摘要与失败原因；
+  // 不含思考内容与工具参数/结果正文。
+  app.get("/api/v1/sessions/:id/export", (c) => {
+    const row = getSession(db, c.req.param("id"));
+    if (!row) return fail(c, 404, "not_found", "会话不存在");
+    const names = new Map(listAgents(db, row.id).map((a) => [a.id, a.name ?? a.id]));
+    const title = row.title ?? "未命名会话";
+    const lines: string[] = [`# ${title}`, "", `导出时间：${nowIso()}`, ""];
+    for (let after = 0; ; ) {
+      const batch = deps.log.readAfter(row.id, after, 500);
+      if (batch.length === 0) break;
+      for (const rec of batch) {
+        const d = rec.data as Record<string, unknown>;
+        const who = names.get(rec.agentId ?? "") ?? rec.agentId ?? "";
+        if (rec.type === "user.message" && typeof d.text === "string") {
+          lines.push(`## 用户 → ${who}`, "", d.text, "");
+        } else if (rec.type === "model.output" && typeof d.text === "string" && d.text !== "") {
+          lines.push(`## ${who}`, "", d.text, "");
+        } else if (rec.type === "tool.result") {
+          lines.push(`> 工具 \`${String(d.toolName)}\`：${String(d.status)}`, "");
+        } else if (rec.type === "turn.failed") {
+          const err = d.error as { message?: string } | undefined;
+          // 修复前落库的失败原因可能含明文凭据（P0-12），导出时再按格式正则兜底
+          lines.push(`> 本轮失败：${redactSecrets(err?.message ?? "")}`, "");
+        }
+      }
+      after = batch[batch.length - 1]?.seq ?? after;
+    }
+    const filename = `${title.replace(/[\\/:*?"<>|\r\n]/g, "_").slice(0, 80)}.md`;
+    return new Response(lines.join("\n"), {
+      headers: {
+        "content-type": "text/markdown; charset=utf-8",
+        "content-disposition": `attachment; filename="session.md"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+      },
     });
   });
 
@@ -411,11 +671,16 @@ export function createApp(deps: AppDeps): Hono {
     });
   });
 
-  app.delete("/api/v1/sessions/:id", (c) => {
+  app.delete("/api/v1/sessions/:id", async (c) => {
     const row = getSession(db, c.req.param("id"));
     if (!row) return fail(c, 404, "not_found", "会话不存在");
-    for (const a of listAgents(db, row.id)) deps.runtime.stop(row.id, a.id);
-    deleteSessionData(db, row.id);
+    // 05 §11：先停止全部代理并等待 actor 收尾，再在同一事务删除日志与全部投影。
+    const { stillRunning } = await deps.runtime.closeSession(row.id);
+    if (stillRunning.length > 0) {
+      deps.emit("session.close_timeout", { sessionId: row.id, agentIds: stillRunning.join(",") });
+    }
+    deleteSessionData(deps.log, row.id);
+    deps.onSessionDeleted?.(row.id);
     deps.bus.publish({ kind: "app", data: { type: "session.deleted", sessionId: row.id } });
     return c.json({ ok: true });
   });
@@ -536,6 +801,8 @@ export function createApp(deps: AppDeps): Hono {
       if (
         old?.text !== body.text ||
         JSON.stringify(old.context ?? []) !== JSON.stringify(body.context ?? []) ||
+        JSON.stringify((old as { attachments?: unknown }).attachments ?? []) !==
+          JSON.stringify(body.attachments ?? []) ||
         (old.mode ?? "steer") !== mode
       ) {
         return fail(c, 409, "conflict", "clientMessageId 已使用且内容不同");
@@ -551,6 +818,11 @@ export function createApp(deps: AppDeps): Hono {
         },
         deduplicated: true,
       });
+    }
+
+    // 04 §4：附件在受理前校验已上传
+    for (const a of body.attachments ?? []) {
+      if (!deps.blobs?.has(a.sha256)) return fail(c, 400, "bad_request", "附件不存在，请重新上传");
     }
 
     for (const ref of body.context ?? []) {
@@ -577,6 +849,24 @@ export function createApp(deps: AppDeps): Hono {
       }
     }
 
+    let prepared: {
+      text: string;
+      memories?: { id: string; category: string; content: string }[];
+      skill?: { name: string; body: string };
+    } = { text: body.text };
+    if (deps.prepareMessage) {
+      const workspace = getWorkspace(db, row.workspace_id);
+      const out = deps.prepareMessage({
+        sessionId,
+        agentId,
+        workspaceId: row.workspace_id,
+        workspaceRoot: workspace?.path ?? "",
+        text: body.text,
+      });
+      if ("error" in out) return fail(c, 400, "bad_request", out.error);
+      prepared = out;
+    }
+
     const dispatchId = newId("dsp");
     const running = deps.runtime.isRunning(sessionId, agentId);
     // 挂起语义：运行中或等待审批/回答期间受理的消息都先记 queued（04 §4.1/§4.2）
@@ -590,6 +880,13 @@ export function createApp(deps: AppDeps): Hono {
           text: body.text,
           mode,
           ...(body.context !== undefined ? { context: body.context } : {}),
+          ...(body.attachments !== undefined && body.attachments.length > 0
+            ? { attachments: body.attachments }
+            : {}),
+          ...(prepared.memories && prepared.memories.length > 0
+            ? { memories: prepared.memories }
+            : {}),
+          ...(prepared.skill ? { skill: prepared.skill } : {}),
         },
       },
       {
@@ -636,9 +933,8 @@ export function createApp(deps: AppDeps): Hono {
     const sessionId = c.req.param("id");
     const row = getSession(db, sessionId);
     if (!row) return fail(c, 404, "not_found", "会话不存在");
-    const stopped = listAgents(db, sessionId)
-      .map((a) => a.id)
-      .filter((id) => deps.runtime.stop(sessionId, id));
+    // 05 §11"停止全部"：在跑的轮中止、闸门排队的子代理撤出、之后的报告不唤醒代理。
+    const stopped = deps.runtime.stopAll(sessionId);
     return c.json({ ok: true, stopped });
   });
 
@@ -688,6 +984,27 @@ export function createApp(deps: AppDeps): Hono {
       .prepare("SELECT * FROM dispatches WHERE id = ?")
       .get(dispatchId) as typeof existing;
     return c.json({ dispatch: dto(updated ?? existing) });
+  });
+
+  /** 用户控制代理（05 §11、11 §150）：pause/resume/close；main 不能 close，pause 等同 stop。 */
+  app.post("/api/v1/sessions/:id/agents/:agentId/control", async (c) => {
+    const sessionId = c.req.param("id");
+    const agentId = c.req.param("agentId");
+    const row = getSession(db, sessionId);
+    if (!row) return fail(c, 404, "not_found", "会话不存在");
+    const body = parse(ControlBody, await c.req.json().catch(() => null));
+    if ("issues" in body) return fail(c, 400, "bad_request", "请求体不合法", body.issues);
+    const out = deps.team.controlByUser(sessionId, agentId, body.action);
+    if ("error" in out) {
+      const code = out.error.error?.code;
+      return fail(
+        c,
+        code === "NOT_FOUND" ? 404 : 409,
+        code === "NOT_FOUND" ? "not_found" : "conflict",
+        out.error.error?.message ?? "操作失败",
+      );
+    }
+    return c.json({ ok: true, status: out.status });
   });
 
   /** 继续（04 §4.2/§8.3）：恢复挂起派发；无挂起且代理 interrupted 时开一轮继续轮。 */
@@ -740,6 +1057,7 @@ export function createApp(deps: AppDeps): Hono {
     kind: string;
     checkpointRev?: number;
     checkpointError?: string;
+    externalConflict?: boolean;
     rev: number;
     createdAt: string;
   }) => ({
@@ -749,6 +1067,7 @@ export function createApp(deps: AppDeps): Hono {
     kind: m.kind,
     checkpointRev: m.checkpointRev,
     checkpointError: m.checkpointError,
+    ...(m.externalConflict ? { externalConflict: true } : {}),
     rev: m.rev,
     createdAt: m.createdAt,
   });
@@ -777,6 +1096,37 @@ export function createApp(deps: AppDeps): Hono {
     }
   });
 
+  // 07 §5 外部修改冲突二选一（branch doc-lifecycle 插入）：另一份版本存入备份区并记外部重新加载修订
+  app.post("/api/v1/workspaces/:id/docs/:docId/external", async (c) => {
+    const svc = deps.docService;
+    if (!svc) return fail(c, 501, "not_implemented", "workbook 模块未装配");
+    const wsRow = getWorkspace(db, c.req.param("id"));
+    if (!wsRow) return fail(c, 404, "not_found", "工作区不存在");
+    const docRow = db
+      .prepare("SELECT workspace_id FROM documents WHERE id = ?")
+      .get(c.req.param("docId")) as { workspace_id: string } | undefined;
+    if (!docRow || docRow.workspace_id !== wsRow.id) return fail(c, 404, "not_found", "文档不存在");
+    const body = parse(ResolveExternalBody, await c.req.json().catch(() => null));
+    if ("issues" in body) return fail(c, 400, "bad_request", "请求体不合法", body.issues);
+    try {
+      const { meta, backup } = await svc.resolveExternal(
+        c.req.param("docId"),
+        wsRow.path,
+        body.choice,
+      );
+      return c.json({
+        document: docMeta(meta),
+        backupId: backup.id,
+        backupPath: backup.backupPath,
+      });
+    } catch (e) {
+      const code = (e as { code?: string }).code;
+      if (code === "VERSION_CONFLICT" || code === "INVALID_ARGUMENT")
+        return fail(c, 409, "conflict", (e as Error).message);
+      return docErr(c, e);
+    }
+  });
+
   app.get("/api/v1/workspaces/:id/docs/:docId/snapshot", async (c) => {
     const svc = deps.docService;
     if (!svc) return fail(c, 501, "not_implemented", "workbook 模块未装配");
@@ -793,6 +1143,93 @@ export function createApp(deps: AppDeps): Hono {
     } catch (e) {
       return docErr(c, e);
     }
+  });
+
+  // 07 §7.4：修订的"修改前的值"取自 doc_ops.inverse 中的 set-range-values（精确且无需读文件）
+  app.get("/api/v1/workspaces/:id/docs/:docId/revs/:rev/before", async (c) => {
+    const svc = deps.docService;
+    if (!svc) return fail(c, 501, "not_implemented", "workbook 模块未装配");
+    const wsRow = getWorkspace(db, c.req.param("id"));
+    if (!wsRow) return fail(c, 404, "not_found", "工作区不存在");
+    const docId = c.req.param("docId");
+    const rev = Number(c.req.param("rev"));
+    if (!Number.isInteger(rev) || rev <= 0) return fail(c, 400, "bad_request", "修订号不合法");
+    const docRow = db.prepare("SELECT workspace_id FROM documents WHERE id = ?").get(docId) as
+      | { workspace_id: string }
+      | undefined;
+    if (!docRow || docRow.workspace_id !== wsRow.id) return fail(c, 404, "not_found", "文档不存在");
+    const op = db
+      .prepare("SELECT inverse, write_set FROM doc_ops WHERE doc_id = ? AND rev = ?")
+      .get(docId, rev) as { inverse: string | null; write_set: string } | undefined;
+    if (!op) return fail(c, 404, "not_found", "修订不存在");
+    let sheetNames: Record<string, string> = {};
+    try {
+      const { snapshot } = await svc.snapshot(docId, wsRow.path);
+      const sheets = (snapshot as { sheets?: Record<string, { name?: string }> }).sheets ?? {};
+      sheetNames = Object.fromEntries(
+        Object.entries(sheets).map(([id, sh]) => [id, sh.name ?? id]),
+      );
+    } catch (e) {
+      return docErr(c, e);
+    }
+    type Cell = { v?: unknown; f?: unknown } | null | undefined;
+    const LIMIT = 500;
+    const cells: {
+      sheet: string;
+      row: number;
+      col: number;
+      value: string | number | boolean | null;
+      formula?: string;
+    }[] = [];
+    let truncated = false;
+    const push = (sheetId: string, r: number, col: number, cell: Cell) => {
+      if (cells.length >= LIMIT) {
+        truncated = true;
+        return;
+      }
+      const v = cell?.v;
+      cells.push({
+        sheet: sheetNames[sheetId] ?? sheetId,
+        row: r,
+        col,
+        value: typeof v === "string" || typeof v === "number" || typeof v === "boolean" ? v : null,
+        ...(typeof cell?.f === "string" ? { formula: cell.f } : {}),
+      });
+    };
+    let inv: {
+      mutations?: { id?: string; params?: { subUnitId?: string; cellValue?: unknown } }[];
+      snapshot?: { sheets?: Record<string, { cellData?: Record<string, Record<string, Cell>> }> };
+    } = {};
+    try {
+      inv = op.inverse ? (JSON.parse(op.inverse) as typeof inv) : {};
+    } catch {
+      inv = {};
+    }
+    if (Array.isArray(inv.mutations)) {
+      // 数据级逆操作：set-range-values 里就是修改前的单元格（null = 原为空）
+      for (const m of inv.mutations) {
+        if (m.id !== "sheet.mutation.set-range-values") continue;
+        const cv = (m.params?.cellValue ?? {}) as Record<string, Record<string, Cell>>;
+        for (const [r, row] of Object.entries(cv))
+          for (const [col, cell] of Object.entries(row))
+            push(m.params?.subUnitId ?? "", Number(r), Number(col), cell);
+      }
+    } else if (inv.snapshot?.sheets) {
+      // 结构型修订存的是修改前快照：按写集取出对应单元格
+      let ranges: { sheetId: string; r0: number; c0: number; r1: number; c1: number }[] = [];
+      try {
+        ranges = (JSON.parse(op.write_set) as { ranges?: typeof ranges }).ranges ?? [];
+      } catch {
+        ranges = [];
+      }
+      for (const rg of ranges) {
+        const cd = inv.snapshot.sheets[rg.sheetId]?.cellData ?? {};
+        for (let r = rg.r0; r <= rg.r1 && !truncated; r++)
+          for (let col = rg.c0; col <= rg.c1 && !truncated; col++)
+            push(rg.sheetId, r, col, cd[String(r)]?.[String(col)]);
+      }
+    }
+    return c.json({ docId, rev, cells, truncated });
   });
 
   app.get("/api/v1/workspaces/:id/files", (c) => {
@@ -838,6 +1275,66 @@ export function createApp(deps: AppDeps): Hono {
     }
   });
 
+  // ---------- 附件（11 §4 `POST /attachments`）：图片，内容寻址去重 ----------
+  const IMAGE_MAGIC: [string, (b: Buffer) => boolean][] = [
+    [
+      "image/png",
+      (b) => b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+    ],
+    ["image/jpeg", (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff],
+    ["image/gif", (b) => b.subarray(0, 6).toString("ascii").startsWith("GIF8")],
+    [
+      "image/webp",
+      (b) =>
+        b.subarray(0, 4).toString("ascii") === "RIFF" &&
+        b.subarray(8, 12).toString("ascii") === "WEBP",
+    ],
+  ];
+  const sniffImage = (b: Buffer) => IMAGE_MAGIC.find(([, ok]) => ok(b))?.[0];
+  const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+
+  app.post("/api/v1/attachments", async (c) => {
+    const blobs = deps.blobs;
+    if (!blobs) return fail(c, 501, "not_implemented", "附件存储未装配");
+    const body = await c.req.parseBody().catch(() => null);
+    const file = body?.file;
+    if (!(file instanceof File)) return fail(c, 400, "bad_request", "缺少 file 字段");
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      return fail(c, 413, "payload_too_large", "图片超过 10MB 上限");
+    }
+    const bytes = Buffer.from(await file.arrayBuffer());
+    // 按内容判定类型，不信任客户端声明（防止把其他内容伪装成图片）
+    const mediaType = sniffImage(bytes);
+    if (!mediaType)
+      return fail(c, 415, "unsupported_media_type", "只支持 PNG、JPEG、GIF、WebP 图片");
+    const sha256 = blobs.put(bytes);
+    return c.json(
+      {
+        attachment: {
+          sha256,
+          mediaType,
+          name: basename(file.name || "image").slice(0, 255),
+          size: bytes.length,
+        },
+      },
+      201,
+    );
+  });
+
+  app.get("/api/v1/attachments/:sha", (c) => {
+    const bytes = deps.blobs?.get(c.req.param("sha"));
+    if (!bytes) return fail(c, 404, "not_found", "附件不存在");
+    const mediaType = sniffImage(bytes);
+    if (!mediaType) return fail(c, 404, "not_found", "附件不存在");
+    return new Response(bytes, {
+      headers: {
+        "content-type": mediaType,
+        "x-content-type-options": "nosniff",
+        "cache-control": "private, max-age=31536000, immutable",
+      },
+    });
+  });
+
   app.post("/api/v1/workspaces/:id/files/upload", async (c) => {
     const wsRow = getWorkspace(db, c.req.param("id"));
     if (!wsRow) return fail(c, 404, "not_found", "工作区不存在");
@@ -863,6 +1360,40 @@ export function createApp(deps: AppDeps): Hono {
       return docErr(c, e);
     }
   });
+  // 11 §4 `GET /files/download?path=`（P1-40）：下载工作区内文件（workbook_export/present 产出）。
+  // 与代理文件工具同一路径校验：不出工作区、不跟随外指符号链接、.excelmanus/ 不可见。
+  app.get("/api/v1/workspaces/:id/files/download", (c) => {
+    const wsRow = getWorkspace(db, c.req.param("id"));
+    if (!wsRow) return fail(c, 404, "not_found", "工作区不存在");
+    const rel = c.req.query("path") ?? "";
+    if (rel === "") return fail(c, 400, "bad_request", "缺少 path");
+    try {
+      const { abs, rel: safeRel } = resolveWorkspacePath(wsRow.path, rel);
+      // 先以 O_NOFOLLOW 打开再 fstat：校验与读取针对同一个文件，避免校验后被换成符号链接
+      const fd = openSync(abs, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+      const st = fstatSync(fd);
+      if (!st.isFile()) {
+        closeSync(fd);
+        return fail(c, 400, "bad_request", "不是文件");
+      }
+      const name = basename(safeRel);
+      return new Response(Readable.toWeb(createReadStream("", { fd })) as ReadableStream, {
+        headers: {
+          "content-type": "application/octet-stream",
+          "content-length": String(st.size),
+          "x-content-type-options": "nosniff",
+          "content-disposition": `attachment; filename="download"; filename*=UTF-8''${encodeURIComponent(name)}`,
+        },
+      });
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return fail(c, 404, "not_found", "文件不存在");
+      if (code === "ELOOP") return fail(c, 403, "forbidden", "不跟随符号链接");
+      return docErr(c, e);
+    }
+  });
+
+  if (deps.extensions) app.route("/api/v1", deps.extensions(fail));
 
   // ---------- 前端静态托管（生产：server 直接提供 packages/web/dist） ----------
   const webDist = deps.webDist;

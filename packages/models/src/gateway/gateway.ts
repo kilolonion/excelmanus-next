@@ -5,7 +5,9 @@
 import type { ResolvedModel, StepEvent, ToolSpec } from "@excelmanus/protocol";
 import type { LanguageModel, ToolSet } from "ai";
 import { jsonSchema, stepCountIs, streamText, tool } from "ai";
+import { presetFor } from "../presets.ts";
 import { resolveLanguageModel } from "../resolve.ts";
+import { registerModelSecrets } from "../secrets.ts";
 import { toModelMessages } from "./convert.ts";
 import { classifyError } from "./errors.ts";
 
@@ -26,6 +28,9 @@ export interface GatewayOptions {
   /** 测试注入：替换模型输出（如 ai/test 的 MockLanguageModel），不替代其他代码。 */
   resolveLanguageModel?: (model: ResolvedModel) => unknown;
 }
+
+/** tool 消息内容只能是字符串的适配器（图片需改走 user 消息）。 */
+const CHAT_TOOL_STRING_ADAPTERS = new Set(["openai-compatible", "moonshotai"]);
 
 export function createGateway(opts: GatewayOptions = {}): ModelGatewayLike {
   const resolve = opts.resolveLanguageModel ?? resolveLanguageModel;
@@ -50,17 +55,28 @@ async function* stepImpl(
   req: StepRequestLike,
 ): AsyncIterable<StepEvent> {
   let sawContent = false;
+  // 10 §4：本次请求的明文凭据登记为待脱敏值（错误文本与会话日志写入前精确替换）
+  registerModelSecrets(req.model);
   try {
     const result = streamText({
       model: resolve(req.model) as LanguageModel,
       system: req.system,
-      messages: toModelMessages(req.history),
+      messages: toModelMessages(req.history, {
+        vision: req.model.vision,
+        toolImagesAsUser: CHAT_TOOL_STRING_ADAPTERS.has(
+          presetFor(req.model.provider)?.adapter ?? "openai-compatible",
+        ),
+      }),
       tools: toToolSet(req.tools),
       abortSignal: req.signal,
       stopWhen: stepCountIs(1),
       // 重试由运行时按 04 §9 策略执行；网关只分类，故关掉 SDK 内部重试。
       maxRetries: 0,
       providerOptions: req.providerOptions as never,
+      // 09 §3：档案默认思考强度（AI SDK 7 统一取值）；未设置时交给提供商默认
+      ...(req.model.reasoning !== undefined && req.model.reasoning !== "provider-default"
+        ? { reasoning: req.model.reasoning as never }
+        : {}),
       // 错误已作为 error 事件交给运行时；关闭 SDK 默认的 console.error（会打印请求 URL 等细节）
       onError: () => {},
     });

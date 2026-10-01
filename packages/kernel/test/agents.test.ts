@@ -57,10 +57,19 @@ describe("M3 代理团队协调", () => {
     expect(
       db.prepare("SELECT status FROM inbox_pending WHERE to_agent_id = ?").get(child.agentId),
     ).toMatchObject({ status: "pending" });
-    const context = db
-      .prepare("SELECT item FROM agent_context WHERE agent_id = ? ORDER BY idx DESC LIMIT 1")
-      .get(child.agentId) as { item: string };
-    expect(context.item).toContain("请报告发现");
+    // 05 §4.2：发送时只入收件箱，步骤边界投递（inbox.delivered）才进入上下文
+    const lastItem = () =>
+      (
+        db
+          .prepare("SELECT item FROM agent_context WHERE agent_id = ? ORDER BY idx DESC LIMIT 1")
+          .get(child.agentId) as { item: string } | undefined
+      )?.item ?? "";
+    expect(lastItem()).not.toContain("请报告发现");
+    const messageId = (sent as { messageIds: string[] }).messageIds[0] as string;
+    log.append(sessionId, child.agentId, [
+      { type: "inbox.delivered", data: { messageId, toAgentId: child.agentId } },
+    ]);
+    expect(lastItem()).toContain("请报告发现");
     const row = db
       .prepare("SELECT parent_id, role FROM agents WHERE id = ?")
       .get(child.agentId) as { parent_id: string; role: string };

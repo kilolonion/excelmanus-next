@@ -10,9 +10,33 @@ import { ClassifiedError, JsonObject, ToolCall, Usage } from "./neutral.ts";
 export const ToolResultStatus = z.enum(["ok", "error", "partial", "not_executed", "uncertain"]);
 export type ToolResultStatus = z.infer<typeof ToolResultStatus>;
 
+/** 06 §9 工具错误码词表【硬性：统一词表，新增需登记】。 */
+export const TOOL_ERROR_CODES = [
+  "INVALID_ARGUMENT",
+  "NOT_FOUND",
+  "OUT_OF_WORKSPACE",
+  "VERSION_CONFLICT",
+  "FILE_LEASED",
+  "APPROVAL_DENIED",
+  "UNSUPPORTED_FEATURE",
+  "LIMIT_EXCEEDED",
+  "TIMEOUT",
+  "CANCELLED",
+  "SANDBOX_ERROR",
+  "FORMULA_ERROR",
+  "EXTERNAL_ERROR",
+  "INTERNAL",
+] as const;
+export type ToolErrorCode = (typeof TOOL_ERROR_CODES)[number];
+
 export const ToolError = z.object({
-  /** 06 §9 错误码词表。 */
-  code: z.string(),
+  /**
+   * 06 §9 错误码词表：写入日志时强制校验；静态类型保持 string，
+   * 各工具产出的码在运行时写 tool.result 前经 toToolErrorCode 收敛。
+   */
+  code: z
+    .string()
+    .refine((c) => (TOOL_ERROR_CODES as readonly string[]).includes(c), "错误码不在 06 §9 词表内"),
   /** 给模型看的中文说明。 */
   message: z.string(),
   /** 下一步建议。 */
@@ -40,24 +64,20 @@ export const ToolResult = z.object({
 });
 export type ToolResult = z.infer<typeof ToolResult>;
 
-/** 06 §9 工具错误码词表【硬性：统一词表，新增需登记】。 */
-export const TOOL_ERROR_CODES = [
-  "INVALID_ARGUMENT",
-  "NOT_FOUND",
-  "OUT_OF_WORKSPACE",
-  "VERSION_CONFLICT",
-  "FILE_LEASED",
-  "APPROVAL_DENIED",
-  "UNSUPPORTED_FEATURE",
-  "LIMIT_EXCEEDED",
-  "TIMEOUT",
-  "CANCELLED",
-  "SANDBOX_ERROR",
-  "FORMULA_ERROR",
-  "EXTERNAL_ERROR",
-  "INTERNAL",
-] as const;
-export type ToolErrorCode = (typeof TOOL_ERROR_CODES)[number];
+/**
+ * 模块内部异常码 → 词表码的已登记别名。工具源码里出现的错误码字面量只能是词表码或这里的键
+ * （门禁测试 test/gates/tool-error-codes.test.ts 静态校验），新增别名需同步登记。
+ */
+export const TOOL_ERROR_CODE_ALIASES: Readonly<Record<string, ToolErrorCode>> = {
+  DOC_NOT_FOUND: "NOT_FOUND",
+  BAD_OPERATION: "INVALID_ARGUMENT",
+};
+
+/** 不在词表内的码按语义归入词表（06 §9）；用于运行时写 tool.result 前的边界收敛。 */
+export function toToolErrorCode(code: string): ToolErrorCode {
+  if ((TOOL_ERROR_CODES as readonly string[]).includes(code)) return code as ToolErrorCode;
+  return TOOL_ERROR_CODE_ALIASES[code] ?? "INTERNAL";
+}
 
 // ---------- 记录公共字段 ----------
 
@@ -97,6 +117,7 @@ export const AgentStatus = z.enum([
   "waiting",
   "blocked",
   "paused",
+  "queued",
   "interrupted",
   "failed",
   "closed",
@@ -106,6 +127,15 @@ export type AgentStatus = z.infer<typeof AgentStatus>;
 // ---------- 各类记录的 data schema ----------
 
 /** 随消息携带的选区上下文引用（04 §7.3）：渲染为该轮用户消息前的 <context> 块。 */
+/** 消息附件（01 §3 附件：图片）：内容寻址，blob 存在数据目录 blobs/（10 §2）。 */
+export const AttachmentRef = z.object({
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  mediaType: z.string().min(1),
+  name: z.string().max(255),
+  size: z.int().nonnegative(),
+});
+export type AttachmentRef = z.infer<typeof AttachmentRef>;
+
 export const ContextRef = z.object({
   docId: z.string(),
   rev: z.int().nonnegative(),
@@ -118,6 +148,8 @@ export const RECORD_DATA_SCHEMAS = {
     workspaceId: z.string(),
     title: z.string().nullable().optional(),
     permissionMode: PermissionMode,
+    /** 冻结系统提示词时的规则与技能指纹（04 §7.3）。 */
+    envHashes: z.record(z.string(), z.string()).optional(),
   }),
   "session.updated": z.object({
     title: z.string().optional(),
@@ -135,6 +167,8 @@ export const RECORD_DATA_SCHEMAS = {
     systemPrompt: z.string().optional(),
   }),
   "agent.status": z.object({ status: AgentStatus }),
+  /** 切换代理的模型档案（09 §3 /model 或模型选择器）。 */
+  "agent.updated": z.object({ modelProfileId: z.string().nullable() }),
   "inbox.sent": z.object({
     messageId: z.string(),
     fromAgentId: z.string(),
@@ -154,7 +188,29 @@ export const RECORD_DATA_SCHEMAS = {
     mode: DispatchMode.optional(),
     /** 本轮变化的上下文（04 §7.3），进入上下文时包进 <context> 块。 */
     context: z.array(ContextRef).optional(),
+    /** 图片附件（只存引用；发给模型时由运行时从 blob 存储读出，不支持视觉则以文字说明代替）。 */
+    attachments: z.array(AttachmentRef).optional(),
+    /** 受理时选出的相关记忆（12 §2.3），渲染进 <context>；随日志保存以保证投影可重建。 */
+    memories: z
+      .array(z.object({ id: z.string(), category: z.string(), content: z.string() }))
+      .optional(),
+    /** 用户以 /<技能名> 调用时注入的技能正文（12 §1.4）。 */
+    skill: z.object({ name: z.string(), body: z.string() }).optional(),
   }),
+  /** 追加给代理的环境变化说明（04 §7.3）：规则/技能/权限变化不改写冻结的系统提示词。 */
+  "context.notice": z.object({
+    kind: z.string(),
+    text: z.string(),
+    /** 规则/技能状态指纹：下一条消息前比对，变化才追加说明。 */
+    hash: z.string().optional(),
+  }),
+  /** 代理保存了一条记忆（界面可撤销，12 §2.2）。 */
+  "memory.saved": z.object({
+    memoryId: z.string(),
+    content: z.string(),
+    category: z.string(),
+  }),
+  "memory.deleted": z.object({ memoryId: z.string() }),
   "dispatch.updated": z.object({
     dispatchId: z.string(),
     status: DispatchStatus,
@@ -179,6 +235,8 @@ export const RECORD_DATA_SCHEMAS = {
     reasoning: z.string().optional(),
     reasoningProviderOptions: JsonObject.optional(),
     toolCalls: z.array(ToolCall).optional(),
+    /** 思考时长（毫秒）：本步首个到最后一个思考增量之间的墙钟时间（02 §3.1"思考了 N 秒"）。 */
+    reasoningMs: z.number().int().nonnegative().optional(),
   }),
   "attempt.discarded": z.object({ stepId: z.string() }),
   "tool.intent": z.object({
@@ -195,6 +253,8 @@ export const RECORD_DATA_SCHEMAS = {
     toolName: z.string(),
     status: ToolResultStatus,
     result: ToolResult,
+    /** 工具执行耗时（毫秒），不含审批等待与等待用户回答；未进入执行时缺省。 */
+    durationMs: z.number().int().nonnegative().optional(),
   }),
   "approval.requested": z.object({
     approvalId: z.string(),

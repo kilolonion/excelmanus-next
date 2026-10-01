@@ -90,6 +90,52 @@ describe("版本精确例外", () => {
   });
 });
 
+describe("构建期许可例外（lightningcss）", () => {
+  const mpl = (name: string, versions: string[], license = "MPL-2.0") => ({
+    [license]: [{ name, license, versions }],
+  });
+
+  test("lightningcss@1.32.0 与平台包放行", () => {
+    expect(evaluateLicenses(mpl("lightningcss", ["1.32.0"]))).toEqual([]);
+    expect(evaluateLicenses(mpl("lightningcss-darwin-arm64", ["1.32.0"]))).toEqual([]);
+    expect(evaluateLicenses(mpl("lightningcss-linux-x64-gnu", ["1.32.0"]))).toEqual([]);
+  });
+
+  test("版本不精确匹配或部分版本未覆盖仍失败", () => {
+    expect(evaluateLicenses(mpl("lightningcss", ["1.31.0"]))).toHaveLength(1);
+    expect(evaluateLicenses(mpl("lightningcss", ["1.32.0", "1.33.0"]))).toHaveLength(1);
+  });
+
+  test("许可字符串不一致仍失败", () => {
+    expect(evaluateLicenses(mpl("lightningcss", ["1.32.0"], "GPL-3.0-only"))).toHaveLength(1);
+  });
+
+  test("未列入的 MPL 包仍失败", () => {
+    expect(evaluateLicenses(mpl("mpl-lib", ["1.0.0"]))).toHaveLength(1);
+  });
+
+  test("构建期清单不豁免硬性黑名单", () => {
+    const violations = evaluateLicenses(
+      { MIT: [{ name: "hyperformula", license: "MIT", versions: ["1.0.0"] }] },
+      new Map(),
+      new Map([["hyperformula@1.0.0", { license: "MIT", reason: "x" }]]),
+    );
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain("hyperformula");
+  });
+
+  test("例外包出现在生产依赖中失败；不出现则不新增违规", () => {
+    const full = mpl("lightningcss", ["1.32.0"]);
+    const withProd = evaluateLicenses(full, undefined, undefined, full);
+    expect(withProd).toHaveLength(1);
+    expect(withProd[0]).toContain("生产依赖");
+    const clean = evaluateLicenses(full, undefined, undefined, {
+      MIT: [{ name: "react", license: "MIT", versions: ["19.3.0"] }],
+    });
+    expect(clean).toEqual([]);
+  });
+});
+
 describe("硬性黑名单", () => {
   test("@univerjs-pro/* 即使声明宽松许可证也拒绝", () => {
     const violations = evaluateLicenses(grouped("MIT", ["@univerjs-pro/sheets"]));

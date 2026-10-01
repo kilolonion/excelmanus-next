@@ -24,7 +24,14 @@ export type ToolSpec = z.infer<typeof ToolSpec>;
 
 /** 模型上下文条目（agent_context 投影的 item 格式）。 */
 export const ContextItem = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("user"), text: z.string() }),
+  z.object({
+    kind: z.literal("user"),
+    text: z.string(),
+    /** 图片附件引用；data 只在调用模型前由运行时临时填入（base64），不进 agent_context。 */
+    images: z
+      .array(z.object({ sha256: z.string(), mediaType: z.string(), data: z.string().optional() }))
+      .optional(),
+  }),
   z.object({
     kind: z.literal("assistant"),
     text: z.string().optional(),
@@ -104,6 +111,17 @@ export interface ResolvedModel {
   contextWindow?: number;
   providerOptions?: JsonObject;
   reasoning?: string;
+  /** 额外请求头（09 §3 extraHeaders）。 */
+  extraHeaders?: Record<string, string>;
+  /** 订阅账号（09 §4）：每次请求前取有效访问令牌（必要时自动刷新）。 */
+  subscription?: {
+    accessToken(): Promise<string>;
+    accountId?: string;
+  };
+  /** 视觉能力（09 §6）：false 时图片不发送给模型。 */
+  vision?: boolean;
+  /** 代理设置（09 §7）：由装配层注入的 fetch。 */
+  fetch?: typeof fetch;
 }
 
 /** 网关 → 运行时的流式中立事件（瞬时不入库）。 */

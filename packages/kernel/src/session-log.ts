@@ -43,14 +43,38 @@ function rowToRecord(row: LogRow): LogRecord {
   };
 }
 
+/** 写入前脱敏（10 §4）：对记录数据中的每个字符串值（含对象键）调用 redact。 */
+function redactDeep(value: unknown, redact: (text: string) => string): unknown {
+  if (typeof value === "string") return redact(value);
+  if (Array.isArray(value)) return value.map((v) => redactDeep(v, redact));
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) out[redact(k)] = redactDeep(v, redact);
+    return out;
+  }
+  return value;
+}
+
 export class SessionLog {
   private readonly db: DatabaseSync;
   private readonly bus?: SyncBus;
   private readonly projections: Projection[] = [];
+  private readonly redact?: (text: string) => string;
+  /** 本进程内已删除的会话（id 不复用）。 */
+  private readonly deleted = new Set<string>();
 
-  constructor(db: DatabaseSync, opts: { projections?: Projection[]; bus?: SyncBus } = {}) {
+  constructor(
+    db: DatabaseSync,
+    opts: {
+      projections?: Projection[];
+      bus?: SyncBus;
+      /** 会话日志写入前过滤密钥（10 §4 硬性）：由装配层注入按已登记凭据精确替换的函数。 */
+      redact?: (text: string) => string;
+    } = {},
+  ) {
     this.db = db;
     this.bus = opts.bus;
+    this.redact = opts.redact;
     for (const p of opts.projections ?? []) this.register(p);
   }
 
@@ -62,13 +86,40 @@ export class SessionLog {
     return this.db;
   }
 
-  /** 追加记录：事务内写日志 + 更新全部投影，提交后发布。 */
+  /**
+   * 删除会话（10 §6）：同一事务删除其会话日志并调用全部投影的 clear(sessionId)，
+   * `extra` 在同事务清理非投影的会话数据（租约等）。之后该会话的 append 一律
+   * 拒绝写入（返回空），迟到的 actor 收尾不能把会话"写回来"。
+   */
+  deleteSession(sessionId: string, extra?: (db: DatabaseSync) => void): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare("DELETE FROM session_log WHERE session_id = ?").run(sessionId);
+      for (const p of this.projections) p.clear(this.db, sessionId);
+      extra?.(this.db);
+      this.db.exec("COMMIT");
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+    this.deleted.add(sessionId);
+  }
+
+  isDeleted(sessionId: string): boolean {
+    return this.deleted.has(sessionId);
+  }
+
+  /** 追加记录：事务内写日志 + 更新全部投影，提交后发布。已删除会话拒绝写入。 */
   append(sessionId: string, agentId: string | null, records: NewRecord[]): LogRecord[] {
-    if (records.length === 0) return [];
-    const created = records.map((r) => ({
-      type: r.type,
-      data: parseRecordData(r.type, r.data) as Record<string, unknown>,
-    }));
+    if (records.length === 0 || this.deleted.has(sessionId)) return [];
+    const redact = this.redact;
+    const created = records.map((r) => {
+      const data = parseRecordData(r.type, r.data) as Record<string, unknown>;
+      return {
+        type: r.type,
+        data: redact ? (redactDeep(data, redact) as Record<string, unknown>) : data,
+      };
+    });
     const createdAt = nowIso();
     const out: LogRecord[] = [];
     this.db.exec("BEGIN IMMEDIATE");

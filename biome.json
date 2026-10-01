@@ -8,6 +8,11 @@
   "files": {
     "includes": ["**", "!**/results", "!stitch", "!stitch_", "!**/test/fixtures"]
   },
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
+    }
+  },
   "formatter": {
     "enabled": true,
     "indentStyle": "space",

@@ -4,6 +4,7 @@ import {
   MAX_R,
   type RangeRef,
   type StructuralOp,
+  structuralTouchesInterior,
   transformRange,
 } from "../src/doc-range.ts";
 
@@ -66,6 +67,40 @@ describe("transformRange", () => {
     expect(transformRange(r(0, 0, 1, 1, "other"), op)).toEqual(r(0, 0, 1, 1, "other"));
   });
 
+  test("整行/整列与到上限的区域：插入/删除后不越界（P1-37）", () => {
+    const insC: StructuralOp = { sheetId: S, kind: "insertCols", index: 0, count: 1 };
+    const insR: StructuralOp = { sheetId: S, kind: "insertRows", index: 0, count: 1 };
+    // 整行 1:1 插列后仍是整行；整列 B:B 插行后仍是整列
+    expect(transformRange(r(0, 0, 0, MAX_C), insC)).toEqual(r(0, 0, 0, MAX_C));
+    expect(transformRange(r(0, 1, MAX_R, 1), insR)).toEqual(r(0, 1, MAX_R, 1));
+    // 整列 B:B 插列 → C:C；整行插行 → 下移一行
+    expect(transformRange(r(0, 1, MAX_R, 1), insC)).toEqual(r(0, 2, MAX_R, 2));
+    // 到上限的尾部区域保持到上限
+    expect(transformRange(r(3, 0, MAX_R, 2), insR)).toEqual(r(4, 0, MAX_R, 2));
+    // 被挤出上限 → deleted
+    expect(transformRange(r(MAX_R, 0, MAX_R, 0), insR)).toBe("deleted");
+    // 跨插入点的有界区域夹紧
+    expect(transformRange(r(MAX_R - 1, 0, MAX_R - 1, 0), insR)).toEqual(r(MAX_R, 0, MAX_R, 0));
+    const delR: StructuralOp = { sheetId: S, kind: "deleteRows", index: 2, count: 3 };
+    expect(transformRange(r(0, 1, MAX_R, 1), delR)).toEqual(r(0, 1, MAX_R, 1));
+    expect(transformRange(r(1, 0, MAX_R, 0), delR)).toEqual(r(1, 0, MAX_R, 0));
+  });
+  test("structuralTouchesInterior：内部插入/删除才算", () => {
+    const region = r(2, 0, 8, 0);
+    const at = (kind: StructuralOp["kind"], index: number, count = 1): StructuralOp => ({
+      sheetId: S,
+      kind,
+      index,
+      count,
+    });
+    expect(structuralTouchesInterior(region, at("insertRows", 2))).toBe(false);
+    expect(structuralTouchesInterior(region, at("insertRows", 3))).toBe(true);
+    expect(structuralTouchesInterior(region, at("insertRows", 9))).toBe(false);
+    expect(structuralTouchesInterior(region, at("deleteRows", 0, 2))).toBe(false);
+    expect(structuralTouchesInterior(region, at("deleteRows", 1, 2))).toBe(true);
+    expect(structuralTouchesInterior(region, at("deleteCols", 1, 2))).toBe(false);
+    expect(structuralTouchesInterior(r(0, 1, MAX_R, 1), at("insertRows", 5))).toBe(false);
+  });
   test("renameSheet/insertSheet 不改坐标", () => {
     const region = r(1, 1, 2, 2);
     expect(transformRange(region, { sheetId: S, kind: "renameSheet", index: 0, count: 0 })).toEqual(

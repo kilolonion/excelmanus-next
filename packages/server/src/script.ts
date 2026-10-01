@@ -8,6 +8,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -26,7 +27,7 @@ import {
   type ToolContext,
   type ToolDefinition,
 } from "@excelmanus/kernel";
-import type { ToolResult } from "@excelmanus/protocol";
+import { type ToolResult, toToolErrorCode } from "@excelmanus/protocol";
 import {
   type RunOutcome,
   type SandboxHost,
@@ -105,9 +106,20 @@ class PublishError extends Error {
   }
 }
 
+/** 文本发布清单（暂存目录内），崩溃恢复据此判定哪些文本已被替换。 */
+const TEXT_MANIFEST = "publish-texts.json";
+interface TextPublishEntry {
+  rel: string;
+  /** 发布前目标内容哈希（null = 新建）。 */
+  before: string | null;
+  after: string;
+  /** 回滚副本绝对路径（新建文件为 null）。 */
+  rollbackFile: string | null;
+}
+
 const err = (code: string, message: string, extra?: { data?: unknown }): ToolResult => ({
   status: "error",
-  error: { code, message, retryable: false },
+  error: { code: toToolErrorCode(code), message, retryable: false },
   ...(extra?.data !== undefined ? { data: extra.data } : {}),
 });
 
@@ -186,7 +198,7 @@ wb.edit({path|docId, ops} 或 {path, create:true, ops})、files.find({glob})、f
 写语义：所有修改先暂存，脚本成功结束后先向你展示待发布清单（工作簿区域预览/文本前几行），批准后才逐一发布；
 脚本抛错、超时、被拒绝或被取消时全部丢弃。
 注意：同一工作簿先 wb.edit 再 wb.read/wb.analyze 会报错（读不到未发布修改；请先读后写或分两次运行）；
-发布不保证跨文件断电原子性。`,
+reader 角色的脚本只能读取（wb.edit/files.writeText 会报错）；发布不保证跨文件断电原子性。`,
     input: Input,
     output: z.record(z.string(), z.unknown()),
     effect: "write",
@@ -194,7 +206,7 @@ wb.edit({path|docId, ops} 或 {path, create:true, ops})、files.find({glob})、f
     targets: () => [],
     replay: "unsafe",
     timeoutMs: 310_000,
-    roles: ["main", "lead", "worker"],
+    roles: ["main", "lead", "worker", "reader"],
     async execute(args, ctx): Promise<ToolResult> {
       const a = Input.parse(args);
       const toolCallId = ctx.toolCallId;
@@ -237,6 +249,8 @@ wb.edit({path|docId, ops} 或 {path, create:true, ops})、files.find({glob})、f
       };
 
       const wbEdit = async (rawArgs: unknown): Promise<unknown> => {
+        if (ctx.role === "reader")
+          throw new SdkCallError("INVALID_ARGUMENT", "reader 角色的脚本只能读取");
         if (svc === undefined) throw new SdkCallError("UNSUPPORTED_FEATURE", "workbook 模块未装配");
         const raw = rawArgs as Record<string, unknown> | null;
         if (
@@ -339,6 +353,8 @@ wb.edit({path|docId, ops} 或 {path, create:true, ops})、files.find({glob})、f
       };
 
       const filesWriteText = (rawArgs: unknown): unknown => {
+        if (ctx.role === "reader")
+          throw new SdkCallError("INVALID_ARGUMENT", "reader 角色的脚本只能读取");
         // 桥把多参数调用打成数组：writeText("p","c") → ["p","c"]
         const a2 = Array.isArray(rawArgs)
           ? { path: rawArgs[0], content: rawArgs[1] }
@@ -439,7 +455,7 @@ wb.edit({path|docId, ops} 或 {path, create:true, ops})、files.find({glob})、f
             if (e instanceof SdkCallError) throw e;
             if (e instanceof PathSafetyError) throw new SdkCallError(e.code, e.message);
             if (e instanceof FileOperationError) throw new SdkCallError(e.code, e.message);
-            if (e instanceof DocNotFoundError) throw new SdkCallError("DOC_NOT_FOUND", e.message);
+            if (e instanceof DocNotFoundError) throw new SdkCallError("NOT_FOUND", e.message);
             if (e instanceof z.ZodError) throw new SdkCallError("INVALID_ARGUMENT", e.message);
             throw e;
           }
@@ -537,7 +553,7 @@ wb.edit({path|docId, ops} 或 {path, create:true, ops})、files.find({glob})、f
             const res = await svc!.previewCreate(pd.ops);
             if (res.status !== "ok") {
               throw new PublishError(
-                res.error?.code ?? "BAD_OPERATION",
+                res.error?.code ?? "INVALID_ARGUMENT",
                 res.error?.message ?? "工作簿预览失败",
               );
             }
@@ -636,6 +652,8 @@ wb.edit({path|docId, ops} 或 {path, create:true, ops})、files.find({glob})、f
         const createdDocs: Array<{ docId: string; path: string }> = [];
         const published: Array<Record<string, unknown>> = [];
         const replacedTexts: Array<{ rel: string; rollbackFile: string }> = [];
+        const textManifest: TextPublishEntry[] = [];
+        const manifestFile = () => internalPath(root, `${stagingDirRel}/${TEXT_MANIFEST}`);
         const createdTexts: string[] = [];
         const docRevs: Record<string, number> = {};
         const root = ctx.workspaceRoot;
@@ -708,12 +726,17 @@ wb.edit({path|docId, ops} 或 {path, create:true, ops})、files.find({glob})、f
               throw new PublishError("VERSION_CONFLICT", `文件已被外部修改：${rel}`);
             }
             const bytes = readFileSync(t.stagedFile);
-            if (current !== null) {
+            const rollbackFile = current !== null ? `${t.stagedFile}.orig` : null;
+            if (current !== null && rollbackFile !== null) {
               ctx.backups.ensureBackup(rel);
-              const rollbackFile = `${t.stagedFile}.orig`;
               copyFileSync(abs, rollbackFile);
               replacedTexts.push({ rel, rollbackFile });
             }
+            // 04 §8.2：发布前落一份清单（目标前后哈希 + 回滚副本），崩溃恢复据此判定文本是否已改
+            textManifest.push({ rel, before: current, after: sha256(bytes), rollbackFile });
+            // 临时文件 + rename：崩溃时清单要么是旧版本要么是新版本，不会半截
+            writeFileSync(`${manifestFile()}.tmp`, JSON.stringify(textManifest), "utf8");
+            renameSync(`${manifestFile()}.tmp`, manifestFile());
             atomicWrite(root, rel, bytes, current);
             if (t.created) ctx.backups.markCreated(rel);
             createdTexts.push(...(t.created ? [rel] : []));
@@ -763,7 +786,7 @@ wb.edit({path|docId, ops} 或 {path, create:true, ops})、files.find({glob})、f
             return {
               status: "uncertain",
               error: {
-                code,
+                code: toToolErrorCode(code),
                 message: `发布失败且回滚不完整：${message}`,
                 retryable: false,
               },
@@ -810,34 +833,69 @@ wb.edit({path|docId, ops} 或 {path, create:true, ops})、files.find({glob})、f
         }
       }
     },
-    /** 04 §8.2：有提交 → uncertain；无提交 → not_executed；都清暂存目录。 */
+    /**
+     * 04 §8.2：工作簿看 doc_ops、文本看发布清单与目标当前哈希；有任何已发布或
+     * 无法判定的目标 → uncertain 且保留暂存目录（含 .orig 回滚副本）；都没有 → not_executed 并清暂存。
+     */
     recover(info) {
       const row = deps.db
         .prepare(
           "SELECT w.path FROM sessions s JOIN workspaces w ON w.id = s.workspace_id WHERE s.id = ?",
         )
         .get(info.sessionId) as { path: string } | undefined;
-      if (row) {
-        try {
-          rmSync(join(row.path, ".excelmanus", "tmp", `script-${info.toolCallId}`), {
-            recursive: true,
-            force: true,
-          });
-        } catch {
-          // 清理失败不阻断恢复判定
+      const stagingDir = row
+        ? join(row.path, ".excelmanus", "tmp", `script-${info.toolCallId}`)
+        : undefined;
+      const textsChanged: string[] = [];
+      let manifestUnreadable = false;
+      if (row && stagingDir) {
+        let manifest: TextPublishEntry[] = [];
+        const manifestPath = join(stagingDir, TEXT_MANIFEST);
+        if (existsSync(manifestPath)) {
+          try {
+            const parsed: unknown = JSON.parse(readFileSync(manifestPath, "utf8"));
+            if (!Array.isArray(parsed)) throw new Error("manifest not array");
+            manifest = parsed as TextPublishEntry[];
+          } catch {
+            // 清单存在却读不出：无法判定哪些文本已替换 → fail-closed（按 uncertain，保留暂存）
+            manifestUnreadable = true;
+          }
+        }
+        for (const entry of manifest) {
+          let current: string | null | false;
+          try {
+            const { abs } = resolveWorkspacePath(row.path, entry.rel);
+            current = existsSync(abs) ? sha256(readFileSync(abs)) : null;
+          } catch {
+            current = false;
+          }
+          // 仍是发布前内容 → 未改；否则（已是新内容或第三种状态）→ 已改/不确定
+          if (current !== entry.before) textsChanged.push(entry.rel);
         }
       }
       const committed = svc?.committedByToolCall(info.toolCallId);
-      if (committed) {
+      if (committed || textsChanged.length > 0 || manifestUnreadable) {
         return {
           status: "uncertain",
           error: {
-            code: "UNCERTAIN",
-            message: "脚本发布可能部分完成，请重新读取相关文件后再继续",
+            code: "INTERNAL",
+            message:
+              "进程中断时脚本发布可能部分完成，请重新读取相关文件后再继续；文本回滚副本保留在暂存区",
             retryable: false,
           },
-          data: { committed },
+          data: {
+            ...(committed ? { committed } : {}),
+            ...(textsChanged.length > 0 ? { textsChanged } : {}),
+            ...(manifestUnreadable ? { manifestUnreadable: true } : {}),
+          },
         };
+      }
+      if (stagingDir) {
+        try {
+          rmSync(stagingDir, { recursive: true, force: true });
+        } catch {
+          // 清理失败不影响判定
+        }
       }
       return {
         status: "not_executed",

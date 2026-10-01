@@ -31,7 +31,7 @@
 
 | 依赖 | 用途 | 当前阻断 |
 | --- | --- | --- |
-| lightningcss（连带 Vite 8、Tailwind 4 常用构建链） | CSS 转换、压缩、浏览器兼容处理 | MPL-2.0 不在白名单；Tailwind 自身不是禁用包 |
+| lightningcss（连带 Vite 8、Tailwind 4 常用构建链） | CSS 转换、压缩、浏览器兼容处理 | MPL-2.0 不在白名单；Tailwind 自身不是禁用包。2026-10-01 负责人批准 lightningcss@1.32.0 为构建期例外（精确版本、禁止进入生产依赖），见 ADR 0011 |
 | caniuse-lite（连带 Babel/React Babel 插件链） | 浏览器支持数据库，为兼容转换提供依据 | CC-BY-4.0 不在白名单；现已选 SWC 替代 |
 | spdx-exceptions（连带 spdx-expression-parse） | 标准许可证例外数据，让成熟解析器识别 SPDX 表达式 | CC-BY-3.0 不在白名单 |
 | @univerjs-pro/* | 商业 xlsx 导入导出、图表、协同等 | AGENTS.md 与 03 §10 硬性禁用，不能仅凭包元数据允许 |

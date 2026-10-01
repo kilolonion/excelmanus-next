@@ -1,0 +1,25 @@
+{
+  "note": "补充 models.dev 缺失或不准确的条目；每条注明来源与核实日期（09 §5）",
+  "items": [
+    {
+      "provider": "chatgpt",
+      "model": "gpt-5.1-codex",
+      "contextWindow": 272000,
+      "tools": true,
+      "vision": true,
+      "reasoning": true,
+      "sourceUrl": "https://github.com/openai/codex",
+      "verifiedAt": "2026-10-01"
+    },
+    {
+      "provider": "chatgpt",
+      "model": "gpt-5.1",
+      "contextWindow": 272000,
+      "tools": true,
+      "vision": true,
+      "reasoning": true,
+      "sourceUrl": "https://github.com/openai/codex",
+      "verifiedAt": "2026-10-01"
+    }
+  ]
+}

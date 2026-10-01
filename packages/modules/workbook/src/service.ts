@@ -1,9 +1,9 @@
 // DocumentService（07 §3）：活文档 actor——每个打开的文档持有一个 Univer 无头
 // 实例（主线程，ADR 0003），提交串行处理，修订号严格递增，doc_ops 追加写日志。
 // 快照定影：createWorkbook 前深拷贝；对外 snapshot() 一律返回 getSnapshot 深拷贝。
-// 冲突检测：baseRev 之后的写集 ∩（变换后的读集 ∪ 写集），结构操作按 03 §6.1 变换。
+// 冲突检测：读集区域各带读取修订，与之后修订的写集在 head 坐标系下求交（03 §6.1）。
 
-import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, rmSync, type Stats, statSync } from "node:fs";
 import { extname } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import {
@@ -12,11 +12,15 @@ import {
   MAX_R,
   newId,
   nowIso,
+  parseRange,
   type RangeRef,
+  rangeContains,
   rangeIntersection,
   rangeRefToA1,
   type StructuralOp,
+  structuralTouchesInterior,
   transformRange,
+  transformRangeAll,
 } from "@excelmanus/core";
 import {
   atomicWrite,
@@ -27,9 +31,15 @@ import {
   resolveWorkspacePath,
   sha256,
 } from "@excelmanus/kernel";
-import type { DocKind, FileIntentMeta, ToolResult } from "@excelmanus/protocol";
+import type { BackupInfo, DocKind, FileIntentMeta, ToolResult } from "@excelmanus/protocol";
 import type { IWorkbookData, IWorksheetData } from "@univerjs/core";
-import { assertWritable, exportXlsx, minimalXlsx, verifyXlsx } from "./checkpoint.ts";
+import {
+  assertCellsWritable,
+  assertWritable,
+  exportXlsx,
+  minimalXlsx,
+  pendingChanges,
+} from "./checkpoint.ts";
 import { exportCsv, importCsv } from "./csv.ts";
 import {
   type Booted,
@@ -43,6 +53,7 @@ import { makeInverse, type Snap, snapshotRestoreMutations } from "./inverse.ts";
 import {
   type ChangeOp,
   type CompiledOps,
+  changeOpTarget,
   compileOps,
   OpCompileError,
   transformChangeOp,
@@ -55,6 +66,16 @@ import { type ImportedWorkbook, importXlsx } from "./xlsx.ts";
 const MAX_SUBMIT_CELLS = 200_000;
 const MAX_PREVIEW_CELLS = 2000;
 const MAX_CONFLICT_CELLS = 50;
+/** ADR 0002：公式数不超过该值的工作簿，提交同步等待重算并把结果并入本修订。 */
+const FORMULA_SYNC_THRESHOLD = 5000;
+const SYNC_CALC_MS = 3000;
+const RECALC_MS = 30_000;
+/** 超过该单元格数的工作簿不在提交路径做整本导出预检（导出只在检查点做）。 */
+const PRECHECK_MAX_CELLS = 100_000;
+const MAX_FORMULA_VALUES = 50;
+const EXTERNAL_CONFLICT =
+  "外部修改与未写回修订冲突，写回已暂停：请选择保留应用中的版本或载入外部版本";
+const SOURCE_UNREADABLE = "源文件暂时无法读取，写回将稍后重试";
 
 export interface DocumentMeta {
   id: string;
@@ -65,6 +86,10 @@ export interface DocumentMeta {
   createdAt: string;
   checkpointRev?: number;
   checkpointError?: string;
+  /** 外部修改与未写回修订冲突，写回已暂停，等用户二选一（07 §5）。 */
+  externalConflict?: boolean;
+  /** 有尚未作为 engine 修订提交的公式重算（ADR 0002）。 */
+  calcPending?: boolean;
 }
 
 export class DocNotFoundError extends Error {
@@ -148,8 +173,17 @@ export interface SubmitSource {
 
 export interface SubmitBatch {
   baseRev: number;
-  /** 提交者依据读过的区域；省略时用户来源用其写集（= 读集即写集）。 */
-  readSet?: RangeRef[];
+  /**
+   * 提交者依据读过的区域（省略 = 只按写集判定；用户编辑的读集即写集）。
+   * 每个区域可带读取修订 `rev`（坐标处于该修订的坐标系，缺省 = baseRev）；
+   * `sheetName` 表示 sheetId 待按表名解析（从会话上下文重建的读集）。
+   */
+  readSet?: Array<RangeRef & { rev?: number; sheetName?: string; coarse?: boolean }>;
+  /**
+   * 代理自动读集路径：每个 op 的坐标依据修订按覆盖其目标的最近读取推定（baseRev 视为最近读取修订）；
+   * 目标不在读集内、且其坐标在最早与最近读取之间被他人插删改变 → 冲突（依据不明确）。
+   */
+  perOpBase?: boolean;
   source: SubmitSource;
   sessionId?: string;
   toolCallId?: string;
@@ -182,6 +216,10 @@ export interface SubmitOk {
   writeSet: DocWriteSet;
   mutations: DocMutation[];
   formulas: string[];
+  /** ADR 0002：computed = 本次写入引起的重算已完成并并入本修订；pending = 稍后以 engine 修订到达。 */
+  calc: "computed" | "pending";
+  /** 写入公式单元格的计算值（sheet!A1 → 值；最多 50 个；pending 时不给）。 */
+  formulaValues?: Record<string, unknown>;
   preview?: PreviewRegion[];
   backupPath?: string;
 }
@@ -231,7 +269,16 @@ interface DocEntry {
   checkpointHash: string;
   checkpointRev: number;
   timer?: ReturnType<typeof setTimeout>;
-  paused?: boolean;
+  /** 外部修改与未写回修订冲突（07 §5）：写回暂停，等用户二选一后清除。 */
+  external?: { hash: string };
+  /** 最近确认过的源文件签名（size/mtime/ino）：未变时跳过整文件读取与哈希。 */
+  fileSig?: string;
+  /** 源文件暂时不可读（只提示并稍后重试，不暂停）。 */
+  readError?: boolean;
+  /** 重启后冲突：imported 是外部文件的包、基线是外部快照，下次检查点按快照差异整体写回。 */
+  rebased?: boolean;
+  /** 工作簿公式数（导入计数 + 之后写入的公式），决定是否同步等待重算。 */
+  formulaCount: number;
 }
 
 interface DocRow {
@@ -292,6 +339,7 @@ export class DocumentService {
 
   /** 打开（或复开）工作区内文档：导入 → 建 Univer 实例 → 重放 doc_ops → {docId, rev}。 */
   async open(workspaceId: string, workspaceRoot: string, relPath: string): Promise<OpenedDoc> {
+    this.assertWorkspaceRoot(workspaceId, workspaceRoot);
     const { abs, rel } = resolveWorkspacePath(workspaceRoot, relPath);
     let st: ReturnType<typeof statSync>;
     try {
@@ -317,7 +365,7 @@ export class DocumentService {
       .get(workspaceId, rel) as DocRow | undefined;
     const cached = existing ? await this.docs.get(existing.id) : undefined;
     if (cached) {
-      await this.enqueue(cached, () => this.checkExternal(cached));
+      await this.enqueue(cached, () => this.checkExternal(cached, true));
       return { meta: cached.meta, imported: cached.imported };
     }
     const now = nowIso();
@@ -358,16 +406,32 @@ export class DocumentService {
         .run(checkpointRev, hash, savedSnapshot, docId);
       this.db.prepare("DELETE FROM doc_checkpoints WHERE doc_id=?").run(docId);
     }
-    if (savedHash && savedHash !== hash && headRev > checkpointRev)
-      throw new FileOperationError("VERSION_CONFLICT", "外部文件与未写回日志冲突，已暂停写回");
-    if (savedHash === hash && savedSnapshot) {
+    // 外部修改 + 未写回修订（重启后）：以最后检查点快照 + 重放还原应用中的版本，
+    // 文档进入"待用户二选一"状态；保真写回以外部文件的包为底（原始包已不在磁盘上）。
+    const conflict = Boolean(savedHash && savedHash !== hash && headRev > checkpointRev);
+    let externalBaseline: IWorkbookData | undefined;
+    if (conflict) {
+      if (!savedSnapshot)
+        throw new FileOperationError(
+          "VERSION_CONFLICT",
+          "外部文件与未写回日志冲突，且缺少检查点快照，无法还原应用中的版本",
+        );
+      const snap = JSON.parse(savedSnapshot) as IWorkbookData;
+      externalBaseline = rekeyLike(imported.snapshot, snap);
+      this.remapPreservation(imported, snap);
+      imported.snapshot = snap;
+    } else if (savedHash === hash && savedSnapshot) {
       const snap = JSON.parse(savedSnapshot) as IWorkbookData;
       this.remapPreservation(imported, snap);
       imported.snapshot = snap;
     }
+    // 首次打开即保存检查点快照：之后若外部修改与未写回修订冲突（含重启后），能还原应用版本
+    const storeSnapshot = !savedSnapshot && (!savedHash || savedHash === hash);
     this.db
-      .prepare("UPDATE documents SET checkpoint_hash=COALESCE(checkpoint_hash,?) WHERE id=?")
-      .run(hash, docId);
+      .prepare(
+        "UPDATE documents SET checkpoint_hash=COALESCE(checkpoint_hash,?), checkpoint_snapshot=COALESCE(checkpoint_snapshot,?) WHERE id=?",
+      )
+      .run(hash, storeSnapshot ? JSON.stringify(imported.snapshot) : null, docId);
     const entry = await this.materialize(
       docId,
       workspaceId,
@@ -378,15 +442,22 @@ export class DocumentService {
       headRev,
       existing?.created_at ?? now,
       workspaceRoot,
-      hash,
+      conflict ? (savedHash as string) : hash,
     );
+    if (externalBaseline) {
+      entry.checkpointSnapshot = externalBaseline;
+      entry.rebased = true;
+      await this.enqueue(entry, () => this.checkExternal(entry, true));
+    } else entry.fileSig = fileSig(st);
     if (savedHash && savedHash !== hash && headRev === checkpointRev)
       await this.enqueue(entry, () => this.reloadExternal(entry, bytes));
-    if (headRev > checkpointRev && !entry.paused) {
+    if (headRev > checkpointRev && !entry.external) {
       try {
         await this.enqueue(entry, () => this.doCheckpoint(entry));
-      } catch {
-        this.schedule(entry, 5000);
+      } catch (e) {
+        // 启动恢复同样不应对确定性的保真拒绝进行无限重试。
+        if (!(e instanceof FileOperationError && e.code === "UNSUPPORTED_FEATURE"))
+          this.schedule(entry, 5000);
       }
     }
     return { meta: entry.meta, imported: entry.imported };
@@ -429,6 +500,9 @@ export class DocumentService {
           }
         }
       }
+      // 回放引起的重算只是重现日志中已有的结果，不另记 engine 修订
+      if (ops.length > 0) await boot.waitCalc(SYNC_CALC_MS);
+      capture.takeEngineResults();
       const entry: DocEntry = {
         meta: { id: docId, workspaceId, path, kind, rev: headRev, createdAt },
         imported,
@@ -438,7 +512,9 @@ export class DocumentService {
         checkpointSnapshot,
         checkpointHash: hash,
         checkpointRev,
+        formulaCount: Object.values(imported.formulaCounts ?? {}).reduce((s, n) => s + n, 0),
       };
+      this.watchCalc(entry);
       entry.meta.checkpointRev = checkpointRev;
       this.metas.set(docId, entry.meta);
       if (!this.watchTimer) {
@@ -455,6 +531,28 @@ export class DocumentService {
       this.docs.delete(docId);
     });
     return task;
+  }
+
+  /**
+   * 调用方根目录必须是该工作区登记的根目录：docId 只能在其所属工作区内打开，
+   * 不能被绑到其他工作区的同名文件（P1-32）。未装配工作区表时（独立使用文档服务）不检查。
+   */
+  private assertWorkspaceRoot(workspaceId: string, workspaceRoot: string): void {
+    let row: { path: string } | undefined;
+    try {
+      row = this.db.prepare("SELECT path FROM workspaces WHERE id = ?").get(workspaceId) as
+        | { path: string }
+        | undefined;
+    } catch {
+      return;
+    }
+    let same = false;
+    try {
+      same = row !== undefined && realpathSync(row.path) === realpathSync(workspaceRoot);
+    } catch {
+      same = false;
+    }
+    if (!same) throw new PathSafetyError("OUT_OF_WORKSPACE", "文档不属于当前工作区");
   }
 
   /** 拿活文档；未在内存时按 documents 行从工作区重新导入并重放。 */
@@ -573,29 +671,36 @@ export class DocumentService {
     } catch {
       return { ok: false, code: "INTERNAL", message: "inverse 记录损坏" };
     }
-    const entry = await this.entry(docId, workspaceRoot);
-    return this.enqueue(entry, () => {
-      const mutations =
-        inv.mutations ??
-        (inv.snapshot !== undefined
-          ? snapshotRestoreMutations(
-              inv.snapshot as Snap,
-              entry.live.save() as Snap,
-              entry.live.unitId,
-            )
-          : undefined);
-      if (mutations === undefined) {
-        return { ok: false, code: "UNSUPPORTED_FEATURE", message: "该修订没有可回放的逆操作" };
-      }
-      return this.doSubmit(entry, {
-        baseRev: entry.meta.rev,
-        readSet: [],
-        source,
-        sessionId,
-        toolCallId,
-        mutations,
+    try {
+      const entry = await this.entry(docId, workspaceRoot);
+      return await this.enqueue(entry, (): Promise<SubmitResult> | SubmitResult => {
+        const mutations =
+          inv.mutations ??
+          (inv.snapshot !== undefined
+            ? snapshotRestoreMutations(
+                inv.snapshot as Snap,
+                entry.live.save() as Snap,
+                entry.live.unitId,
+              )
+            : undefined);
+        if (mutations === undefined) {
+          return { ok: false, code: "UNSUPPORTED_FEATURE", message: "该修订没有可回放的逆操作" };
+        }
+        // 逆操作还原的是曾经通过可写性判定的状态：跳过面向新编辑的 mutation 白名单，
+        // 保真性仍由导出预检/检查点保证
+        return this.doSubmit(
+          entry,
+          { baseRev: entry.meta.rev, readSet: [], source, sessionId, toolCallId, mutations },
+          { revert: true },
+        );
       });
-    });
+    } catch (e) {
+      return {
+        ok: false,
+        code: e instanceof FileOperationError ? (e.code as SubmitFail["code"]) : "INTERNAL",
+        message: e instanceof FileOperationError ? e.message : "回退修订失败",
+      };
+    }
   }
 
   meta(docId: string): DocumentMeta | undefined {
@@ -623,44 +728,90 @@ export class DocumentService {
       });
   }
 
-  private async doSubmit(entry: DocEntry, batch: SubmitBatch): Promise<SubmitResult> {
+  private async doSubmit(
+    entry: DocEntry,
+    batch: SubmitBatch,
+    opts: { revert?: boolean } = {},
+  ): Promise<SubmitResult> {
     await this.checkExternal(entry);
-    if (entry.paused)
+    if (entry.external)
       return {
         ok: false,
         code: "VERSION_CONFLICT",
-        message: "文件被外部修改且有未写回修订，已暂停写入",
+        message: `${EXTERNAL_CONFLICT}；选择前暂停写入`,
       };
+    // 之前异步到达的引擎结果先成为独立修订，本次冲突检查能看到它
+    await this.commitEngine(entry);
+    const recalc = batch.ops?.some((o) => o.op === "recalculate") === true;
+    if (recalc && batch.ops?.every((o) => o.op === "recalculate")) {
+      const done = await entry.live.boot.waitCalc(RECALC_MS);
+      await this.commitEngine(entry);
+      if (done) delete entry.meta.calcPending;
+      return {
+        ok: true,
+        docId: entry.meta.id,
+        rev: entry.meta.rev,
+        dryRun: batch.dryRun === true,
+        writeSet: { ranges: [], structural: [] },
+        mutations: [],
+        formulas: [],
+        calc: done ? "computed" : "pending",
+      };
+    }
     const { live, meta } = entry;
     const head = meta.rev;
     if (!Number.isInteger(batch.baseRev) || batch.baseRev < 0 || batch.baseRev > head)
       return { ok: false, code: "VERSION_CONFLICT", message: "baseRev 不在当前修订范围" };
 
-    // ---- 0. baseRev 之后的结构操作先把本次写入坐标平移到当前快照 ----
-    const history = this.opsAfter(meta.id, batch.baseRev).filter((r) => r.rev <= head);
+    // ---- 0. 各 op 坐标依据修订之后的结构操作先把本次写入坐标平移到当前快照 ----
+    let snapSheets: { order: string[]; sheets: Record<string, IWorksheetData> } | undefined;
+    const sheetIdOf = (nameOrId: string | undefined): string | undefined => {
+      if (!snapSheets) {
+        const snap = live.save();
+        snapSheets = {
+          order: snap.sheetOrder ?? [],
+          sheets: (snap.sheets ?? {}) as Record<string, IWorksheetData>,
+        };
+      }
+      if (nameOrId === undefined) return snapSheets.order[0];
+      if (snapSheets.sheets[nameOrId]) return nameOrId;
+      for (const [id, s] of Object.entries(snapSheets.sheets)) {
+        if (s.name === nameOrId) return id;
+      }
+      return undefined;
+    };
+    let opBases: number[] | undefined;
+    if (batch.perOpBase && batch.ops !== undefined && batch.readSet !== undefined) {
+      const inferred = this.inferOpBases(entry, batch, batch.ops, sheetIdOf);
+      if (!Array.isArray(inferred)) return inferred;
+      opBases = inferred;
+    }
+    const minBase = Math.min(batch.baseRev, ...(opBases ?? []));
+    const history = this.opsAfter(meta.id, minBase).filter((r) => r.rev <= head);
     const structurals = history.flatMap((h) => h.writeSet.structural);
+    const structuralsAfter = (rev: number) =>
+      rev === minBase
+        ? structurals
+        : history.filter((h) => h.rev > rev).flatMap((h) => h.writeSet.structural);
     let opsIn = batch.ops;
     let mutIn = batch.mutations;
     if (structurals.length > 0) {
-      const snap = live.save();
-      const sheets = (snap.sheets ?? {}) as Record<string, IWorksheetData>;
-      const sheetIdOf = (nameOrId: string | undefined): string | undefined => {
-        if (nameOrId === undefined) return snap.sheetOrder?.[0];
-        if (sheets[nameOrId]) return nameOrId;
-        for (const [id, s] of Object.entries(sheets)) {
-          if (s.name === nameOrId) return id;
-        }
-        return undefined;
-      };
       if (batch.ops !== undefined) {
         const mapped: ChangeOp[] = [];
-        for (const op of batch.ops) {
-          const t = transformChangeOp(op, structurals, sheetIdOf);
-          if (t === "deleted") {
+        for (const [i, op] of batch.ops.entries()) {
+          const t = transformChangeOp(
+            op,
+            structuralsAfter(opBases?.[i] ?? batch.baseRev),
+            sheetIdOf,
+          );
+          if (t === "deleted" || t === "ambiguous") {
             return {
               ok: false,
               code: "VERSION_CONFLICT",
-              message: "目标行/列/工作表已被 baseRev 之后的结构修订删除",
+              message:
+                t === "deleted"
+                  ? "目标行/列/工作表已被 baseRev 之后的结构修订删除"
+                  : "目标区域内部在 baseRev 之后被插入或删除了行列，无法确定性平移，请重读后再写",
               conflicts: [
                 {
                   rev: history[history.length - 1]?.rev ?? head,
@@ -729,11 +880,8 @@ export class DocumentService {
       compiled !== undefined
         ? { ranges: [...compiled.ranges], structural: [...compiled.structural] }
         : deriveWriteSetAll(mutations);
-    /** 读集默认：用户 mutation 提交 = 其写集本身；ops 提交未显式给读集则只按写集判冲突。 */
-    const readSet = batch.readSet ?? (batch.mutations !== undefined ? writeSet.ranges : []);
-
-    // ---- 2. 冲突检查（读集变换；写集已在编译前平移；同源修订不算冲突） ----
-    const conflict = this.checkConflicts(entry, history, batch, readSet, writeSet);
+    // ---- 2. 冲突检查（统一在 head 坐标系；写集已在编译前平移；同源修订不算冲突） ----
+    const conflict = this.checkConflicts(entry, batch, batch.readSet ?? [], writeSet, minBase);
     if (conflict) return conflict;
 
     // ---- 3. 20 万格上限（无界区域不计入） ----
@@ -748,7 +896,8 @@ export class DocumentService {
       };
     }
 
-    assertWritable(entry.imported, writeSet.ranges, opsIn, mutations, live.save());
+    if (!opts.revert)
+      assertWritable(entry.imported, writeSet.ranges, opsIn, mutations, live.save());
     let backupPath: string | undefined;
     if (!batch.dryRun && (batch.source.kind === "agent" || batch.source.kind === "script")) {
       const bound = this.backups.bind({
@@ -777,6 +926,7 @@ export class DocumentService {
         writeSet,
         mutations: [],
         formulas: [],
+        calc: "computed",
         preview: [],
       };
     }
@@ -822,14 +972,24 @@ export class DocumentService {
           }
         }
       }
-    } catch {
+    } catch (e) {
       // 命令抛错：交出给下面统一回滚
-      execError ??= "命令执行失败";
+      execError ??= `命令执行失败：${e instanceof Error ? e.message : String(e)}`;
     }
     if (execError !== undefined) {
       await this.restore(entry, preSnap);
       return { ok: false, code: "BAD_OPERATION", message: execError };
     }
+
+    // ---- 5b. 公式重算（ADR 0002）：小工作簿同步等待，结果并入本修订；否则标 pending ----
+    const formulas = compiled !== undefined ? compiled.formulas : collectFormulas(entry, emitted);
+    const formulaTotal = entry.formulaCount + formulas.length;
+    let calc: SubmitOk["calc"] = "computed";
+    if (formulaTotal > 0 && (recalc || formulaTotal <= FORMULA_SYNC_THRESHOLD)) {
+      if (!(await live.boot.waitCalc(recalc ? RECALC_MS : SYNC_CALC_MS))) calc = "pending";
+    } else if (formulaTotal > 0) calc = "pending";
+    const engineResults = withFormulas(live.capture.takeEngineResults(), live.save());
+    emitted.push(...engineResults);
 
     const postSnap = live.save();
     try {
@@ -859,7 +1019,35 @@ export class DocumentService {
             }
         }
         exportCsv(postSnap, entry.imported.csv);
-      } else exportXlsx(entry.imported, postSnap, entry.checkpointSnapshot);
+      } else {
+        const changes = pendingChanges([
+          ...this.opsAfter(meta.id, entry.checkpointRev),
+          {
+            writeSet: {
+              ranges: writeSet.ranges,
+              structural: [...writeSet.structural, ...deriveWriteSetAll(emitted).structural],
+            },
+            sourceKind: batch.source.kind,
+          },
+        ]);
+        // 整本导出预检只对小工作簿做；大表导出只在检查点（P1-31，提交确认不被阻塞），
+        // 但仍对本次写集命中的格做同规则的轻量保真检查，做不到就在提交时拒绝
+        if (cellTotal(entry.imported) <= PRECHECK_MAX_CELLS)
+          exportXlsx(
+            entry.imported,
+            postSnap,
+            entry.checkpointSnapshot,
+            entry.rebased ? undefined : changes,
+          );
+        else
+          assertCellsWritable(
+            entry.imported,
+            postSnap,
+            entry.checkpointSnapshot,
+            writeSet.ranges,
+            entry.rebased ? new Set() : changes.structural,
+          );
+      }
     } catch (e) {
       await this.restore(entry, preSnap);
       return {
@@ -870,7 +1058,10 @@ export class DocumentService {
       };
     }
     // 实际发射的结构操作补入写集（含引擎生成的真实 sheet id）
-    const emittedDerived = deriveWriteSetAll(emitted);
+    // 并入的引擎结果是派生值，不计入作者写集（不影响冲突判定与检查点"已修改格"）
+    const emittedDerived = deriveWriteSetAll(
+      emitted.slice(0, emitted.length - engineResults.length),
+    );
     const structural = mergeStructural(
       batch.ops !== undefined ? writeSet.structural : [],
       emittedDerived.structural,
@@ -892,7 +1083,7 @@ export class DocumentService {
     const inverse = needsSnapshot
       ? { needsSnapshot: true as const, snapshot: preSnap }
       : { mutations: inverseMutations };
-    const formulas = compiled !== undefined ? compiled.formulas : collectFormulas(entry, emitted);
+    const formulaValues = calc === "computed" ? readFormulaValues(formulas, postSnap) : undefined;
 
     // ---- 6. dryRun：读预览 → 逆操作回滚；不写日志不广播 ----
     if (batch.dryRun) {
@@ -906,6 +1097,8 @@ export class DocumentService {
         writeSet: finalWriteSet,
         mutations: emitted,
         formulas,
+        calc,
+        ...(formulaValues ? { formulaValues } : {}),
         preview,
       };
     }
@@ -947,6 +1140,9 @@ export class DocumentService {
       };
     }
     meta.rev = rev;
+    entry.formulaCount += formulas.length;
+    if (calc === "pending") meta.calcPending = true;
+    else delete meta.calcPending;
     this.onRevision?.(meta.id, rev, `${batch.source.kind}:${batch.source.id}`, emitted);
     this.schedule(entry, batch.source.kind === "user" ? 2000 : 1000);
     return {
@@ -957,77 +1153,281 @@ export class DocumentService {
       writeSet: finalWriteSet,
       mutations: emitted,
       formulas,
+      calc,
+      ...(formulaValues ? { formulaValues } : {}),
       ...(backupPath ? { backupPath } : {}),
     };
   }
 
+  // ---------- 公式引擎修订（ADR 0002） ----------
+
+  /** 引擎在窗口外算完时，把结果排进文档 actor 作为 engine 来源修订提交。 */
+  private watchCalc(entry: DocEntry): void {
+    entry.live.capture.onEngineResults = () => {
+      void this.enqueue(entry, () => this.commitEngine(entry)).catch(() => {});
+    };
+  }
+
+  /** 异步到达的公式结果作为后续修订提交（source.kind = "engine"），走同一日志事务与广播。 */
+  private async commitEngine(entry: DocEntry): Promise<void> {
+    const raw = entry.live.capture.takeEngineResults();
+    if (raw.length === 0) return;
+    const results = withFormulas(raw, entry.live.save());
+    const { meta } = entry;
+    const rev = meta.rev + 1;
+    const writeSet: DocWriteSet = { ranges: deriveWriteSetAll(results).ranges, structural: [] };
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO doc_ops (doc_id, rev, base_rev, source_kind, source_id, session_id, tool_call_id, write_set, mutations, inverse, created_at)
+           VALUES (?, ?, ?, 'engine', 'formula', NULL, NULL, ?, ?, ?, ?)`,
+        )
+        .run(
+          meta.id,
+          rev,
+          meta.rev,
+          JSON.stringify(writeSet),
+          JSON.stringify(results),
+          // 引擎结果是派生值：回退其输入后引擎会重算，自身无需逆操作
+          JSON.stringify({ mutations: [] }),
+          nowIso(),
+        );
+      this.db
+        .prepare("UPDATE documents SET head_rev = ?, rev = ? WHERE id = ?")
+        .run(rev, rev, meta.id);
+      this.db.exec("COMMIT");
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
+    }
+    meta.rev = rev;
+    delete meta.calcPending;
+    this.onRevision?.(meta.id, rev, "engine:formula", results);
+    this.schedule(entry, 1000);
+  }
+
+  /** ADR 0002 recalculate：等待进行中的重算完成并提交引擎修订。 */
+  async recalculate(
+    docId: string,
+    workspaceRoot: string,
+    timeoutMs = RECALC_MS,
+  ): Promise<{ rev: number; calc: SubmitOk["calc"] }> {
+    const entry = await this.entry(docId, workspaceRoot);
+    return this.enqueue(entry, async () => {
+      const done = await entry.live.boot.waitCalc(timeoutMs);
+      await this.commitEngine(entry);
+      if (done) delete entry.meta.calcPending;
+      return { rev: entry.meta.rev, calc: done ? "computed" : "pending" };
+    });
+  }
+
   /**
-   * 对 baseRev < rev ≤ head 的每个历史修订：先用其 structural 依次变换本次
-   * 读集与写集（变换出 "deleted" → 拒绝），再检查其写集 ∩ 变换后的（读集 ∪ 写集）。
-   * 同源（同一 agent/用户自己提交）的修订跳过相交检查——自己写的自己知道，
-   * 但其结构变换仍要应用到本次坐标。
+   * 区域级冲突判定（03 §6.1），统一在 head 坐标系下进行：
+   * - 本次写集已平移到 head；每个读集区域从其读取修订投影到 head；
+   *   每条历史修订的写集经其后各修订的结构操作投影到 head。
+   * - 读集区域被插删平移不算冲突（03 §6.1 自动变换）：本次 op 坐标已按其依据修订平移。
+   * - 读集区域被整块删除行列：保留删除点处的"影子"区域（即移入该处的单元格），
+   *   与删除修订的写集相交 → 冲突，直到在 head 坐标重读该处。
+   * - 历史修订 h（非同源）与「读取修订 < h 的读集区域」及（h > writeBase 时）本次写集相交 → 冲突。
+   * - 读取修订 ≥ h 的精确读集区域已覆盖的单元格不算冲突（重读即解决）；粗粒度条目不算证据。
+   * 同源修订自己知道，只贡献结构变换。
    */
   private checkConflicts(
     entry: DocEntry,
-    history: DocOpRecord[],
     batch: SubmitBatch,
-    readSet: RangeRef[],
+    readSet: NonNullable<SubmitBatch["readSet"]>,
     writeSet: DocWriteSet,
+    writeBase: number,
   ): SubmitFail | undefined {
-    let readT = [...readSet];
-    // 本次写集已是平移后坐标（ops 在编译前变换、mutations 在执行前变换），
-    // 只有读集仍是旧快照坐标，需要逐结构操作平移。
-    const writeT = [...writeSet.ranges];
-    for (const h of history) {
-      let deleted = false;
-      for (const s of h.writeSet.structural) {
-        readT = readT.map((r) => {
-          const t = transformRange(r, s);
-          if (t === "deleted") deleted = true;
-          return t === "deleted" ? r : t;
-        });
-      }
-      const sameSource =
-        h.sourceKind === batch.source.kind && (h.sourceId ?? "") === batch.source.id;
-      if (sameSource) continue;
-      if (deleted) {
-        return {
-          ok: false,
-          code: "VERSION_CONFLICT",
-          message: `修订 ${h.rev} 删除了本次读过的区域`,
-          conflicts: [
-            {
-              rev: h.rev,
-              source: `${h.sourceKind}:${h.sourceId ?? ""}`,
-              cells: this.renderCells(entry, [...readSet, ...writeSet.ranges]),
-            },
-          ],
-        };
-      }
-      const incoming = [...readT, ...writeT];
-      const hits: RangeRef[] = [];
-      for (const w of h.writeSet.ranges) {
-        for (const r of incoming) {
-          const ix = rangeIntersection(w, r);
-          if (ix) hits.push(ix);
+    const head = entry.meta.rev;
+    const reads = this.resolveReadSheets(entry, readSet).map((r) => {
+      const rev = Number.isInteger(r.rev) ? Math.min(Math.max(r.rev as number, 0), head) : -1;
+      return {
+        range: { sheetId: r.sheetId, r0: r.r0, c0: r.c0, r1: r.r1, c1: r.c1 },
+        rev: rev < 0 ? batch.baseRev : rev,
+        coarse: r.coarse === true,
+      };
+    });
+    const from = Math.min(writeBase, ...reads.map((r) => r.rev));
+    const all = this.opsAfter(entry.meta.id, from).filter((h) => h.rev <= head);
+    const isOther = (h: DocOpRecord) => !sameSource(h, batch.source);
+
+    // 读集区域投影到 head；整块被删的行列区域停在删除点（影子），被删工作表记下删除修订
+    const projected = reads.map((e) => {
+      let cur: RangeRef = e.range;
+      let shadow = false;
+      let removedBy: DocOpRecord | undefined;
+      // 他人删除了区域的一部分行/列（区域收缩）：读过的数据被删，等同修改了读集
+      const trimmedBy = new Set<number>();
+      for (const h of all) {
+        if (h.rev <= e.rev || removedBy) continue;
+        for (const s of h.writeSet.structural) {
+          const t = transformRange(cur, s);
+          if (t !== "deleted") {
+            if (
+              !shadow &&
+              isOther(h) &&
+              (s.kind === "deleteRows" || s.kind === "deleteCols") &&
+              structuralTouchesInterior(cur, s)
+            )
+              trimmedBy.add(h.rev);
+            cur = t;
+          } else if (s.kind === "removeSheet") {
+            removedBy = h;
+            break;
+          } else shadow = true; // 停在删除点，后续结构操作继续平移影子
         }
       }
-      if (hits.length > 0) {
+      return { rev: e.rev, coarse: e.coarse, head: cur, shadow, removedBy, trimmedBy };
+    });
+    const known = (ix: RangeRef, rev: number) =>
+      projected.some(
+        (p) => p.rev >= rev && !p.coarse && !p.shadow && !p.removedBy && rangeContains(p.head, ix),
+      );
+    const fail = (h: DocOpRecord, message: string, cells: RangeRef[]): SubmitFail => ({
+      ok: false,
+      code: "VERSION_CONFLICT",
+      message,
+      conflicts: [
+        {
+          rev: h.rev,
+          source: `${h.sourceKind}:${h.sourceId ?? ""}`,
+          cells: [...new Set(this.renderCells(entry, cells))].slice(0, MAX_CONFLICT_CELLS),
+        },
+      ],
+    });
+
+    for (const [i, h] of all.entries()) {
+      if (!isOther(h)) continue;
+      // 读过的工作表被删：之后有任何精确重读（代理已看到删除后的文档）才放行
+      const removed = projected.filter((p) => p.removedBy === h);
+      if (
+        removed.length > 0 &&
+        !projected.some((q) => q.rev >= h.rev && !q.coarse && !q.shadow && !q.removedBy)
+      )
+        return fail(h, `修订 ${h.rev} 删除了本次读过的工作表`, []);
+      // 读集被部分删除：收缩后的区域被重读（读取修订 ≥ h）才放行
+      const trimmed = projected.filter((p) => p.trimmedBy.has(h.rev) && !known(p.head, h.rev));
+      if (trimmed.length > 0)
+        return fail(
+          h,
+          `修订 ${h.rev} 删除了本次读过的部分行/列`,
+          trimmed.map((p) => p.head),
+        );
+      const later = all.slice(i + 1).flatMap((x) => x.writeSet.structural);
+      const written: RangeRef[] = [];
+      for (const w of conflictRanges(h.writeSet)) {
+        const t = transformRangeAll(w, later);
+        if (t !== "deleted") written.push(t);
+      }
+      const incoming = [
+        ...projected.flatMap((p) =>
+          p.rev < h.rev && !p.removedBy ? [{ range: p.head, shadow: p.shadow }] : [],
+        ),
+        ...(h.rev > writeBase ? writeSet.ranges.map((range) => ({ range, shadow: false })) : []),
+      ];
+      const hits: RangeRef[] = [];
+      let deleted = false;
+      for (const w of written) {
+        for (const r of incoming) {
+          const ix = rangeIntersection(w, r.range);
+          if (ix && !known(ix, h.rev)) {
+            hits.push(ix);
+            deleted ||= r.shadow;
+          }
+        }
+      }
+      if (hits.length > 0)
+        return fail(
+          h,
+          deleted
+            ? `修订 ${h.rev} 删除了本次读过的行/列（冲突单元格为删除后移入该处的位置）`
+            : `修订 ${h.rev} 修改了与本次读写重叠的区域`,
+          hits,
+        );
+    }
+    return undefined;
+  }
+
+  /**
+   * 代理自动读集路径（perOpBase）：每个 op 的坐标依据修订 = 覆盖其目标的最近精确读取修订；
+   * 无覆盖时取 baseRev（最近读取修订），但若目标坐标在最早与最近读取之间被他人插删改变，
+   * 代理所用坐标的依据不明确 → 冲突，提示重读目标区域。
+   */
+  private inferOpBases(
+    entry: DocEntry,
+    batch: SubmitBatch,
+    ops: ChangeOp[],
+    sheetIdOf: (nameOrId: string | undefined) => string | undefined,
+  ): number[] | SubmitFail {
+    const reads = this.resolveReadSheets(entry, batch.readSet ?? []).filter(
+      (r) => Number.isInteger(r.rev) && (r.rev as number) <= batch.baseRev,
+    );
+    const exact = reads.filter((r) => !r.coarse);
+    if (reads.length === 0) return ops.map(() => batch.baseRev);
+    const lo = Math.min(...reads.map((r) => r.rev as number));
+    const between = this.opsAfter(entry.meta.id, lo).filter(
+      (h) => h.rev <= batch.baseRev && !sameSource(h, batch.source),
+    );
+    const bases: number[] = [];
+    for (const op of ops) {
+      const target = changeOpTarget(op, sheetIdOf);
+      if (!target) {
+        bases.push(batch.baseRev);
+        continue;
+      }
+      const { axis, ref } = target;
+      const covering = exact.filter((e) => {
+        if (e.sheetId !== ref.sheetId && e.sheetId !== "*") return false;
+        if (axis === "rows") return e.r0 <= ref.r0 && e.r1 >= ref.r1;
+        if (axis === "cols") return e.c0 <= ref.c0 && e.c1 >= ref.c1;
+        return rangeContains(e, ref);
+      });
+      if (covering.length > 0) {
+        bases.push(Math.max(...covering.map((e) => e.rev as number)));
+        continue;
+      }
+      const moving = between.find((h) => {
+        const t = transformRangeAll(ref, h.writeSet.structural);
+        return (
+          t === "deleted" ||
+          t.r0 !== ref.r0 ||
+          t.r1 !== ref.r1 ||
+          t.c0 !== ref.c0 ||
+          t.c1 !== ref.c1
+        );
+      });
+      if (moving) {
         return {
           ok: false,
           code: "VERSION_CONFLICT",
-          message: `修订 ${h.rev} 修改了与本次读写重叠的区域`,
+          message: `写入目标不在读集内，且修订 ${moving.rev} 的插删改变了其坐标，无法确定按哪个修订的坐标写入；请重读目标区域后再写`,
           conflicts: [
             {
-              rev: h.rev,
-              source: `${h.sourceKind}:${h.sourceId ?? ""}`,
-              cells: this.renderCells(entry, hits).slice(0, MAX_CONFLICT_CELLS),
+              rev: moving.rev,
+              source: `${moving.sourceKind}:${moving.sourceId ?? ""}`,
+              cells: this.renderCells(entry, [ref]).slice(0, MAX_CONFLICT_CELLS),
             },
           ],
         };
       }
+      bases.push(batch.baseRev);
     }
-    return undefined;
+    return bases;
+  }
+
+  /** 重建读集的条目只有表名：按当前表名解析 sheetId，解析不到的保持 "*"（保守）。 */
+  private resolveReadSheets(
+    entry: DocEntry,
+    readSet: NonNullable<SubmitBatch["readSet"]>,
+  ): NonNullable<SubmitBatch["readSet"]> {
+    if (!readSet.some((r) => r.sheetName !== undefined)) return readSet;
+    const sheets = (entry.live.save().sheets ?? {}) as Record<string, IWorksheetData>;
+    const ids = new Map(Object.entries(sheets).map(([id, s]) => [s.name ?? id, id]));
+    return readSet.map((r) =>
+      r.sheetName !== undefined ? { ...r, sheetId: ids.get(r.sheetName) ?? r.sheetId } : r,
+    );
   }
 
   private remapPreservation(imported: ImportedWorkbook, snapshot: IWorkbookData): void {
@@ -1050,14 +1450,18 @@ export class DocumentService {
       unitId: book.unitId,
       save: book.workbook.save,
     };
+    this.watchCalc(entry);
   }
 
   private schedule(entry: DocEntry, delay: number): void {
-    if (this.closing || entry.paused) return;
+    if (this.closing || entry.external) return;
     clearTimeout(entry.timer);
     entry.timer = setTimeout(() => {
       entry.timer = undefined;
-      void this.enqueue(entry, () => this.doCheckpoint(entry)).catch(() => {
+      void this.enqueue(entry, () => this.doCheckpoint(entry)).catch((e) => {
+        // 保真能力不足是确定性失败；自动重试只适用于源文件暂时不可读、外部占用等瞬态错误。
+        // 继续重试 UNSUPPORTED_FEATURE 会无界消耗 CPU/IO，并掩盖需要用户选择的拒绝原因。
+        if (e instanceof FileOperationError && e.code === "UNSUPPORTED_FEATURE") return;
         this.schedule(entry, 5000);
       });
     }, delay);
@@ -1072,14 +1476,21 @@ export class DocumentService {
   private async doCheckpoint(entry: DocEntry): Promise<void> {
     clearTimeout(entry.timer);
     try {
-      await this.checkExternal(entry);
-      if (entry.paused)
-        throw new FileOperationError("VERSION_CONFLICT", "外部修改与未写回修订冲突，已暂停写回");
+      await this.checkExternal(entry, true);
+      if (entry.external) throw new FileOperationError("VERSION_CONFLICT", EXTERNAL_CONFLICT);
       if (entry.meta.rev === entry.checkpointRev) return;
       const snapshot = structuredClone(entry.live.save());
       const bytes = entry.imported.csv
         ? exportCsv(snapshot, entry.imported.csv)
-        : exportXlsx(entry.imported, snapshot, entry.checkpointSnapshot);
+        : exportXlsx(
+            entry.imported,
+            snapshot,
+            entry.checkpointSnapshot,
+            // 以外部包为底写回应用版本（重启后保留应用版本）：写集不覆盖外部差异，按快照差异整体判定
+            entry.rebased
+              ? undefined
+              : pendingChanges(this.opsAfter(entry.meta.id, entry.checkpointRev)),
+          );
       const hash = sha256(bytes);
       const saved = JSON.stringify(snapshot);
       // Durable publication intent closes the rename/SQLite crash window.
@@ -1092,11 +1503,9 @@ export class DocumentService {
         ? importCsv(bytes, entry.meta.path)
         : importXlsx(bytes, entry.meta.path);
       this.remapPreservation(nextImported, snapshot);
-      atomicWrite(entry.workspaceRoot, entry.meta.path, bytes, entry.checkpointHash, (back) => {
-        if (!entry.imported.csv) verifyXlsx(back, snapshot);
-        else if (sha256(back) !== hash)
-          throw new FileOperationError("INTERNAL", "CSV 回读校验失败");
-      });
+      // exportXlsx 已对这份字节做过回读校验；atomicWrite 再核对临时文件与之逐字节相同，
+      // 不再整本重复解析（P1-31）
+      atomicWrite(entry.workspaceRoot, entry.meta.path, bytes, entry.checkpointHash);
       this.db.exec("BEGIN IMMEDIATE");
       try {
         this.db
@@ -1114,6 +1523,8 @@ export class DocumentService {
       entry.imported = nextImported;
       entry.checkpointSnapshot = snapshot;
       entry.checkpointHash = hash;
+      delete entry.rebased;
+      entry.fileSig = this.statSig(entry);
       entry.checkpointRev = entry.meta.rev;
       entry.meta.checkpointRev = entry.checkpointRev;
       delete entry.meta.checkpointError;
@@ -1126,19 +1537,52 @@ export class DocumentService {
     }
   }
 
-  private async checkExternal(entry: DocEntry): Promise<void> {
+  private statSig(entry: DocEntry): string | undefined {
+    try {
+      return fileSig(statSync(resolveWorkspacePath(entry.workspaceRoot, entry.meta.path).abs));
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * 外部修改检测（07 §5）。force=false 时先比文件签名（size/mtime/ino），未变则不读整文件；
+   * 读取失败只提示并稍后重试（不暂停，P1-30）；哈希回到检查点时自动解除冲突。
+   */
+  private async checkExternal(entry: DocEntry, force = false): Promise<void> {
     const { abs } = resolveWorkspacePath(entry.workspaceRoot, entry.meta.path);
     let bytes: Uint8Array;
+    let sig: string;
     try {
+      sig = fileSig(statSync(abs));
+      if (!force && !entry.readError && sig === entry.fileSig) return;
       bytes = readFileSync(abs);
     } catch {
-      entry.paused = true;
-      entry.meta.checkpointError = "源文件无法读取，已暂停写回";
-      this.onCheckpoint?.(entry.meta.id, entry.checkpointRev, entry.meta.checkpointError);
+      if (!entry.readError) {
+        entry.readError = true;
+        if (!entry.external) entry.meta.checkpointError = SOURCE_UNREADABLE;
+        this.onCheckpoint?.(entry.meta.id, entry.checkpointRev, entry.meta.checkpointError);
+      }
       return;
     }
+    entry.fileSig = sig;
+    if (entry.readError) {
+      entry.readError = false;
+      if (entry.meta.checkpointError === SOURCE_UNREADABLE) {
+        delete entry.meta.checkpointError;
+        this.onCheckpoint?.(entry.meta.id, entry.checkpointRev);
+      }
+    }
     const hash = sha256(bytes);
-    if (hash === entry.checkpointHash) return;
+    if (hash === entry.checkpointHash) {
+      if (entry.external) {
+        // 文件被改回最后检查点的内容：冲突自然消失，恢复写回
+        this.clearExternal(entry);
+        this.onCheckpoint?.(entry.meta.id, entry.checkpointRev);
+        if (entry.meta.rev > entry.checkpointRev) this.schedule(entry, 1000);
+      }
+      return;
+    }
     const pending = this.db
       .prepare("SELECT * FROM doc_checkpoints WHERE doc_id=?")
       .get(entry.meta.id) as { rev: number; hash: string; snapshot: string } | undefined;
@@ -1165,24 +1609,113 @@ export class DocumentService {
       return;
     }
     if (entry.meta.rev > entry.checkpointRev) {
-      entry.paused = true;
-      entry.meta.checkpointError = "外部文件与未写回修订冲突，已暂停写回";
+      const changed = entry.external?.hash !== hash;
+      entry.external = { hash };
+      entry.meta.externalConflict = true;
+      entry.meta.checkpointError = EXTERNAL_CONFLICT;
       clearTimeout(entry.timer);
-      this.onCheckpoint?.(entry.meta.id, entry.checkpointRev, entry.meta.checkpointError);
+      if (changed)
+        this.onCheckpoint?.(entry.meta.id, entry.checkpointRev, entry.meta.checkpointError);
       return;
     }
     await this.reloadExternal(entry, bytes);
   }
 
-  private async reloadExternal(entry: DocEntry, bytes: Uint8Array): Promise<void> {
-    const imported =
-      entry.meta.kind === "csv"
-        ? importCsv(bytes, entry.meta.path)
-        : importXlsx(bytes, entry.meta.path);
-    const snapshot = imported.snapshot;
+  private clearExternal(entry: DocEntry): void {
+    delete entry.external;
+    delete entry.meta.externalConflict;
+    if (entry.meta.checkpointError === EXTERNAL_CONFLICT) delete entry.meta.checkpointError;
+  }
+
+  /**
+   * 外部修改冲突二选一（07 §5、03 §3.2），在文档 actor 内执行：
+   * - keepApp：外部版本先存入备份区 → 应用中的版本写回文件（检查点）→ 记一条外部重新加载修订
+   *   （内容未变，写集为空）。写回失败则恢复冲突状态，可改选载入外部版本。
+   * - loadExternal：应用中的版本先存入备份区 → 载入外部版本，记外部重新加载修订（写集为全表）。
+   */
+  async resolveExternal(
+    docId: string,
+    workspaceRoot: string,
+    choice: "keepApp" | "loadExternal",
+  ): Promise<{ meta: DocumentMeta; backup: BackupInfo }> {
+    const entry = await this.entry(docId, workspaceRoot);
+    return this.enqueue(entry, async () => {
+      await this.checkExternal(entry, true);
+      const ext = entry.external;
+      if (!ext)
+        throw new FileOperationError("INVALID_ARGUMENT", "该文档当前没有待处理的外部修改冲突");
+      const { meta } = entry;
+      const scope = {
+        workspaceId: meta.workspaceId,
+        workspaceRoot: entry.workspaceRoot,
+        sessionId: "user",
+        agentId: "user",
+      };
+      const bytes = readFileSync(resolveWorkspacePath(entry.workspaceRoot, meta.path).abs);
+      if (sha256(bytes) !== ext.hash)
+        throw new FileOperationError("VERSION_CONFLICT", "外部文件刚刚又发生变化，请重试");
+      if (choice === "loadExternal") {
+        const backup = this.backups.storeBytes(scope, meta.path, this.appVersionBytes(entry));
+        await this.reloadExternal(entry, bytes);
+        return { meta: { ...meta }, backup };
+      }
+      const backup = this.backups.bind(scope).backup(meta.path);
+      const prevHash = entry.checkpointHash;
+      entry.checkpointHash = ext.hash;
+      this.clearExternal(entry);
+      try {
+        await this.doCheckpoint(entry);
+      } catch (e) {
+        entry.checkpointHash = prevHash;
+        entry.external = ext;
+        meta.externalConflict = true;
+        meta.checkpointError = EXTERNAL_CONFLICT;
+        this.onCheckpoint?.(meta.id, entry.checkpointRev, meta.checkpointError);
+        throw e instanceof FileOperationError
+          ? new FileOperationError(e.code, `无法写回应用中的版本：${e.message}`)
+          : e;
+      }
+      this.recordExternalRevision(entry, "keep-app", { ranges: [], structural: [] }, true);
+      this.onCheckpoint?.(meta.id, entry.checkpointRev);
+      return { meta: { ...meta }, backup };
+    });
+  }
+
+  /** 应用中的版本（备份用）：优先保真导出；导出被拒时退回只含值与基本格式的新文件。 */
+  private appVersionBytes(entry: DocEntry): Uint8Array {
+    const snapshot = structuredClone(entry.live.save());
+    if (entry.imported.csv) return exportCsv(snapshot, entry.imported.csv);
+    try {
+      return exportXlsx(
+        entry.imported,
+        snapshot,
+        entry.checkpointSnapshot,
+        entry.rebased
+          ? undefined
+          : pendingChanges(this.opsAfter(entry.meta.id, entry.checkpointRev)),
+      );
+    } catch (e) {
+      // 备份是数据安全边界：无法保留原始部件时必须拒绝操作，禁止静默降级为
+      // minimalXlsx（它会丢失公式、样式及扩展部件）。
+      throw new FileOperationError(
+        "UNSUPPORTED_FEATURE",
+        `无法生成应用版本备份，已拒绝外部版本切换：${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+
+  /**
+   * 外部重新加载修订（07 §5、§7.3）：rev 递增、写回状态与文件对齐，提交后广播
+   * （external:* 来源由同步通道转成 doc.reload）。
+   */
+  private recordExternalRevision(
+    entry: DocEntry,
+    sourceId: string,
+    writeSet: DocWriteSet,
+    keepSnapshot: boolean,
+    snapshot?: IWorkbookData,
+  ): number {
     const rev = entry.meta.rev + 1;
-    const hash = sha256(bytes);
-    const ranges = [{ sheetId: "*", r0: 0, c0: 0, r1: MAX_R, c1: MAX_C }];
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db
@@ -1192,33 +1725,101 @@ export class DocumentService {
           rev,
           entry.meta.rev,
           "external",
-          "file",
+          sourceId,
           null,
           null,
-          JSON.stringify({ ranges, structural: [] }),
+          JSON.stringify(writeSet),
           "[]",
-          JSON.stringify({ needsSnapshot: true }),
+          JSON.stringify(keepSnapshot ? { mutations: [] } : { needsSnapshot: true }),
           nowIso(),
         );
       this.db
         .prepare(
-          "UPDATE documents SET rev=?, head_rev=?, checkpoint_rev=?, checkpoint_hash=?, checkpoint_snapshot=? WHERE id=?",
+          `UPDATE documents SET rev=?, head_rev=?, checkpoint_rev=?, checkpoint_hash=?${snapshot ? ", checkpoint_snapshot=?" : ""} WHERE id=?`,
         )
-        .run(rev, rev, rev, hash, JSON.stringify(snapshot), entry.meta.id);
+        .run(
+          rev,
+          rev,
+          rev,
+          entry.checkpointHash,
+          ...(snapshot ? [JSON.stringify(snapshot)] : []),
+          entry.meta.id,
+        );
       this.db.exec("COMMIT");
     } catch (e) {
       this.db.exec("ROLLBACK");
       throw e;
     }
-    await this.restore(entry, snapshot);
-    entry.imported = imported;
-    entry.checkpointSnapshot = structuredClone(entry.live.save());
-    entry.checkpointHash = hash;
     entry.checkpointRev = rev;
     entry.meta.rev = rev;
     entry.meta.checkpointRev = rev;
+    this.onRevision?.(entry.meta.id, rev, `external:${sourceId}`, []);
+    return rev;
+  }
+
+  /**
+   * 用备份替换当前文件（07 §7.3），经文档 actor 编排：活文档有未写回修订先检查点
+   * （失败则拒绝替换，未写回内容不丢），替换后作为外部重新加载修订进入文档。
+   * 文档未登记或文件不存在（回收站还原）时直接替换。
+   */
+  async replaceFile<T>(
+    workspaceId: string,
+    workspaceRoot: string,
+    path: string,
+    replace: () => T,
+  ): Promise<T> {
+    const { abs, rel } = resolveWorkspacePath(workspaceRoot, path);
+    const row = this.db
+      .prepare("SELECT id FROM documents WHERE workspace_id = ? AND path = ?")
+      .get(workspaceId, rel) as { id: string } | undefined;
+    const loaded = row ? await this.docs.get(row.id)?.catch(() => undefined) : undefined;
+    const entry =
+      loaded ?? (row && existsSync(abs) ? await this.entry(row.id, workspaceRoot) : undefined);
+    if (!entry) return replace();
+    return this.enqueue(entry, async () => {
+      await this.checkExternal(entry, true);
+      if (entry.external)
+        throw new FileOperationError(
+          "VERSION_CONFLICT",
+          "该文件有待处理的外部修改冲突，请先选择保留哪个版本",
+        );
+      if (entry.meta.rev > entry.checkpointRev) await this.doCheckpoint(entry);
+      const out = replace();
+      await this.checkExternal(entry, true);
+      return out;
+    });
+  }
+
+  private async reloadExternal(entry: DocEntry, bytes: Uint8Array): Promise<void> {
+    const imported =
+      entry.meta.kind === "csv"
+        ? importCsv(bytes, entry.meta.path)
+        : importXlsx(bytes, entry.meta.path);
+    const snapshot = imported.snapshot;
+    const prevHash = entry.checkpointHash;
+    entry.checkpointHash = sha256(bytes);
+    try {
+      this.recordExternalRevision(
+        entry,
+        "file",
+        { ranges: [{ sheetId: "*", r0: 0, c0: 0, r1: MAX_R, c1: MAX_C }], structural: [] },
+        false,
+        snapshot,
+      );
+    } catch (e) {
+      entry.checkpointHash = prevHash;
+      throw e;
+    }
+    clearTimeout(entry.timer);
+    await this.restore(entry, snapshot);
+    entry.imported = imported;
+    entry.checkpointSnapshot = structuredClone(entry.live.save());
+    entry.formulaCount = Object.values(imported.formulaCounts ?? {}).reduce((s, n) => s + n, 0);
+    entry.fileSig = this.statSig(entry);
+    this.clearExternal(entry);
     delete entry.meta.checkpointError;
-    this.onRevision?.(entry.meta.id, rev, "external:file", []);
+    delete entry.meta.calcPending;
+    this.onCheckpoint?.(entry.meta.id, entry.checkpointRev);
   }
 
   async create(
@@ -1363,6 +1964,29 @@ export class DocumentService {
   }
 }
 
+function sameSource(h: DocOpRecord, source: SubmitSource): boolean {
+  return h.sourceKind === source.kind && (h.sourceId ?? "") === source.id;
+}
+
+/**
+ * 冲突判定用的修订写集：行/列插删的"表尾"区域（用户 mutation 路径的写集）换成插删条带，
+ * 尾部位移由结构变换承担，读集被平移不算被修改（03 §6.1）。
+ */
+function conflictRanges(ws: DocWriteSet): RangeRef[] {
+  return ws.ranges.map((w) => {
+    for (const s of ws.structural) {
+      if (w.sheetId !== s.sheetId) continue;
+      const rows = s.kind === "insertRows" || s.kind === "deleteRows";
+      const cols = s.kind === "insertCols" || s.kind === "deleteCols";
+      if (rows && w.r0 === s.index && w.r1 === MAX_R && w.c0 === 0 && w.c1 === MAX_C)
+        return { ...w, r1: s.index + s.count - 1 };
+      if (cols && w.c0 === s.index && w.c1 === MAX_C && w.r0 === 0 && w.r1 === MAX_R)
+        return { ...w, c1: s.index + s.count - 1 };
+    }
+    return w;
+  });
+}
+
 function mergeStructural(a: StructuralOp[], b: StructuralOp[]): StructuralOp[] {
   const out = [...a];
   const key = (s: StructuralOp) => `${s.sheetId}|${s.kind}|${s.index}|${s.count}`;
@@ -1436,6 +2060,84 @@ function readPreview(writeSet: DocWriteSet, postSnap: IWorkbookData): PreviewReg
     });
   }
   return out;
+}
+
+/** 写入公式单元格的计算值（sheet!A1 → 值），供代理直接看到结果（06 §4.3、ADR 0002）。 */
+function readFormulaValues(
+  formulas: string[],
+  snap: IWorkbookData,
+): Record<string, unknown> | undefined {
+  if (formulas.length === 0) return undefined;
+  const byName = new Map(
+    Object.values(snap.sheets ?? {}).map((s) => [(s as IWorksheetData).name, s as IWorksheetData]),
+  );
+  const out: Record<string, unknown> = {};
+  for (const a1 of formulas.slice(0, MAX_FORMULA_VALUES)) {
+    try {
+      const p = parseRange(a1);
+      const sheet = p.sheet !== undefined ? byName.get(p.sheet) : undefined;
+      const cell = (
+        sheet?.cellData as Record<number, Record<number, { v?: unknown }>> | undefined
+      )?.[p.startRow - 1]?.[p.startCol - 1];
+      out[a1] = cell?.v ?? null;
+    } catch {
+      out[a1] = null;
+    }
+  }
+  return out;
+}
+
+/**
+ * 引擎结果 mutation 只带 v/t；在线应用时公式控制器保留 f，但日志回放（fromCollab）会整格覆盖。
+ * 落库前把当前快照中的公式补回，保证"重建 = 增量"。
+ */
+function withFormulas(results: DocMutation[], snap: IWorkbookData): DocMutation[] {
+  return results.map((m) => {
+    const p = m.params as {
+      subUnitId?: string;
+      cellValue?: Record<string, Record<string, Record<string, unknown>>>;
+    };
+    const sheet = snap.sheets?.[p.subUnitId ?? ""] as IWorksheetData | undefined;
+    const cd = sheet?.cellData as
+      | Record<string, Record<string, { f?: string; si?: string }>>
+      | undefined;
+    if (!p.cellValue || !cd) return m;
+    const cellValue: typeof p.cellValue = {};
+    for (const [r, row] of Object.entries(p.cellValue)) {
+      cellValue[r] = {};
+      for (const [c, cell] of Object.entries(row ?? {})) {
+        const cur = cd[r]?.[c];
+        (cellValue[r] as Record<string, unknown>)[c] = {
+          ...cell,
+          ...(cur?.f ? { f: cur.f } : {}),
+          ...(cur?.si ? { si: cur.si } : {}),
+        };
+      }
+    }
+    return { id: m.id, params: { ...p, cellValue } };
+  });
+}
+
+function fileSig(st: Stats): string {
+  return `${st.size}:${st.mtimeMs}:${st.ino}`;
+}
+
+function cellTotal(imported: ImportedWorkbook): number {
+  return Object.values(imported.cellCounts ?? {}).reduce((s, n) => s + n, 0);
+}
+
+/** 外部文件快照按位置改用应用快照的工作表 id（重启后以外部包为底写回时的导出基线）。 */
+function rekeyLike(ext: IWorkbookData, app: IWorkbookData): IWorkbookData {
+  const sheets: Record<string, IWorksheetData> = {};
+  const sheetOrder: string[] = [];
+  ext.sheetOrder.forEach((id, i) => {
+    const sheet = ext.sheets[id];
+    const nid = app.sheetOrder[i];
+    if (!sheet || nid === undefined) return;
+    sheets[nid] = { ...sheet, id: nid } as IWorksheetData;
+    sheetOrder.push(nid);
+  });
+  return { ...ext, sheetOrder, sheets };
 }
 
 export interface OpenedDoc {

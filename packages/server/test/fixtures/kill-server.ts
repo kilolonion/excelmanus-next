@@ -7,6 +7,9 @@
 //                       "approve" —— 首次返回 slow_write{block:false}
 //                                  （confirm 模式停在 approval.requested，批准后立刻完成）
 //                       "text"    —— 永远返回文本（供重启后的进程使用）
+//                       "team"    —— main 首次返回两个 agent_spawn；子代理永远
+//                                  slow_write{block:true}（以 maxConcurrentSubAgents=1 启动，
+//                                  一个执行中阻塞、一个被闸门排队）
 // 每次模型调用的 prompt 追加写入 <dataDir>/prompts.jsonl，供测试进程断言。
 
 import { appendFileSync } from "node:fs";
@@ -47,15 +50,33 @@ const textOut = (text: string) => ({
   ]),
 });
 
-const slowWriteCall = () => ({
+const slowWriteCall = (block: boolean, callId = "sw-1") => ({
   stream: streamOf([
     { type: "stream-start", warnings: [] },
     {
       type: "tool-call",
-      toolCallId: "sw-1",
+      toolCallId: callId,
       toolName: "slow_write",
-      input: JSON.stringify({ path: "a.txt", block: mode === "slow" }),
+      input: JSON.stringify({ path: "a.txt", block }),
     },
+    { type: "finish", usage: USAGE, finishReason: { unified: "tool-calls", raw: "tool_calls" } },
+  ]),
+});
+
+const spawnCall = (id: string, name: string, task: string) => {
+  const input = JSON.stringify({ name, role: "worker", task });
+  return [
+    { type: "tool-input-start", id, toolName: "agent_spawn" },
+    { type: "tool-input-delta", id, delta: input },
+    { type: "tool-call", toolCallId: id, toolName: "agent_spawn", input },
+  ] as LanguageModelV4StreamPart[];
+};
+
+const spawnTwoWorkers = () => ({
+  stream: streamOf([
+    { type: "stream-start", warnings: [] },
+    ...spawnCall("spawn-1", "w1", "执行任务一"),
+    ...spawnCall("spawn-2", "w2", "执行任务二"),
     { type: "finish", usage: USAGE, finishReason: { unified: "tool-calls", raw: "tool_calls" } },
   ]),
 });
@@ -90,6 +111,7 @@ let calls = 0;
 const srv = await startServer({
   dataDir,
   modules: [testModule],
+  ...(mode === "team" ? { maxConcurrentSubAgents: 1 } : {}),
   resolveLanguageModel: () =>
     new MockLanguageModelV4({
       provider: "mock",
@@ -97,8 +119,17 @@ const srv = await startServer({
       doStream: async (opts) => {
         calls += 1;
         appendFileSync(join(dataDir, "prompts.jsonl"), `${JSON.stringify(opts.prompt)}\n`);
+        const prompt = opts.prompt as { role: string; content: unknown }[];
+        const sys = prompt.find((m) => m.role === "system")?.content;
+        if (mode === "team") {
+          // 子代理：进入永久阻塞的 slow_write（被闸门放行的那个）；
+          // main 首步派生两个 worker，收到 spawn 结果后文字收口。
+          if (typeof sys === "string" && sys.includes("角色的子代理")) return slowWriteCall(true);
+          if (!prompt.some((m) => m.role === "tool")) return spawnTwoWorkers();
+          return textOut("收到汇报");
+        }
         if (mode === "text" || calls > 1) return textOut("已重新读取");
-        return slowWriteCall();
+        return slowWriteCall(mode === "slow");
       },
     }),
   log: () => {},

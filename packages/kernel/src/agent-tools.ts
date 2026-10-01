@@ -133,7 +133,7 @@ export function agentTools(_coordinator: AgentCoordinator): ToolDefinition[] {
           status: "error",
           error: { code: "INTERNAL", message: "代理协调器未装配", retryable: false },
         };
-      return ok(ctx.agents.status(ctx.sessionId, ctx.agentId, args.id));
+      return ok(ctx.agents.status(ctx.sessionId, ctx.agentId, args.id, args.include));
     },
   };
   const control: ToolDefinition<z.infer<typeof controlInput>> = {

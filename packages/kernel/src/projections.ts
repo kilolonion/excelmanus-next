@@ -3,18 +3,30 @@
 
 import type { DatabaseSync } from "node:sqlite";
 import type { ContextItem, LogRecord, ToolResult } from "@excelmanus/protocol";
+import { changeSummariesProjection } from "./change-summary.ts";
 import { tailFrom } from "./compaction.ts";
 import type { Projection } from "./session-log.ts";
 
 const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
 
-/** 会话行兜底：任何记录到达都确保 sessions 行存在并推进 last_seq。 */
+/**
+ * 会话行：只由 session.created 建行；其余记录只推进 last_seq。不为没有
+ * session.created 的会话补建行——否则删除后迟到的记录会"复活"出空工作区会话。
+ */
 function ensureSession(db: DatabaseSync, rec: LogRecord): void {
-  db.prepare(
-    `INSERT INTO sessions (id, workspace_id, created_at, updated_at, last_seq)
-     VALUES (?, '', ?, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET last_seq = MAX(last_seq, excluded.last_seq), updated_at = excluded.updated_at`,
-  ).run(rec.sessionId, rec.createdAt, rec.createdAt, rec.seq);
+  if (rec.type === "session.created") {
+    db.prepare(
+      `INSERT INTO sessions (id, workspace_id, created_at, updated_at, last_seq)
+       VALUES (?, '', ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET last_seq = MAX(last_seq, excluded.last_seq), updated_at = excluded.updated_at`,
+    ).run(rec.sessionId, rec.createdAt, rec.createdAt, rec.seq);
+    return;
+  }
+  db.prepare("UPDATE sessions SET last_seq = MAX(last_seq, ?), updated_at = ? WHERE id = ?").run(
+    rec.seq,
+    rec.createdAt,
+    rec.sessionId,
+  );
 }
 
 const sessions: Projection = {
@@ -92,19 +104,21 @@ const agents: Projection = {
       "turn.failed": "failed",
       "turn.interrupted": "interrupted",
     };
+    // 05 §3：closed 是终态；paused 只经继续（idle）或关闭离开。停止是异步的，
+    // 被关闭/暂停代理随后收尾写的 turn.interrupted 等记录不得覆盖它们。
+    const setStatus = (status: string): void => {
+      db.prepare(
+        `UPDATE agents SET status = ?, updated_at = ? WHERE session_id = ? AND id = ?
+         AND status != 'closed' AND (status != 'paused' OR ? IN ('idle', 'closed'))`,
+      ).run(status, rec.createdAt, rec.sessionId, rec.agentId, status);
+    };
     if (rec.type === "agent.status") {
       const status = str(d.status);
-      if (status !== null) {
-        db.prepare(
-          "UPDATE agents SET status = ?, updated_at = ? WHERE session_id = ? AND id = ?",
-        ).run(status, rec.createdAt, rec.sessionId, rec.agentId);
-      }
+      if (status !== null) setStatus(status);
       return;
     }
     if (rec.type === "approval.requested" && rec.agentId !== null) {
-      db.prepare(
-        "UPDATE agents SET status = 'blocked', updated_at = ? WHERE session_id = ? AND id = ?",
-      ).run(rec.createdAt, rec.sessionId, rec.agentId);
+      setStatus("blocked");
       return;
     }
     if (rec.type === "approval.decided" && rec.agentId !== null) {
@@ -114,9 +128,7 @@ const agents: Projection = {
       return;
     }
     if (rec.type === "question.asked" && rec.agentId !== null) {
-      db.prepare(
-        "UPDATE agents SET status = 'blocked', updated_at = ? WHERE session_id = ? AND id = ?",
-      ).run(rec.createdAt, rec.sessionId, rec.agentId);
+      setStatus("blocked");
       return;
     }
     if (rec.type === "question.answered" && rec.agentId !== null) {
@@ -126,10 +138,11 @@ const agents: Projection = {
       return;
     }
     const status = statusMap[rec.type];
-    if (status !== undefined) {
+    if (status !== undefined) setStatus(status);
+    if (rec.type === "agent.updated" && rec.agentId !== null) {
       db.prepare(
-        "UPDATE agents SET status = ?, updated_at = ? WHERE session_id = ? AND id = ?",
-      ).run(status, rec.createdAt, rec.sessionId, rec.agentId);
+        "UPDATE agents SET model_profile_id = ?, updated_at = ? WHERE session_id = ? AND id = ?",
+      ).run(str(d.modelProfileId), rec.createdAt, rec.sessionId, rec.agentId);
     }
     if (rec.type === "usage.updated") {
       const usage = d.cumulative ?? d.usage;
@@ -157,12 +170,58 @@ function userText(d: Record<string, unknown>): string {
   const refs = Array.isArray(d.context)
     ? (d.context as { docId?: unknown; rev?: unknown; range?: unknown }[])
     : [];
-  if (refs.length === 0) return text;
+  const memories = Array.isArray(d.memories)
+    ? (d.memories as { category?: unknown; content?: unknown }[])
+    : [];
+  const skill =
+    d.skill && typeof d.skill === "object"
+      ? (d.skill as { name?: unknown; body?: unknown })
+      : undefined;
   const lines = refs.map(
     (r) =>
       `- 用户当前选区：文档 ${String(r.docId ?? "")}（rev ${String(r.rev ?? "?")}）区域 ${String(r.range ?? "")}`,
   );
+  if (memories.length > 0) {
+    lines.push("相关记忆：");
+    for (const m of memories)
+      lines.push(`- [${String(m.category ?? "")}] ${String(m.content ?? "")}`);
+  }
+  if (skill && typeof skill.body === "string") {
+    lines.push(`<skill name="${String(skill.name ?? "")}">\n${skill.body}\n</skill>`);
+  }
+  if (lines.length === 0) return text;
   return `<context>\n${lines.join("\n")}\n</context>\n\n${text}`;
+}
+
+/** context.notice 在 inbox_pending 中的发送方标记（环境变化说明，04 §7.3）。 */
+const ENV_NOTICE_SENDER = "environment";
+
+/** 06 §2.3：工具结果给模型的文本上限（不含图片）。 */
+export const TOOL_RESULT_MAX_CHARS = 16_000;
+
+/**
+ * 工具结果进入上下文时统一截断（06 §2.3、04 §6.2：产生时即有上限，之后不再改写）。
+ * 日志保留完整结果；超限时只给模型状态、错误、修订号与前段预览。
+ */
+export function capToolOutput(result: ToolResult): ToolResult {
+  const { images, ...rest } = result;
+  const json = JSON.stringify(rest);
+  if (json.length <= TOOL_RESULT_MAX_CHARS) return result;
+  const shown = TOOL_RESULT_MAX_CHARS - 1_000;
+  return {
+    status: result.status,
+    ...(result.error
+      ? { error: { ...result.error, message: result.error.message.slice(0, 2_000) } }
+      : {}),
+    ...(result.docRevs ? { docRevs: result.docRevs } : {}),
+    ...(result.versions ? { versions: result.versions } : {}),
+    ...(result.truncated ? { truncated: result.truncated } : {}),
+    data: {
+      preview: json.slice(0, shown),
+      note: `结果过长（${json.length} 字符），只显示前 ${shown} 字符；请缩小范围或分批获取`,
+    },
+    ...(images ? { images } : {}),
+  };
 }
 
 const agentContext: Projection = {
@@ -172,16 +231,54 @@ const agentContext: Projection = {
     const d = rec.data;
     let item: ContextItem | null = null;
     let targetAgentId = rec.agentId;
-    if (rec.type === "inbox.sent") {
+    if (rec.type === "inbox.delivered") {
+      // 收件箱消息与环境通知只在步骤边界投递时进入上下文（05 §4.2、04 §3 第 1 步）：
+      // inbox.sent / context.notice 只入 inbox_pending。同一次投递（seq 连续的
+      // inbox.delivered）合并为一条 <inbox>，顺序即运行时按优先级写出的顺序。
       targetAgentId = str(d.toAgentId);
       const messageId = str(d.messageId);
-      const from = str(d.fromAgentId) ?? "";
-      const text = str(d.message) ?? "";
       if (targetAgentId === null || !messageId) return;
-      item = {
-        kind: "user",
-        text: `<inbox>\n<message id="${messageId}" from="${from}">${text}</message>\n</inbox>`,
-      };
+      const msg = db
+        .prepare(
+          "SELECT from_agent_id AS fromAgentId, kind, message, urgent FROM inbox_pending WHERE message_id = ?",
+        )
+        .get(messageId) as
+        | { fromAgentId: string; kind: string; message: string; urgent: number }
+        | undefined;
+      if (!msg) return;
+      const entry =
+        msg.fromAgentId === ENV_NOTICE_SENDER
+          ? msg.message
+          : `<message id="${messageId}" from="${msg.fromAgentId}" kind="${msg.kind}"${msg.urgent ? ' urgent="true"' : ""}>\n${msg.message}\n</message>`;
+      const last = db
+        .prepare(
+          "SELECT idx, item, from_seq AS fromSeq FROM agent_context WHERE session_id = ? AND agent_id = ? AND superseded = 0 ORDER BY idx DESC LIMIT 1",
+        )
+        .get(rec.sessionId, targetAgentId) as
+        | { idx: number; item: string; fromSeq: number }
+        | undefined;
+      const prevDelivered =
+        last !== undefined &&
+        last.fromSeq === rec.seq - 1 &&
+        db
+          .prepare(
+            "SELECT 1 FROM session_log WHERE session_id = ? AND seq = ? AND type = 'inbox.delivered' AND json_extract(data, '$.toAgentId') = ?",
+          )
+          .get(rec.sessionId, rec.seq - 1, targetAgentId) !== undefined;
+      if (last !== undefined && prevDelivered) {
+        const prev = JSON.parse(last.item) as ContextItem;
+        if (prev.kind === "user" && prev.text.endsWith("\n</inbox>")) {
+          const merged: ContextItem = {
+            ...prev,
+            text: `${prev.text.slice(0, -"\n</inbox>".length)}\n${entry}\n</inbox>`,
+          };
+          db.prepare(
+            "UPDATE agent_context SET item = ?, from_seq = ? WHERE session_id = ? AND agent_id = ? AND idx = ?",
+          ).run(JSON.stringify(merged), rec.seq, rec.sessionId, targetAgentId, last.idx);
+          return;
+        }
+      }
+      item = { kind: "user", text: `<inbox>\n${entry}\n</inbox>` };
     } else if (rec.type === "dispatch.updated" && str(d.status) === "applied") {
       // 用户消息在派发应用时才进入上下文（04 §4.1）：排队中的消息对当前轮不可见，
       // 撤回后永不进入。session_log 行先于投影写入，同事务可查。
@@ -193,9 +290,22 @@ const agentContext: Projection = {
         .get(rec.sessionId, dispatchId) as { agent_id: string | null; data: string } | undefined;
       if (!msg || msg.agent_id === null) return;
       targetAgentId = msg.agent_id;
+      const data = JSON.parse(msg.data) as Record<string, unknown>;
+      // 图片附件只存引用（10 §2 blobs），调用模型前由运行时读出
+      const images = Array.isArray(data.attachments)
+        ? (data.attachments as { sha256?: unknown; mediaType?: unknown }[])
+            .filter(
+              (a) =>
+                typeof a.sha256 === "string" &&
+                typeof a.mediaType === "string" &&
+                a.mediaType.startsWith("image/"),
+            )
+            .map((a) => ({ sha256: a.sha256 as string, mediaType: a.mediaType as string }))
+        : [];
       item = {
         kind: "user",
-        text: userText(JSON.parse(msg.data) as Record<string, unknown>),
+        text: userText(data),
+        ...(images.length > 0 ? { images } : {}),
       };
     } else if (rec.type === "compaction") {
       // 压缩是唯一的历史改写（04 §6.3）：旧条目标记 superseded 保留在表内，
@@ -264,10 +374,12 @@ const agentContext: Projection = {
         kind: "toolResult",
         toolCallId: str(d.toolCallId) ?? "",
         toolName: str(d.toolName) ?? "",
-        output: result ?? {
-          status,
-          error: { code: "INTERNAL", message: "缺失结果", retryable: false },
-        },
+        output: result
+          ? capToolOutput(result)
+          : {
+              status,
+              error: { code: "INTERNAL", message: "缺失结果", retryable: false },
+            },
         ...(isError ? { isError: true } : {}),
       };
     }
@@ -314,6 +426,33 @@ const inboxPending: Projection = {
         d.urgent === true ? 1 : 0,
         rec.createdAt,
       );
+    } else if (rec.type === "context.notice") {
+      // 环境变化说明同样等到步骤边界才注入（04 §3 第 1 步）：每个接收方一条待投递项；
+      // agentId 为空时发给会话内全部未关闭代理。id 由 seq 派生，重建结果确定。
+      const targets =
+        rec.agentId !== null
+          ? [rec.agentId]
+          : (
+              db
+                .prepare("SELECT id FROM agents WHERE session_id = ? AND status != 'closed'")
+                .all(rec.sessionId) as { id: string }[]
+            ).map((r) => r.id);
+      const text = `<notice kind="${str(d.kind) ?? ""}">${str(d.text) ?? ""}</notice>`;
+      const insert = db.prepare(
+        `INSERT INTO inbox_pending (message_id, session_id, from_agent_id, to_agent_id, kind, message, urgent, status, created_at)
+         VALUES (?, ?, ?, ?, 'notice', ?, 0, 'pending', ?)
+         ON CONFLICT(message_id) DO NOTHING`,
+      );
+      for (const agentId of targets) {
+        insert.run(
+          `ntc_${rec.sessionId}_${rec.seq}_${agentId}`,
+          rec.sessionId,
+          ENV_NOTICE_SENDER,
+          agentId,
+          text,
+          rec.createdAt,
+        );
+      }
     } else if (rec.type === "inbox.delivered") {
       const id = str(d.messageId);
       if (!id) return;
@@ -442,11 +581,17 @@ const pendingInteractions: Projection = {
           const toolName = str(spec.toolName);
           const targets = Array.isArray(spec.targets) ? spec.targets : [];
           if (toolName) {
-            const pathPattern = targets.length > 0 ? String(targets[0]) : "*";
-            db.prepare(
+            // 04 §5.1：每个目标各一条规则；规则 id 以审批 id 开头，匹配时据此取回
+            // 被记住的 effect（isAutoApproved）。同一目标再次记住以最新决定为准。
+            const patterns = targets.length > 0 ? targets.map(String) : ["*"];
+            const insert = db.prepare(
               `INSERT INTO auto_approve_rules (id, session_id, tool_name, path_pattern, created_at)
-               VALUES (?, ?, ?, ?, ?) ON CONFLICT(session_id, tool_name, path_pattern) DO NOTHING`,
-            ).run(`${id}:rule`, row.session_id, toolName, pathPattern, rec.createdAt);
+               VALUES (?, ?, ?, ?, ?) ON CONFLICT(session_id, tool_name, path_pattern)
+               DO UPDATE SET id = excluded.id, created_at = excluded.created_at`,
+            );
+            patterns.forEach((pathPattern, i) => {
+              insert.run(`${id}:rule:${i}`, row.session_id, toolName, pathPattern, rec.createdAt);
+            });
           }
         }
       }
@@ -548,5 +693,6 @@ export function kernelProjections(): Projection[] {
     pendingInteractions,
     autoApproveRules,
     todos,
+    changeSummariesProjection,
   ];
 }

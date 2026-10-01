@@ -5,6 +5,7 @@ import { JsonObject } from "./neutral.ts";
 import {
   AgentRole,
   AgentStatus,
+  AttachmentRef,
   ContextRef,
   DispatchMode,
   DispatchStatus,
@@ -33,8 +34,10 @@ export const REST_ERROR_CODES = [
   "not_found",
   "conflict",
   "payload_too_large",
+  "unsupported_media_type",
   "invalid_ticket",
   "not_implemented",
+  "bad_gateway",
   "internal",
 ] as const;
 
@@ -54,6 +57,8 @@ export const BootstrapResponse = z.object({
   hasModelProfile: z.boolean(),
   modules: z.array(z.string()),
   features: z.record(z.string(), z.boolean()),
+  /** 本机数据目录（会话、设置、密钥所在位置），供设置 → 工作区与备份展示（16 §4.3）。 */
+  dataDir: z.string().optional(),
 });
 
 export const TicketResponse = z.object({
@@ -77,10 +82,25 @@ export type ReasoningLevel = z.infer<typeof ReasoningLevel>;
 export const ProviderPreset = z.object({
   id: z.string(),
   displayName: z.string(),
-  adapter: z.enum(["openai", "anthropic", "deepseek", "openai-compatible"]),
+  adapter: z.enum([
+    "openai",
+    "anthropic",
+    "deepseek",
+    "google",
+    "moonshotai",
+    "xai",
+    "openai-compatible",
+    "chatgpt",
+  ]),
   defaultBaseUrl: z.string().optional(),
   apiKeyHelpUrl: z.string().optional(),
   directChina: z.boolean().optional(),
+  /** 凭据类型：API Key（默认）、订阅账号登录、无需凭据（本机服务）。 */
+  auth: z.enum(["api_key", "subscription", "none"]).optional(),
+  /** 界面提示（如订阅接口非公开的说明）。 */
+  note: z.string().optional(),
+  /** 常用模型 ID 建议（不代表能力承诺）。 */
+  suggestedModels: z.array(z.string()).optional(),
 });
 export type ProviderPreset = z.infer<typeof ProviderPreset>;
 
@@ -97,6 +117,23 @@ export const ModelProfile = z.object({
   maxOutputTokens: z.int().positive().nullable().optional(),
   reasoning: ReasoningLevel.optional(),
   providerOptions: JsonObject.optional(),
+  /** 额外请求头（读回时值为掩码）。 */
+  extraHeaders: z.record(z.string(), z.string()).optional(),
+  maxConcurrency: z.int().positive().optional(),
+  /** 关联的订阅账号（provider=chatgpt 时）。 */
+  accountId: z.string().nullable().optional(),
+  /** 09 §3 能力：每项 value + source（catalog/probe/manual）。 */
+  capabilities: z
+    .record(
+      z.string(),
+      z.object({
+        value: z.boolean().nullable(),
+        source: z.enum(["catalog", "probe", "manual"]).nullable(),
+        checkedAt: z.string().nullable(),
+        detail: z.string().optional(),
+      }),
+    )
+    .optional(),
   isDefault: z.boolean(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -113,6 +150,9 @@ export const CreateModelProfileBody = z.strictObject({
   maxOutputTokens: z.int().positive().optional(),
   reasoning: ReasoningLevel.optional(),
   providerOptions: JsonObject.optional(),
+  extraHeaders: z.record(z.string(), z.string()).optional(),
+  maxConcurrency: z.int().positive().max(64).optional(),
+  accountId: z.string().optional(),
   isDefault: z.boolean().optional(),
 });
 export type CreateModelProfileBody = z.infer<typeof CreateModelProfileBody>;
@@ -128,6 +168,9 @@ export const UpdateModelProfileBody = z.strictObject({
   maxOutputTokens: z.int().positive().nullable().optional(),
   reasoning: ReasoningLevel.nullable().optional(),
   providerOptions: JsonObject.nullable().optional(),
+  /** 值为掩码的键保留原值。 */
+  extraHeaders: z.record(z.string(), z.string()).nullable().optional(),
+  maxConcurrency: z.int().positive().max(64).nullable().optional(),
 });
 export type UpdateModelProfileBody = z.infer<typeof UpdateModelProfileBody>;
 
@@ -179,10 +222,21 @@ export const SessionListResponse = z.object({
   nextCursor: z.string().optional(),
 });
 
+/** 待处理交互（11 §4 `GET /sessions/{id}`）：未决的审批与提问。 */
+export const PendingInteraction = z.object({
+  id: z.string(),
+  kind: z.enum(["approval", "question"]),
+  agentId: z.string(),
+  toolCallId: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type PendingInteraction = z.infer<typeof PendingInteraction>;
+
 export const SessionDetailResponse = z.object({
   session: SessionSummary,
   agents: z.array(AgentInfo),
   headSeq: z.int().nonnegative(),
+  pendingInteractions: z.array(PendingInteraction).optional(),
 });
 
 export const CreateSessionResponse = z.object({
@@ -210,6 +264,8 @@ export const SendMessageBody = z.strictObject({
   mode: DispatchMode.optional(),
   /** 随消息携带的选区引用（04 §7.3），渲染进该轮用户消息前的 <context> 块。 */
   context: z.array(ContextRef).optional(),
+  /** 已经 POST /attachments 上传的图片（04 §4：受理前校验已上传）。 */
+  attachments: z.array(AttachmentRef).max(8).optional(),
 });
 export type SendMessageBody = z.infer<typeof SendMessageBody>;
 
@@ -238,6 +294,14 @@ export const CompactResponse = z.object({
   compacted: z.boolean(),
   scheduled: z.boolean(),
 });
+
+/** 用户控制代理（05 §11、11 §150）：pause/resume/close，返回动作后状态。 */
+export const ControlBody = z.strictObject({
+  action: z.enum(["pause", "resume", "close"]),
+});
+export type ControlBody = z.infer<typeof ControlBody>;
+
+export const ControlResponse = z.object({ ok: z.literal(true), status: z.string() });
 
 /** 审批决定：兼容 UI 发送的 approve/deny 与日志中的过去式。 */
 export const ApprovalDecisionBody = z.strictObject({
@@ -300,10 +364,28 @@ export const DocumentInfo = z.object({
   kind: DocKind,
   checkpointRev: z.int().nonnegative().optional(),
   checkpointError: z.string().optional(),
+  /** 文件在外部被修改且应用中有未写回修订：写回已暂停，等用户二选一（07 §5）。 */
+  externalConflict: z.boolean().optional(),
   rev: z.int().nonnegative(),
   createdAt: z.string(),
 });
 export type DocumentInfo = z.infer<typeof DocumentInfo>;
+
+/**
+ * 外部修改冲突的用户选择（07 §5、03 §3.2）：keepApp = 保留应用中的版本（外部版本存入备份区）；
+ * loadExternal = 载入外部版本（应用中的版本存入备份区）。两者都记一条外部重新加载修订。
+ */
+export const ResolveExternalBody = z.strictObject({
+  choice: z.enum(["keepApp", "loadExternal"]),
+});
+export type ResolveExternalBody = z.infer<typeof ResolveExternalBody>;
+
+export const ResolveExternalResponse = z.object({
+  document: DocumentInfo,
+  /** 另一份版本在备份区中的记录。 */
+  backupId: z.string(),
+  backupPath: z.string(),
+});
 
 export const OpenDocBody = z.strictObject({ path: z.string().min(1) });
 export type OpenDocBody = z.infer<typeof OpenDocBody>;
@@ -314,6 +396,25 @@ export const OpenDocResponse = z.object({ document: DocumentInfo });
 export const DocSnapshotResponse = z.object({
   document: DocumentInfo,
   snapshot: JsonObject,
+});
+
+/**
+ * 某修订的"修改前的值"（07 §7.4）：由该修订的逆操作得出，只含数据单元格。
+ * value 为 null 表示修改前该格为空；truncated 表示超过上限只返回了前若干格。
+ */
+export const DocRevBeforeResponse = z.object({
+  docId: z.string(),
+  rev: z.int().positive(),
+  cells: z.array(
+    z.object({
+      sheet: z.string(),
+      row: z.int().nonnegative(),
+      col: z.int().nonnegative(),
+      value: z.union([z.string(), z.number(), z.boolean()]).nullable(),
+      formula: z.string().optional(),
+    }),
+  ),
+  truncated: z.boolean(),
 });
 
 export const FileEntry = z.object({

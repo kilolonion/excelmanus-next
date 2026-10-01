@@ -11,6 +11,7 @@ import { ClientMessage, protocolVersion } from "@excelmanus/protocol";
 import type { DocMutation, DocumentService } from "@excelmanus/workbook";
 import { deriveWriteSet } from "@excelmanus/workbook";
 import { type WebSocket, WebSocketServer } from "ws";
+import type { RenderBroker } from "./render.ts";
 import { sha256 } from "./store.ts";
 
 const PAGE_SIZE = 500;
@@ -67,6 +68,8 @@ export interface SyncChannelOptions {
   /** 允许的 Host/Origin（随端口确定后调用）。 */
   allowedHosts(): Set<string>;
   allowedOrigins(): Set<string>;
+  /** 截图渲染中转（ADR 0010）：订阅 app 主题的界面连接可作为渲染端。 */
+  render?: RenderBroker;
 }
 
 export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () => void {
@@ -101,6 +104,17 @@ export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () 
       rec.agentId
     ) {
       streams.delete(streamKey(topic, rec.agentId, stepId));
+    }
+    // 轮次结束：该代理不再有进行中的流（11 §3.4 snapshot 只代表当前流；P1-41 最小插入）
+    if (
+      (rec.type === "turn.completed" ||
+        rec.type === "turn.failed" ||
+        rec.type === "turn.interrupted") &&
+      rec.agentId
+    ) {
+      for (const [k, s] of streams) {
+        if (s.topic === topic && s.agentId === rec.agentId) streams.delete(k);
+      }
     }
   };
 
@@ -147,6 +161,15 @@ export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () 
   const publishApp = (data: { type: string } & Record<string, unknown>) => {
     for (const conn of conns.values()) {
       if (conn.isAppSub) send(conn, { type: "app.event", data });
+      // 11 §3.5：会话删除后结束该会话主题的订阅（分支 agent-control，P1-08）
+      const topic = data.type === "session.deleted" ? `session:${String(data.sessionId)}` : null;
+      if (topic !== null && conn.subs.delete(topic)) {
+        send(conn, {
+          type: "sub.error",
+          topic,
+          error: { code: "not_found", message: "会话已删除" },
+        });
+      }
     }
   };
 
@@ -217,7 +240,13 @@ export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () 
     docSvc.onCheckpoint = (docId, checkpointRev, error) => {
       for (const conn of conns.values())
         if (conn.docSubs.has(`doc:${docId}`))
-          send(conn, { type: "doc.checkpoint", docId, checkpointRev, ...(error ? { error } : {}) });
+          send(conn, {
+            type: "doc.checkpoint",
+            docId,
+            checkpointRev,
+            ...(error ? { error } : {}),
+            ...(docSvc.meta(docId)?.externalConflict ? { externalConflict: true } : {}),
+          });
     };
     docSvc.onRevision = (docId, rev, source, mutations) =>
       publishDocOp(docId, rev, source, mutations);
@@ -283,6 +312,7 @@ export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () 
     }
     if (topic === "app") {
       conn.isAppSub = true;
+      opts.render?.addRenderer(conn.id, (m) => send(conn, m));
       send(conn, { type: "sub.ok", topic, headCursor: 0, cursor: 0 });
       return;
     }
@@ -343,8 +373,14 @@ export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () 
         break;
       case "pong":
         break;
+      case "render.result":
+        opts.render?.handleResult(conn.id, msg);
+        break;
       case "unsub":
-        if (msg.topic === "app") conn.isAppSub = false;
+        if (msg.topic === "app") {
+          conn.isAppSub = false;
+          opts.render?.removeRenderer(conn.id);
+        }
         conn.subs.delete(msg.topic);
         conn.docSubs.delete(msg.topic);
         break;
@@ -411,7 +447,7 @@ export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () 
     }
   };
 
-  const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
 
   const rejectUpgrade = (socket: Duplex, status: number, reason: string, code: string) => {
     const body = JSON.stringify({ error: { code, message: reason, requestId: randomUUID() } });
@@ -480,6 +516,7 @@ export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () 
         clearTimeout(conn.idleTimer);
         clearInterval(pinger);
         conns.delete(conn.id);
+        opts.render?.removeRenderer(conn.id);
         emit("ws.close", { connectionId: conn.id, code });
       });
       send(conn, {

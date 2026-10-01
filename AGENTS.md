@@ -25,6 +25,7 @@
 ## 依赖与版本策略
 - 新增依赖用 `pnpm add`；**优先选发布满 7 天以上的版本**（`npm view <pkg> time --json` 查发布时间）；避免 `latest`/`*`/无上界范围；关键依赖（Univer 全家、`quickjs-emscripten`、`ai` 及 `@ai-sdk/*`）**精确锁定**。
 - 不得修改仓库的安全策略/合规配置来绕过失败（如放宽许可证白名单、跳过检查）；遇到需要例外时停下来报告。
+- 许可门禁另有负责人批准的构建期例外清单（`BUILD_TIME_LICENSE_EXCEPTIONS`，精确 `包名@版本`，禁止进入生产依赖）；目前只有 lightningcss@1.32.0（ADR 0011）。
 - 文档中给出的技术选型见 03 §10（Hono、Kysely、Zod 4、React 19 + Vite、TanStack、Zustand、Tailwind 4 + shadcn/ui、Vitest、Playwright、Electron 44+）；具体版本按上一条选择。
 
 ## 代码约定
@@ -32,6 +33,7 @@
 - 包名 `@excelmanus/<目录名>`。日期时间用 ISO 8601 UTC 字符串。
 - 简洁：能用一个通用机制解决就不做三个专用机制；只在真实边界处处理错误；不添加与需求无关的注释。
 - 用户可见文案集中管理（简体中文），不散落在组件里。
+- 前端界面控件只用 `packages/web/src/components/ui/`，图标只经 `Icon.tsx`；不用原生 `select`/`confirm`/`title` 提示（`ui-conventions.test.ts` 强制）。
 
 ## 工作流
 - 每个里程碑（`docs/15-milestones.md`）开始前先做该阶段的 spike，结论写 ADR；spike 失败按文档给出的备选方案切换，并把范围变化写进 ADR。
@@ -51,10 +53,16 @@
 - Web 生产构建：`pnpm build:web`
 - 一键门禁：`pnpm check`（typecheck + lint + deps + licenses，不含测试）；`pnpm check:all`（加 Web 构建与测试）
 - 裸 Node 启动后端（source-first）：`node packages/server/src/main.ts`；完整本机 Web 启动用 `pnpm start`（先构建前端）
+- 桌面：`pnpm build:desktop`（构建到 `packages/desktop/build/app`）；`pnpm --filter @excelmanus/desktop start` 运行，`self-test` 自检；`pnpm pack:desktop` 打包 zip 并检查体积预算
+- 更新模型目录快照：`node scripts/update-model-catalog.ts`
 
 ## 当前进度
 - 单仓骨架 + 门禁框架完成：pnpm workspaces，15 个包（protocol/core/kernel/models/sandbox/server/web/desktop + modules/*7），源码优先（exports → `./src/index.ts`，Node 24 原生类型剥离已验证），depcruise + 声明校验的依赖方向门禁（`scripts/dependency-matrix.ts` 单一规则源），许可证门禁，Vitest projects 测试，Biome lint，CI 门禁工作流。
-- 依赖版本策略注意：`autoInstallPeers: false`（防止 vite 的 optional peer `lightningcss` MPL-2.0 被自动装入）；typescript 锁定 6.0.3 而非 7.x（depcruise 18 只支持 TS <7 转译器）。
+- 依赖版本策略注意：`autoInstallPeers: false`（peer 显式声明；lightningcss 现作为 Tailwind 4 的构建期依赖存在，受 ADR 0011 例外约束）；typescript 锁定 6.0.3 而非 7.x（depcruise 18 只支持 TS <7 转译器）。
 - M0 已按 ADR 0001–0006 收口；M1 主要纵切已提交为 `af250b6`。2026-09-30 构建、安全与交互修复见 `docs/acceptance/m1-repair.md`；最终工作树尚未验收。
 - M2a 有并行未提交实现，不作为 M1 已验收证据。保留工作树中的并行改动与未提交 spike，不按旧进度重复实施 M0。
 - M3 实现完成（派发三策略、中断恢复、上下文压缩、run_script 沙箱、具名迁移、stop-all），2026-09-30 验收见 `docs/acceptance/m3.md`；场景 8/10/12 为"部分"（浏览器实机与真实模型行为未验证），全部改动未提交。
+- M5 实现完成（规则/记忆/技能/MCP、15 个提供商预设 + 能力探测 + models.dev 快照、ChatGPT 订阅登录、设置中心 8 分页、workbook_render、备份替换 REST、Electron 桌面与 `--self-test`），2026-10-01 验收见 `docs/acceptance/m5.md`；场景 19 部分、23 未通过（签名/自动更新），打包改用 @electron/packager（ADR 0010），全部改动未提交。
+- M6a 第一轮前端收口（2026-10-01）：重写 `styles.css` 视觉体系、工作台公式栏/工作表标签/叠加层、选区跟随修复、待处理条与设置中心统一；验收见 `docs/acceptance/m6a-frontend.md`（部分完成，未完成项列于 §5）。页面复核用 `packages/server/test/fixtures/ui-preview-server.ts`（真实后端 + 假模型）。全部改动未提交。
+- M4 实现完成（代理团队与收件箱、并发排队闸门、角色矩阵与文件租约、完成报告、用户 control REST、queued 代理重启恢复修复、前端按代理分流 + 团队视图），2026-09-30 验收见 `docs/acceptance/m4.md`；场景 13 为"部分"（12 文件缩为 3、汇总数判据仅到报告进入 main prompt）、团队视图 UI 未做浏览器验证，全部改动未提交。
+- M6a 第四轮（2026-10-01）：Tailwind CSS 4 + Radix 自写组件层视觉大修（ADR 0011），全部页面迁移、原生控件清零；验收见 `docs/acceptance/m6a-frontend.md` §8（部分完成），全部改动未提交。

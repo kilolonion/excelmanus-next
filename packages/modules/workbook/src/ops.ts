@@ -10,9 +10,10 @@ import {
   type RangeRef,
   rangeRefToA1,
   type StructuralOp,
+  structuralTouchesInterior,
   transformRange,
 } from "@excelmanus/core";
-import type { IWorkbookData, IWorksheetData } from "@univerjs/core";
+import { Direction, type IWorkbookData, type IWorksheetData } from "@univerjs/core";
 import { z } from "zod";
 
 // ---------- 输入 schema ----------
@@ -83,6 +84,8 @@ const freezeOp = z.strictObject({
   rows: z.int().nonnegative(),
   cols: z.int().nonnegative(),
 });
+/** ADR 0002：同步等待进行中的公式重算完成（受工具 timeoutMs 约束），不产生写入。 */
+const recalculateOp = z.strictObject({ op: z.literal("recalculate") });
 
 export const ChangeOp = z.discriminatedUnion("op", [
   sheetAdd,
@@ -98,6 +101,7 @@ export const ChangeOp = z.discriminatedUnion("op", [
   colsInsert,
   colsDelete,
   freezeOp,
+  recalculateOp,
 ]);
 export type ChangeOp = z.infer<typeof ChangeOp>;
 
@@ -188,6 +192,13 @@ const cellData = (v: string | number | boolean | null): Record<string, unknown> 
   return { v, t: 1 };
 };
 
+/** cells.set 实际写入的矩形：range 左上角 + values 尺寸。 */
+function cellsSetTarget(sheetId: string, ref: RangeRef, values: unknown[][]): RangeRef {
+  const rows = values.length;
+  const cols = Math.max(1, ...values.map((r) => r.length));
+  return { sheetId, r0: ref.r0, c0: ref.c0, r1: ref.r0 + rows - 1, c1: ref.c0 + cols - 1 };
+}
+
 const HALIGN = { left: 1, center: 2, right: 3 } as const;
 
 export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
@@ -204,13 +215,8 @@ export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
     switch (op.op) {
       case "cells.set": {
         const { sheet, ref } = regionOf(ctx, op.range);
-        const rows = op.values.length;
-        const cols = Math.max(...op.values.map((r) => r.length));
-        const singleCell = ref.r0 === ref.r1 && ref.c0 === ref.c1 && !op.range.includes(":");
-        const end = singleCell
-          ? { r1: ref.r0 + rows - 1, c1: ref.c0 + cols - 1 }
-          : { r1: Math.max(ref.r1, ref.r0 + rows - 1), c1: Math.max(ref.c1, ref.c0 + cols - 1) };
-        const target: RangeRef = { sheetId: sheet.id, r0: ref.r0, c0: ref.c0, ...end };
+        // 只写 values 覆盖的矩形（以 range 左上角为锚点）；range 多出的部分不动（P1-34）
+        const target = cellsSetTarget(sheet.id, ref, op.values);
         const value = Array.from({ length: target.r1 - target.r0 + 1 }, (_, i) =>
           Array.from({ length: target.c1 - target.c0 + 1 }, (_, j) =>
             cellData(op.values[i]?.[j] ?? null),
@@ -316,13 +322,33 @@ export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
           startColumn: 0,
           endColumn: lastCol,
         };
-        commands.push({
-          id:
-            op.op === "rows.insert"
-              ? "sheet.command.insert-row-by-range"
-              : "sheet.command.remove-row-by-range",
-          params: { unitId, subUnitId: sheet.id, range },
-        });
+        const rowCount = sheet.data.rowCount ?? 1;
+        if (op.op === "rows.insert") {
+          // Univer 以 startRow-1 为锚点（继承行高）：插在第 1 行时改用本行为锚点，
+          // 插在现有行之后先扩行数，使锚点落在最后一行（P1-23）
+          if (index > rowCount) {
+            commands.push({
+              id: "sheet.mutation.set-worksheet-row-count",
+              params: { unitId, subUnitId: sheet.id, rowCount: index },
+            });
+          }
+          commands.push({
+            id: "sheet.command.insert-row-by-range",
+            params: {
+              unitId,
+              subUnitId: sheet.id,
+              range,
+              ...(index === 0 ? { direction: Direction.UP } : {}),
+            },
+          });
+          sheet.data.rowCount = Math.max(rowCount, index) + op.count;
+        } else {
+          commands.push({
+            id: "sheet.command.remove-row-by-range",
+            params: { unitId, subUnitId: sheet.id, range },
+          });
+          sheet.data.rowCount = Math.max(1, rowCount - op.count);
+        }
         // 冲突写集只记插入/删除的条带；尾部位移由 structural 变换承担，
         // 否则之后任何 stale 写都会整表冲突，平移语义失效。
         ranges.push({
@@ -352,13 +378,31 @@ export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
           startColumn: index,
           endColumn: index + op.count - 1,
         };
-        commands.push({
-          id:
-            op.op === "cols.insert"
-              ? "sheet.command.insert-col-by-range"
-              : "sheet.command.remove-col-by-range",
-          params: { unitId, subUnitId: sheet.id, range },
-        });
+        const columnCount = sheet.data.columnCount ?? 1;
+        if (op.op === "cols.insert") {
+          if (index > columnCount) {
+            commands.push({
+              id: "sheet.mutation.set-worksheet-column-count",
+              params: { unitId, subUnitId: sheet.id, columnCount: index },
+            });
+          }
+          commands.push({
+            id: "sheet.command.insert-col-by-range",
+            params: {
+              unitId,
+              subUnitId: sheet.id,
+              range,
+              ...(index === 0 ? { direction: Direction.LEFT } : {}),
+            },
+          });
+          sheet.data.columnCount = Math.max(columnCount, index) + op.count;
+        } else {
+          commands.push({
+            id: "sheet.command.remove-col-by-range",
+            params: { unitId, subUnitId: sheet.id, range },
+          });
+          sheet.data.columnCount = Math.max(1, columnCount - op.count);
+        }
         ranges.push({
           sheetId: sheet.id,
           r0: 0,
@@ -452,6 +496,8 @@ export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
         });
         break;
       }
+      case "recalculate":
+        break;
     }
   }
   return { commands, ranges, structural, formulas, estCells, needsSnapshot };
@@ -476,7 +522,8 @@ function applyStructurals(ref: RangeRef, structurals: StructuralOp[]): RangeRef 
 
 /**
  * ChangeOp 的坐标字段经历史结构操作平移后重渲染。
- * - range 型 op（cells.set/clear、style.set、merge、unmerge）：变换 A1 区域；
+ * - range 型 op（cells.clear、style.set、merge、unmerge）：变换 A1 区域；
+ * - cells.set：写入矩形整体平移；内部被插入/删除 → "ambiguous"；
  * - rows/cols 型 op：变换 at 下标点；
  * - 目标表被 removeSheet → "deleted"；renameSheet 不改变坐标（sheet 解析走 id）。
  */
@@ -484,9 +531,27 @@ export function transformChangeOp(
   op: ChangeOp,
   structurals: StructuralOp[],
   sheetIdOf: SheetResolver,
-): ChangeOp | "deleted" {
+): ChangeOp | "deleted" | "ambiguous" {
   switch (op.op) {
-    case "cells.set":
+    case "cells.set": {
+      // values 与单元格逐一对应：目标矩形内部被插入/删除行列时无法确定性平移（P0-08）
+      const parsed = parseRange(op.range);
+      const sheetId = sheetIdOf(parsed.sheet);
+      if (sheetId === undefined) return "deleted";
+      let cur = cellsSetTarget(
+        sheetId,
+        { sheetId, r0: parsed.startRow - 1, c0: parsed.startCol - 1, r1: 0, c1: 0 },
+        op.values,
+      );
+      for (const s of structurals) {
+        const t = transformRange(cur, s);
+        if (t === "deleted") return "deleted";
+        if (structuralTouchesInterior(cur, s)) return "ambiguous";
+        cur = t;
+      }
+      const anchor = { ...cur, r1: cur.r0, c1: cur.c0 };
+      return { ...op, range: rangeRefToA1(anchor, sheetId) };
+    }
     case "cells.clear":
     case "style.set":
     case "merge":
@@ -535,7 +600,54 @@ export function transformChangeOp(
       return { ...op, sheet: sheetId };
     }
     case "sheet.add":
+    case "recalculate":
       return op;
+  }
+}
+
+/**
+ * ChangeOp 的坐标目标（op 自身坐标系）：rect = 写入矩形；rows/cols = 受影响的行/列段。
+ * 不带行列坐标的 op 返回 undefined。用于按读集推定该 op 的坐标依据修订。
+ */
+export function changeOpTarget(
+  op: ChangeOp,
+  sheetIdOf: SheetResolver,
+): { axis: "rect" | "rows" | "cols"; ref: RangeRef } | undefined {
+  switch (op.op) {
+    case "cells.set":
+    case "cells.clear":
+    case "style.set":
+    case "merge":
+    case "unmerge": {
+      const p = parseRange(op.range);
+      const sheetId = sheetIdOf(p.sheet);
+      if (sheetId === undefined) return undefined;
+      const ref = {
+        sheetId,
+        r0: p.startRow - 1,
+        c0: p.startCol - 1,
+        r1: p.endRow - 1,
+        c1: p.endCol - 1,
+      };
+      return {
+        axis: "rect",
+        ref: op.op === "cells.set" ? cellsSetTarget(sheetId, ref, op.values) : ref,
+      };
+    }
+    case "rows.insert":
+    case "rows.delete":
+    case "cols.insert":
+    case "cols.delete": {
+      const sheetId = sheetIdOf(op.sheet);
+      if (sheetId === undefined) return undefined;
+      const a0 = op.at - 1;
+      const a1 = op.op.endsWith(".delete") ? a0 + op.count - 1 : a0;
+      return op.op.startsWith("rows.")
+        ? { axis: "rows", ref: { sheetId, r0: a0, r1: a1, c0: 0, c1: MAX_C } }
+        : { axis: "cols", ref: { sheetId, r0: 0, r1: MAX_R, c0: a0, c1: a1 } };
+    }
+    default:
+      return undefined;
   }
 }
 

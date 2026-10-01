@@ -50,7 +50,17 @@ export const PresenceMsg = z.strictObject({
   viewport: z.unknown().optional(),
 });
 
+/** 截图渲染结果（07 §8）：由界面或桌面离屏窗口把版式画成 PNG 后回传。 */
+export const RenderResultMsg = z.strictObject({
+  type: z.literal("render.result"),
+  requestId: z.string(),
+  /** PNG 的 base64（不含 data: 前缀）。 */
+  png: z.string().optional(),
+  error: z.string().optional(),
+});
+
 export const ClientMessage = z.discriminatedUnion("type", [
+  RenderResultMsg,
   SubMsg,
   UnsubMsg,
   PingMsg,
@@ -128,6 +138,8 @@ export const DocCheckpointMsg = z.strictObject({
   docId: z.string(),
   checkpointRev: z.int().nonnegative(),
   error: z.string().optional(),
+  /** 外部修改与未写回修订冲突，等用户经 REST 选择保留哪个版本（07 §5）。 */
+  externalConflict: z.boolean().optional(),
 });
 export const DocReloadMsg = z.strictObject({
   type: z.literal("doc.reload"),
@@ -149,7 +161,38 @@ export const ErrorMsg = z.strictObject({
   error: ErrorBody,
 });
 
+/** 渲染版式（07 §8）：全部坐标为 CSS 像素，含行列表头。 */
+export const RenderLayout = z.object({
+  width: z.number(),
+  height: z.number(),
+  cells: z.array(
+    z.object({
+      x: z.number(),
+      y: z.number(),
+      w: z.number(),
+      h: z.number(),
+      text: z.string(),
+      header: z.boolean().optional(),
+      bold: z.boolean().optional(),
+      italic: z.boolean().optional(),
+      color: z.string().optional(),
+      fill: z.string().optional(),
+      align: z.enum(["left", "center", "right"]).optional(),
+      fontSize: z.number().optional(),
+    }),
+  ),
+});
+export type RenderLayout = z.infer<typeof RenderLayout>;
+export const RenderRequestMsg = z.strictObject({
+  type: z.literal("render.request"),
+  requestId: z.string(),
+  layout: RenderLayout,
+  /** 设备像素比（清晰度），默认 2。 */
+  scale: z.number().optional(),
+});
+
 export const ServerMessage = z.discriminatedUnion("type", [
+  RenderRequestMsg,
   HelloMsg,
   SubOkMsg,
   SubErrorMsg,
