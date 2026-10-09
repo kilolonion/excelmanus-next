@@ -78,6 +78,71 @@ afterAll(async () => {
 const source = { kind: "agent" as const, id: "session/main" };
 
 describe("M2b checkpoints at real file/SQLite boundaries", () => {
+  test("空创建共用路径预检；失败不留文件，成功日志可恢复且不能覆盖同路径", async () => {
+    const { dir, svc, ctx, db } = await setup();
+    const edit = workbookEditTool(svc);
+    const args = { create: true, path: "empty.xlsx", ops: [] };
+    expect(edit.input.safeParse(args).success).toBe(true);
+    expect(edit.input.safeParse({ path: "book.xlsm", ops: [] }).success).toBe(false);
+    const invalid = { create: true, path: "invalid.csv", ops: [] };
+    expect(await edit.execute({ ...invalid, dryRun: true }, ctx)).toMatchObject({
+      status: "error",
+      error: { code: "INVALID_ARGUMENT" },
+    });
+    expect(await edit.execute(invalid, ctx)).toMatchObject({
+      status: "error",
+      error: { code: "INVALID_ARGUMENT" },
+    });
+    expect(existsSync(join(dir, "invalid.csv"))).toBe(false);
+    const created = await edit.execute(args, ctx);
+    expect(created.status).toBe("ok");
+    const bytes = readFileSync(join(dir, args.path));
+    const imported = importXlsx(bytes, args.path);
+    expect(imported.snapshot.sheetOrder).toEqual(["s0"]);
+    expect(imported.snapshot.sheets.s0?.name).toBe("Sheet1");
+    expect(imported.cellCounts).toEqual({ Sheet1: 0 });
+    expect(
+      edit.recover?.({
+        sessionId: ctx.sessionId,
+        agentId: ctx.agentId,
+        toolCallId: ctx.toolCallId,
+        args,
+      }),
+    ).toMatchObject({ status: "ok", data: { alreadyCommitted: true, rev: 1 } });
+    expect(await edit.execute({ ...args, dryRun: true }, ctx)).toMatchObject({
+      status: "error",
+      error: { code: "VERSION_CONFLICT" },
+    });
+    expect(await edit.execute(args, ctx)).toMatchObject({
+      status: "error",
+      error: { code: "VERSION_CONFLICT" },
+    });
+    expect(readFileSync(join(dir, args.path))).toEqual(bytes);
+    expect(
+      db.prepare("SELECT COUNT(*) AS n FROM documents WHERE path='empty.xlsx'").get(),
+    ).toMatchObject({ n: 1 });
+    expect(
+      await edit.execute(
+        { path: args.path, ops: [{ op: "sheet.add", name: "临时" }] },
+        { ...ctx, toolCallId: "add-temp" },
+      ),
+    ).toMatchObject({ status: "ok" });
+    expect(
+      await edit.execute(
+        {
+          path: args.path,
+          ops: [
+            { op: "sheet.delete", sheet: "Sheet1" },
+            { op: "sheet.delete", sheet: "临时" },
+          ],
+        },
+        { ...ctx, toolCallId: "delete-all" },
+      ),
+    ).toMatchObject({ status: "error", error: { message: "不能删除最后一个工作表" } });
+    const { snapshot } = await svc.snapshot((created.data as { docId: string }).docId, dir);
+    expect(snapshot.sheetOrder).toHaveLength(2);
+  });
+
   test("edit XLSM preserves every untouched part including macro, drawing and unknown worksheet XML; backup once", async () => {
     const { dir, name, svc, meta, db } = await setup();
     const original = readFileSync(join(dir, name));

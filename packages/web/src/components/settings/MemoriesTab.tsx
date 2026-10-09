@@ -4,16 +4,19 @@ import type { Memory } from "@excelmanus/protocol";
 import { useState } from "react";
 import { apiClientOf, useApp } from "../../store.ts";
 import { ST } from "../../strings.ts";
+import { Icon } from "../Icon.tsx";
 import { Button } from "../ui/button.tsx";
 import { Checkbox } from "../ui/controls.tsx";
 import { Badge } from "../ui/display.tsx";
 import { Field as UiField } from "../ui/field.tsx";
 import { SearchInput, Textarea } from "../ui/input.tsx";
+import { Disclosure } from "../ui/overlay.tsx";
 import { SimpleSelect } from "../ui/select.tsx";
 import {
   Empty,
   Feedback,
   ItemCard,
+  LoadStatus,
   Section,
   useAction,
   useConfirmDelete,
@@ -80,7 +83,7 @@ function MemoryItem({ m, onChanged }: { m: Memory; onChanged(): void }) {
             <Badge tone="read">{ST.memoryCategory[m.category] ?? m.category}</Badge>
             {m.workspaceId && <Badge tone="neutral">{ST.memoryScopeWorkspace}</Badge>}
           </div>
-          <p className="text-sm whitespace-pre-wrap">{m.content}</p>
+          <p className="text-sm leading-6 whitespace-pre-wrap">{m.content}</p>
           <div className="flex items-center gap-2">
             <span className="text-2xs text-muted-foreground">
               {new Date(m.updatedAt).toLocaleString()}
@@ -127,24 +130,34 @@ export function MemoriesTab() {
   const act = useAction();
   return (
     <>
-      <p className="-mt-2 text-xs text-muted-foreground">{ST.memoryHint}</p>
-      <Section title={ST.tabs.memories}>
+      <p className="settings-context-note border-l-2 border-border-strong pl-4 text-xs leading-5 text-muted-foreground">
+        {ST.memoryHint}
+      </p>
+      <Section>
         <SearchInput
           placeholder={ST.memorySearch}
+          className="max-w-[420px]"
           aria-label={ST.memorySearch}
           value={q}
           onChange={(e) => setQ(e.target.value)}
         />
-        <div className="flex flex-col gap-2">
+        <LoadStatus data={list.data} error={list.error} />
+        <div className="settings-list flex flex-col gap-3">
           {list.data?.items.length === 0 && <Empty />}
           {list.data?.items.map((m) => (
             <MemoryItem key={`${m.id}-${m.updatedAt}`} m={m} onChanged={list.reload} />
           ))}
         </div>
       </Section>
-      <Section title={ST.add}>
+      <Disclosure
+        className="settings-create border-t border-border/70 pt-6"
+        summary={ST.addMemory}
+        variant="section"
+        icon={<Icon name="plus" size="sm" />}
+        contentClassName="pt-5"
+      >
         <form
-          className="flex flex-col gap-3"
+          className="settings-form flex flex-col gap-4"
           onSubmit={(e) => {
             e.preventDefault();
             void act
@@ -180,12 +193,12 @@ export function MemoriesTab() {
             </UiField>
             <span className="flex-1" />
             <Button type="submit" loading={act.busy}>
-              {ST.add}
+              {ST.addMemory}
             </Button>
           </div>
           <Feedback msg={act.msg} />
         </form>
-      </Section>
+      </Disclosure>
     </>
   );
 }

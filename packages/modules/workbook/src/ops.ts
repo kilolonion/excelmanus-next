@@ -15,6 +15,7 @@ import {
 } from "@excelmanus/core";
 import { Direction, type IWorkbookData, type IWorksheetData } from "@univerjs/core";
 import { z } from "zod";
+import { sheetNamesOf } from "./summary.ts";
 
 // ---------- 输入 schema ----------
 
@@ -128,6 +129,7 @@ export interface CompiledOps {
   estCells: number;
   /** 含需快照回滚的操作（remove-sheet）。 */
   needsSnapshot: boolean;
+  sheetNames: Map<string, string>;
 }
 
 export class OpCompileError extends Error {
@@ -203,6 +205,7 @@ const HALIGN = { left: 1, center: 2, right: 3 } as const;
 
 export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
   ctx = { ...ctx, snapshot: structuredClone(ctx.snapshot) };
+  const sheetNames = sheetNamesOf(ctx.snapshot);
   const commands: CompiledCommand[] = [];
   const ranges: RangeRef[] = [];
   const structural: StructuralOp[] = [];
@@ -440,6 +443,7 @@ export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
           },
         });
         ctx.snapshot.sheets[id] = added;
+        sheetNames.set(id, op.name);
         ctx.snapshot.sheetOrder.splice(index, 0, id);
         structural.push({ sheetId: id, kind: "insertSheet", index, count: 0 });
         break;
@@ -458,6 +462,7 @@ export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
         )
           throw new OpCompileError("工作表名称无效或重复");
         sheet.data.name = op.name;
+        sheetNames.set(sheet.id, op.name);
         structural.push({ sheetId: sheet.id, kind: "renameSheet", index: 0, count: 0 });
         break;
       }
@@ -479,6 +484,8 @@ export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
           count: 0,
         });
         needsSnapshot = true;
+        delete ctx.snapshot.sheets[sheet.id];
+        ctx.snapshot.sheetOrder.splice(index, 1);
         break;
       }
       case "freeze": {
@@ -500,7 +507,7 @@ export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
         break;
     }
   }
-  return { commands, ranges, structural, formulas, estCells, needsSnapshot };
+  return { commands, ranges, structural, formulas, estCells, needsSnapshot, sheetNames };
 }
 
 export { rangeRefToA1 };

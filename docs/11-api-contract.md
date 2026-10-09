@@ -16,7 +16,7 @@
 | 项 | 约定 |
 | --- | --- |
 | 前缀 | `/api/v1` |
-| 鉴权 | `Authorization: Bearer <设备令牌>`；只有 `GET /api/v1/health` 免鉴权 |
+| 鉴权 | CLI/桌面使用 `Authorization: Bearer <设备令牌>`；本机 Web 首次通过 `POST /api/v1/auth/session` 建立 `HttpOnly; SameSite=Strict` 会话 Cookie，之后自动携带；只有 `GET /api/v1/health` 与会话建立/退出端点免已有会话 |
 | 请求 ID | 服务端生成 `X-Request-Id` 并写入日志与追踪；客户端可传入 |
 | 错误 | HTTP 状态码 + `{ error: { code, message, details?, requestId } }`，`code` 来自统一词表 |
 | 幂等 | 创建类请求接受 `Idempotency-Key`；发送消息使用 `clientMessageId`（[04 §4.3](04-agent-runtime.md#43-派发记录与幂等硬性)） |
@@ -26,6 +26,8 @@
 | 不支持的功能 | 不提供对应端点，不返回伪造的成功 |
 
 本机 HTTP 请求校验 Host；请求携带 Origin 时也必须属于允许来源，拒绝返回 `forbidden_origin`。无 Origin 的 CLI 仍需设备令牌。静态资源只允许读取构建目录内的实际文件。
+
+浏览器会话端点本身要求允许的 Origin，不返回设备令牌正文；会话 Cookie 不进入 URL、`localStorage`、日志或导出。退出通过 `POST /api/v1/auth/logout` 清除 Cookie。浏览器 WebSocket 仍先用 Cookie 鉴权的 REST 请求换取一次性票据。
 
 上传只创建新文件。同名目标返回 HTTP 409 `conflict`，不覆盖；替换已有文件须走具备备份与版本检查的文件管理路径。上传文件上限为 200 MiB，multipart 请求额外允许 64 KiB 包装开销；其他请求上限为 10 MiB。没有 Content-Length 的请求同样受实际读取大小限制。
 
@@ -60,6 +62,8 @@
 | `doc.submit` | `docId`、`clientOpId`、`baseRev`、`mutations` | 用户在工作台中的编辑 |
 | `presence` | `docId`、`sheet`、`selection`、`viewport` | 当前查看与选区（节流：每 200 ms 最多一次） |
 | `ping` | | |
+
+`doc.submit` 只携带工作台用户命令触发的修改，保留 Univer `params.trigger`。`formula.mutation.*` 与没有用户命令 `trigger` 的 `sheet.mutation.set-range-values` 是派生事件：前端过滤，服务端整批拒绝并返回 `UNSUPPORTED_FEATURE`，不生成用户修订。值/公式/样式编辑仍由文档 actor 统一应用和重算（[ADR 0018](decisions/0018-workbook-observations-and-derived-mutations.md)）。
 
 服务端 → 客户端：
 
@@ -132,7 +136,7 @@
 | 健康 | `GET /health` | 免鉴权，只返回 `ok` 与版本 |
 | 启动信息 | `GET /bootstrap` | 协议版本、应用版本、形态、是否已配置模型、已启用模块、功能开关、本机数据目录 `dataDir`（需鉴权，仅供设置页展示） |
 | 同步票据 | `POST /sync/ticket` | 见 §3.1 |
-| 设置 | `GET/PATCH /settings` | 只提交修改的键；响应附"需要重启"的键 |
+| 设置 | `GET/PATCH /settings` | 只提交修改的键；defaultDispatchMode 配置运行中消息默认策略（steer/queue/interrupt，默认 steer，即时生效）；响应附"需要重启"的键 |
 | 模型档案 | `/model-profiles` | CRUD、设为默认；`POST /{id}/test`；`POST /{id}/probe`（进度在 `app` 主题） |
 | 提供商 | `GET /providers`；`POST /providers/{id}/models` | 预设列表；拉取远端模型列表 |
 | 订阅账号 | `/accounts` | 列表；`POST /accounts/{provider}/login`（授权 URL 或设备码）；`POST /accounts/{provider}/login/poll`；`POST /{id}/refresh`；`DELETE /{id}` |
@@ -140,9 +144,9 @@
 | 文件 | `/workspaces/{id}/files` | `GET ?path=` 列目录；`POST /upload`；`GET /download?path=`；`POST /manage`（批量 mkdir/copy/move/delete，与 `files` 工具同一实现） |
 | 文档 | `/workspaces/{id}/docs` | `POST /open`（返回 `docId`、`rev`）；`GET /{docId}/snapshot?rev=&window=`（快照，大文件按窗口）；`POST /{docId}/render`（截图）；`GET /{docId}/revs/{rev}/before`（该修订改动单元格的修改前的值，来自逆操作，07 §7.4）。编辑只经同步通道的 `doc.submit` |
 | 备份与回收站 | `/workspaces/{id}/backups`、`/trash` | 列表、下载、替换回原文件、删除 |
-| 会话 | `/sessions` | 列表（搜索、分页）、创建、改名、删除、导出 Markdown；`GET /{id}`（摘要、代理、待处理交互、`headSeq`） |
+| 会话 | `/sessions` | 列表（`q` 标题搜索、`workspaceId` 过滤、游标分页；先过滤再分页）、创建、改名、删除、导出 Markdown；`GET /{id}`（摘要、代理、待处理交互、`headSeq`） |
 | 会话日志 | `GET /sessions/{id}/log?before=&limit=` | 向前分页读取历史（打开旧会话时按需加载，之后靠同步通道） |
-| 发送消息 | `POST /sessions/{id}/agents/{agentId}/messages` | `clientMessageId`、内容、附件、上下文引用（含文档修订）、`mode`；返回派发记录 |
+| 发送消息 | `POST /sessions/{id}/agents/{agentId}/messages` | `clientMessageId`、内容、附件、上下文引用（含文档修订）、`mode`（缺省读取 defaultDispatchMode）、可选 `replacesDispatchId`（原子撤回并替换未生效派发）；返回派发记录 |
 | 撤回排队消息 | `DELETE /sessions/{id}/dispatches/{dispatchId}` | 仅未应用的 |
 | 停止 / 继续 | `POST /sessions/{id}/agents/{agentId}/stop`、`/resume`；`POST /sessions/{id}/stop-all` | |
 | 审批 | `POST /approvals/{id}` | `decision`、`reason?`、`remember?` |
@@ -157,6 +161,14 @@
 | 设备 | `/devices` | 列表、吊销（配对端点 P2） |
 | 诊断 | `GET /diagnostics/traces?sessionId=`；`POST /diagnostics/export` | 本地追踪查看、导出脱敏诊断包（[03 §9](03-architecture.md#9-可观测性)） |
 | 桌面专用 | Electron IPC，不走 HTTP | 选择目录、更新、打开外部链接、通知 |
+
+### 4.1 会话创建与自动落点
+
+`POST /sessions` 的 `workspaceId` 可省略，后端使用已登记的默认工作区；明确传入不存在或空的 ID 时拒绝，不静默改绑。成功响应中的 `session.workspaceId` 来自持久化日志的投影，前端按详情恢复归属。
+
+`reuseBlank` 是可选布尔字段，默认 `false`。自动落点传 `true`，服务端在指定（或默认）工作区中寻找未命名、仅有 `session.created` 与 `agent.spawned` 日志、仅一个空闲 `main` 的会话；找到时返回原摘要与代理（HTTP 200），不追加日志或重复推送创建事件，否则按正常路径创建（HTTP 201）。查询与日志提交之间不得异步让出执行，避免同一后端的并发自动落点生成重复空白会话。复用请求不能同时指定标题、权限模式或模型档案（HTTP 400），以免覆盖旧会话的冻结上下文；显式新建可设置这些字段。
+
+`GET /sessions` 的查询契约由 `SessionListQuery` 定义：`cursor?`、`limit?`（1–200，默认 50）、`q?`、`workspaceId?`。前端读完分页再按工作区组织会话与计数；文件页仍以当前工作区为范围。分组的新建入口向相同 `POST /sessions` 显式传该组的 `workspaceId`。导航与折叠偏好只影响展示/打开哪条会话，不修改既有会话绑定，不提供跨工作区迁移。
 
 ## 5. 契约测试【硬性】
 

@@ -36,6 +36,7 @@ import { AttachmentRef } from "./records.ts";
 import {
   type ApprovalDecisionBody,
   ApprovalResponse,
+  AuthSessionResponse,
   BootstrapResponse,
   CompactResponse,
   type ControlBody,
@@ -63,6 +64,7 @@ import {
   type SendMessageBody,
   SendMessageResponse,
   SessionDetailResponse,
+  type SessionListQuery,
   SessionListResponse,
   SessionLogResponse,
   StopAllResponse,
@@ -97,6 +99,8 @@ export class ApiError extends Error {
 
 export interface ApiClient {
   health(): Promise<z.infer<typeof HealthResponse>>;
+  createBrowserSession(): Promise<z.infer<typeof AuthSessionResponse>>;
+  logoutBrowserSession(): Promise<z.infer<typeof OkResponse>>;
   bootstrap(): Promise<z.infer<typeof BootstrapResponse>>;
   createTicket(): Promise<z.infer<typeof TicketResponse>>;
 
@@ -114,12 +118,9 @@ export interface ApiClient {
   setDefaultModelProfile(id: string): Promise<z.infer<typeof ProfileResponse>>;
   testModelProfile(id: string): Promise<z.infer<typeof TestProfileResponse>>;
 
-  listSessions(opts?: {
-    cursor?: string;
-    limit?: number;
-    /** 按标题搜索。 */
-    q?: string;
-  }): Promise<z.infer<typeof SessionListResponse>>;
+  listSessions(
+    opts?: z.infer<typeof SessionListQuery>,
+  ): Promise<z.infer<typeof SessionListResponse>>;
   /** idempotencyKey：重试同一次创建时传同一个键，不会建出重复会话（11 §2）。 */
   createSession(
     body: z.infer<typeof CreateSessionBody>,
@@ -276,7 +277,7 @@ export interface ApiClient {
 
 export function createApiClient(
   baseUrl: string,
-  token: string,
+  token: string | null = null,
   fetchImpl: typeof fetch = fetch,
 ): ApiClient {
   const base = baseUrl.replace(/\/+$/, "");
@@ -291,10 +292,11 @@ export function createApiClient(
     const res = await fetchImpl(`${base}/api/v1${path}`, {
       method,
       headers: {
-        authorization: `Bearer ${token}`,
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
         ...(body !== undefined ? { "content-type": "application/json" } : {}),
         ...extraHeaders,
       },
+      credentials: token ? "omit" : "include",
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
     const json: unknown = await res.json().catch(() => null);
@@ -314,7 +316,8 @@ export function createApiClient(
   /** 二进制下载：错误体仍按契约 RestError 解析。 */
   async function blobOf(path: string): Promise<Blob> {
     const res = await fetchImpl(`${base}/api/v1${path}`, {
-      headers: { authorization: `Bearer ${token}` },
+      headers: token ? { authorization: `Bearer ${token}` } : undefined,
+      credentials: token ? "omit" : "include",
     });
     if (!res.ok) {
       const parsed = RestError.safeParse(await res.json().catch(() => null));
@@ -412,7 +415,8 @@ export function createApiClient(
       const res = await fetchImpl(
         `${base}/api/v1/workspaces/${workspaceId}/${kind}/${id}/download`,
         {
-          headers: { authorization: `Bearer ${token}` },
+          headers: token ? { authorization: `Bearer ${token}` } : undefined,
+          credentials: token ? "omit" : "include",
         },
       );
       if (!res.ok) throw new ApiError(res.status, `http_${res.status}`, `HTTP ${res.status}`);
@@ -423,6 +427,8 @@ export function createApiClient(
     exportSession: (sessionId) => blobOf(`/sessions/${sessionId}/export`),
 
     health: () => call(HealthResponse, "GET", "/health"),
+    createBrowserSession: () => call(AuthSessionResponse, "POST", "/auth/session"),
+    logoutBrowserSession: () => call(OkResponse, "POST", "/auth/logout"),
     bootstrap: () => call(BootstrapResponse, "GET", "/bootstrap"),
     createTicket: () => call(TicketResponse, "POST", "/sync/ticket"),
 
@@ -439,7 +445,7 @@ export function createApiClient(
       call(
         SessionListResponse,
         "GET",
-        `/sessions${qs({ cursor: opts?.cursor, limit: opts?.limit, q: opts?.q })}`,
+        `/sessions${qs({ cursor: opts?.cursor, limit: opts?.limit, q: opts?.q, workspaceId: opts?.workspaceId })}`,
       ),
     createSession: (body, opts) =>
       call(
@@ -507,7 +513,8 @@ export function createApiClient(
       fd.append("file", blob, file.name);
       const res = await fetchImpl(`${base}/api/v1/workspaces/${workspaceId}/files/upload`, {
         method: "POST",
-        headers: { authorization: `Bearer ${token}` },
+        headers: token ? { authorization: `Bearer ${token}` } : undefined,
+        credentials: token ? "omit" : "include",
         body: fd,
       });
       const json: unknown = await res.json().catch(() => null);
@@ -528,7 +535,8 @@ export function createApiClient(
       fd.append("file", file.data, file.name);
       const res = await fetchImpl(`${base}/api/v1/attachments`, {
         method: "POST",
-        headers: { authorization: `Bearer ${token}` },
+        headers: token ? { authorization: `Bearer ${token}` } : undefined,
+        credentials: token ? "omit" : "include",
         body: fd,
       });
       const json: unknown = await res.json().catch(() => null);
@@ -544,13 +552,7 @@ export function createApiClient(
       }
       return AttachmentRef.parse((json as { attachment?: unknown } | null)?.attachment);
     },
-    getAttachment: async (sha256) => {
-      const res = await fetchImpl(`${base}/api/v1/attachments/${sha256}`, {
-        headers: { authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) throw new ApiError(res.status, `http_${res.status}`, `HTTP ${res.status}`);
-      return res.blob();
-    },
+    getAttachment: (sha256) => blobOf(`/attachments/${sha256}`),
   };
 }
 

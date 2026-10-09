@@ -61,8 +61,8 @@ export interface SheetChanges {
   structural: Set<string>;
 }
 /**
- * 汇总已提交修订的写集。存储的写集只含作者写入（提交时已剔除并入的引擎结果），
- * 引擎来源修订（异步重算）整体不计入：引擎重算不算"修改"（P0-04），被改写表里只刷新 <v> 缓存。
+ * 汇总已提交修订的写集。引擎来源修订不算作者修改，但仍要把它的区域交给导出器，
+ * 这样异步重算能够只刷新对应公式单元格的 <v> 缓存；否则仅有引擎修订时会继续保留旧缓存。
  */
 export function pendingChanges(
   records: Array<{
@@ -75,7 +75,7 @@ export function pendingChanges(
   for (const rec of records) {
     for (const s of rec.writeSet.structural)
       if (/^(?:insert|delete)(?:Rows|Cols)$|^moveRange$/.test(s.kind)) structural.add(s.sheetId);
-    if (rec.sourceKind !== "engine") ranges.push(...rec.writeSet.ranges);
+    ranges.push(...rec.writeSet.ranges);
   }
   return { ranges, structural };
 }

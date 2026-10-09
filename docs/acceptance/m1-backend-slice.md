@@ -62,7 +62,7 @@ context）→ 代理调用只读文件/工作簿工具 → 流式回答 → Reac
 ## 前端（packages/web）
 
 - React 19.3 + Vite 7 + Zustand + marked；普通 CSS（stitch 视觉参考），无 Tailwind。
-- 令牌：`#token=` → localStorage → 清 hash；REST 只经 `createApiClient`；
+- 令牌（M1 历史形态）：`#token=` → localStorage → 清 hash；REST 只经 `createApiClient`。当前本机 Web 已按 [ADR 0013](../decisions/0013-browser-session-cookie.md) 改为 HttpOnly 会话 Cookie，旧链接仅作一次性迁移兼容；
   WS 走票据 + `sub cursor` + 断线指数退避重连续传。
 - `reduceSession` 纯函数：未知类型 console.warn 忽略、seq 幂等、delta 累积为
   流式文本、model.output 替换、attempt.discarded 清除。

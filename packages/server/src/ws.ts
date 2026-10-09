@@ -6,7 +6,12 @@ import type { IncomingMessage, Server } from "node:http";
 import type { Duplex } from "node:stream";
 import { setImmediate as yieldLoop } from "node:timers/promises";
 import type { SessionLog, SyncBus } from "@excelmanus/kernel";
-import type { LogRecord, ServerMessage, SnapshotMsg } from "@excelmanus/protocol";
+import type {
+  LogRecord,
+  PresenceParticipant,
+  ServerMessage,
+  SnapshotMsg,
+} from "@excelmanus/protocol";
 import { ClientMessage, protocolVersion } from "@excelmanus/protocol";
 import type { DocMutation, DocumentService } from "@excelmanus/workbook";
 import { deriveWriteSet } from "@excelmanus/workbook";
@@ -40,6 +45,8 @@ interface Conn {
   ws: WebSocket;
   subs: Map<string, Sub>;
   docSubs: Map<string, DocSub>;
+  /** 当前连接在每个文档上的瞬时 presence；断线即清除，不落库。 */
+  presence: Map<string, PresenceParticipant>;
   isAppSub: boolean;
   idleTimer: NodeJS.Timeout;
 }
@@ -84,6 +91,24 @@ export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () 
   const send = (conn: Conn, msg: ServerMessage) => {
     if (conn.ws.readyState !== conn.ws.OPEN) return;
     conn.ws.send(JSON.stringify(msg));
+  };
+
+  const presenceColor = (connectionId: string): string => {
+    const palette = ["#4f46e5", "#059669", "#d97706", "#db2777", "#0891b2", "#7c3aed"];
+    let n = 0;
+    for (const ch of connectionId) n = (n * 31 + ch.charCodeAt(0)) >>> 0;
+    return palette[n % palette.length] as string;
+  };
+
+  const publishPresence = (docId: string) => {
+    const topic = `doc:${docId}`;
+    const participants = [...conns.values()]
+      .filter((conn) => conn.docSubs.has(topic))
+      .map((conn) => conn.presence.get(docId))
+      .filter((p): p is PresenceParticipant => p !== undefined);
+    for (const conn of conns.values()) {
+      if (conn.docSubs.has(topic)) send(conn, { type: "presence", docId, participants });
+    }
   };
 
   const publishRec = (topic: string, rec: LogRecord) => {
@@ -307,6 +332,8 @@ export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () 
       }
       sub.buffer = [];
       sub.live = true;
+      // presence 是瞬时状态：新订阅者立即拿到当前参与者，不走历史游标。
+      publishPresence(docId);
       emit("sub.live", { connectionId: conn.id, topic, caughtUp: 0 });
       return;
     }
@@ -376,14 +403,32 @@ export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () 
       case "render.result":
         opts.render?.handleResult(conn.id, msg);
         break;
-      case "unsub":
+      case "unsub": {
         if (msg.topic === "app") {
           conn.isAppSub = false;
           opts.render?.removeRenderer(conn.id);
         }
         conn.subs.delete(msg.topic);
+        const oldDoc = msg.topic.startsWith("doc:") ? msg.topic.slice("doc:".length) : null;
         conn.docSubs.delete(msg.topic);
+        if (oldDoc !== null && conn.presence.delete(oldDoc)) publishPresence(oldDoc);
         break;
+      }
+      case "presence": {
+        if (!conn.docSubs.has(`doc:${msg.docId}`)) break;
+        conn.presence.set(msg.docId, {
+          participantId: conn.id,
+          kind: "client",
+          name: "当前用户",
+          color: presenceColor(conn.id),
+          sheet: msg.sheet,
+          selection: msg.selection,
+          ...(msg.viewport !== undefined ? { viewport: msg.viewport } : {}),
+          updatedAt: new Date().toISOString(),
+        });
+        publishPresence(msg.docId);
+        break;
+      }
       case "doc.submit": {
         const svc = opts.docService;
         const root = opts.workspaceRootFor?.(msg.docId);
@@ -441,7 +486,7 @@ export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () 
       default:
         send(conn, {
           type: "error",
-          error: { code: "not_implemented", message: `${msg.type} 尚未实现` },
+          error: { code: "not_implemented", message: "该同步消息尚未实现" },
         });
         break;
     }
@@ -489,6 +534,7 @@ export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () 
         ws,
         subs: new Map(),
         docSubs: new Map(),
+        presence: new Map(),
         isAppSub: false,
         idleTimer: setTimeout(() => {}, 0),
       };
@@ -515,7 +561,10 @@ export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () 
       ws.on("close", (code) => {
         clearTimeout(conn.idleTimer);
         clearInterval(pinger);
+        const changedDocs = [...conn.presence.keys()];
+        conn.presence.clear();
         conns.delete(conn.id);
+        for (const docId of changedDocs) publishPresence(docId);
         opts.render?.removeRenderer(conn.id);
         emit("ws.close", { connectionId: conn.id, code });
       });

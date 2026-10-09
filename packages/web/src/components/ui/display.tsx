@@ -39,16 +39,16 @@ export function statusTone(status: string | null | undefined): Exclude<Tone, "ou
 }
 
 const badgeVariants = cva(
-  "inline-flex h-5 shrink-0 items-center gap-1 rounded-xs border px-1.5 text-2xs font-medium whitespace-nowrap",
+  "inline-flex h-5 shrink-0 items-center gap-1 rounded-xs border px-1.5 text-2xs font-medium leading-none whitespace-nowrap",
   {
     variants: {
       tone: {
-        neutral: "border-transparent bg-muted text-foreground-secondary",
+        neutral: "border-transparent bg-muted/80 text-foreground-secondary",
         read: "border-transparent bg-read-soft text-read-ink",
         warn: "border-transparent bg-warn-soft text-warn-ink",
         ok: "border-transparent bg-ok-soft text-ok-ink",
         err: "border-transparent bg-destructive-soft text-destructive-ink",
-        outline: "border-border-strong bg-transparent text-foreground-secondary",
+        outline: "border-border bg-transparent text-foreground-secondary",
       },
       mono: { true: "font-mono tabular-nums slashed-zero", false: "" },
     },
@@ -87,7 +87,7 @@ export function StatusDot({
   className?: string;
 }) {
   return (
-    <span className={cn("relative inline-flex size-2 shrink-0", className)}>
+    <span data-slot="status-dot" className={cn("relative inline-flex size-2 shrink-0", className)}>
       {pulse && (
         <span
           className={cn(
@@ -124,13 +124,14 @@ export const Card = forwardRef<
     <C
       ref={ref}
       data-slot="card"
+      data-elevation={elevation ?? "flat"}
       className={cn(cardVariants({ elevation, accent }), className)}
       {...props}
     />
   );
 });
 
-const alertVariants = cva("flex gap-2.5 text-sm", {
+const alertVariants = cva("flex gap-3 text-sm leading-relaxed", {
   variants: {
     tone: {
       info: "border-read/30 bg-read-soft text-read-ink",
@@ -140,7 +141,7 @@ const alertVariants = cva("flex gap-2.5 text-sm", {
       muted: "border-border bg-muted text-foreground-secondary",
     },
     layout: {
-      block: "items-start rounded-lg border px-3.5 py-3",
+      block: "items-start rounded-lg border px-4 py-3.5",
       bar: "items-center border-b px-4 py-2 text-xs",
       inline: "items-start rounded-md border px-2.5 py-1.5 text-xs",
     },
@@ -166,7 +167,13 @@ export function Alert({
 }: HTMLAttributes<HTMLDivElement> &
   VariantProps<typeof alertVariants> & { icon?: IconName | false }) {
   return (
-    <div data-slot="alert" className={cn(alertVariants({ tone, layout }), className)} {...props}>
+    <div
+      data-slot="alert"
+      data-tone={tone}
+      data-layout={layout}
+      className={cn(alertVariants({ tone, layout }), className)}
+      {...props}
+    >
       {icon !== false && (
         <Icon
           name={icon ?? ALERT_ICON[tone ?? "info"] ?? "info"}
@@ -209,8 +216,8 @@ export function EmptyState({
     typeof icon === "string" ? (
       <span
         className={cn(
-          "flex items-center justify-center rounded-xl bg-card text-foreground-secondary shadow-card",
-          size === "page" ? "size-11" : "size-9",
+          "flex items-center justify-center text-foreground-secondary",
+          size === "page" ? "mb-1 size-12 rounded-lg bg-muted" : "size-9",
         )}
       >
         <Icon name={icon as IconName} size={size === "page" ? "lg" : "md"} />
@@ -221,24 +228,28 @@ export function EmptyState({
   return (
     <div
       data-slot="empty-state"
+      data-size={size}
       className={cn(
-        "flex flex-col items-center justify-center gap-3 text-center",
-        size === "page"
-          ? "py-16"
-          : "rounded-lg border border-dashed border-border-strong px-4 py-8",
+        "flex flex-col items-center justify-center gap-2 text-center",
+        size === "page" ? "py-16" : "px-6 py-10",
         className,
       )}
     >
       {iconNode}
-      <div className={cn("font-semibold", size === "page" ? "text-xl" : "text-sm")}>{title}</div>
+      <div className={cn("font-medium text-foreground", size === "page" ? "text-xl" : "text-sm")}>
+        {title}
+      </div>
       {description && (
         <div
-          className={cn("max-w-md text-muted-foreground", size === "page" ? "text-sm" : "text-xs")}
+          className={cn(
+            "max-w-md leading-relaxed text-muted-foreground",
+            size === "page" ? "text-sm" : "text-xs",
+          )}
         >
           {description}
         </div>
       )}
-      {action}
+      {action && <div className="mt-3">{action}</div>}
     </div>
   );
 }
@@ -265,14 +276,7 @@ export function Separator({
 
 export function SectionLabel({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <span
-      className={cn(
-        "text-2xs font-semibold tracking-wider text-muted-foreground uppercase",
-        className,
-      )}
-    >
-      {children}
-    </span>
+    <span className={cn("text-2xs font-medium text-muted-foreground", className)}>{children}</span>
   );
 }
 
@@ -320,7 +324,7 @@ export const RangeChip = forwardRef<
     </>
   );
   const cls = cn(
-    "inline-flex h-6 max-w-full min-w-0 items-center gap-1 rounded-xs border px-1.5 text-xs whitespace-nowrap",
+    "inline-flex h-6 max-w-full min-w-0 items-center gap-1.5 rounded-xs border px-2 text-xs whitespace-nowrap",
     t.cls,
     className,
   );
@@ -365,28 +369,29 @@ export const NavItem = forwardRef<
   return (
     <div
       className={cn(
-        "group/nav relative flex h-8 min-w-0 items-center rounded-md text-sm transition-colors",
-        current ? "bg-card font-medium shadow-xs ring-1 ring-border" : "hover:bg-accent",
+        "group/nav relative flex h-9 min-w-0 items-center rounded-md text-sm transition-colors duration-150",
+        current
+          ? "bg-accent/80 font-medium text-foreground"
+          : "text-foreground-secondary hover:bg-accent/60 hover:text-foreground",
         muted && "text-muted-foreground",
         className,
       )}
+      data-slot="nav-item"
+      data-current={current || undefined}
     >
       <button
         ref={ref}
         type="button"
         aria-current={current ? "page" : undefined}
-        className="flex h-full min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-left focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring"
+        className="flex h-full min-w-0 flex-1 items-center gap-2.5 rounded-md px-2.5 text-left focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring"
         {...props}
       >
         {icon}
         <span className="min-w-0 flex-1 truncate">{children}</span>
-        {meta && (
+        {meta && !actions && (
           <span
-            className={cn(
-              "shrink-0 text-2xs text-muted-foreground tabular-nums",
-              actions && "group-focus-within/nav:invisible group-hover/nav:invisible",
-              actions && current && "invisible",
-            )}
+            data-slot="nav-meta"
+            className="shrink-0 text-2xs text-muted-foreground tabular-nums"
           >
             {meta}
           </span>
@@ -394,12 +399,29 @@ export const NavItem = forwardRef<
       </button>
       {actions && (
         <span
-          className={cn(
-            "absolute right-1 flex items-center opacity-0 group-focus-within/nav:opacity-100 group-hover/nav:opacity-100",
-            current && "opacity-100",
-          )}
+          data-slot="nav-trailing"
+          className="mr-1 inline-grid shrink-0 items-center justify-items-end"
         >
-          {actions}
+          {meta && (
+            <span
+              data-slot="nav-meta"
+              className={cn(
+                "col-start-1 row-start-1 pr-1.5 text-2xs text-muted-foreground tabular-nums group-focus-within/nav:invisible group-hover/nav:invisible",
+                current && "invisible",
+              )}
+            >
+              {meta}
+            </span>
+          )}
+          <span
+            data-slot="nav-actions"
+            className={cn(
+              "pointer-events-none col-start-1 row-start-1 flex items-center opacity-0 transition-opacity duration-150 group-focus-within/nav:pointer-events-auto group-focus-within/nav:opacity-100 group-hover/nav:pointer-events-auto group-hover/nav:opacity-100",
+              current && "pointer-events-auto opacity-100",
+            )}
+          >
+            {actions}
+          </span>
         </span>
       )}
     </div>

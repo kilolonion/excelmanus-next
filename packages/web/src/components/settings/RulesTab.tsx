@@ -4,16 +4,19 @@ import { RULE_MAX_CHARS, type Rule } from "@excelmanus/protocol";
 import { useId, useState } from "react";
 import { apiClientOf, useApp } from "../../store.ts";
 import { ST } from "../../strings.ts";
+import { Icon } from "../Icon.tsx";
 import { Button } from "../ui/button.tsx";
 import { cn } from "../ui/cn.ts";
 import { Switch } from "../ui/controls.tsx";
 import { Label } from "../ui/field.tsx";
 import { Textarea } from "../ui/input.tsx";
+import { Disclosure } from "../ui/overlay.tsx";
 import { SimpleSelect } from "../ui/select.tsx";
 import {
   Empty,
   Feedback,
   ItemCard,
+  LoadStatus,
   Section,
   useAction,
   useConfirmDelete,
@@ -38,7 +41,12 @@ function RuleItem({ rule, onChanged }: { rule: Rule; onChanged(): void }) {
           onChange={(e) => setText(e.target.value)}
         />
       ) : (
-        <p className={cn("text-sm whitespace-pre-wrap", !rule.enabled && "text-muted-foreground")}>
+        <p
+          className={cn(
+            "text-sm leading-6 whitespace-pre-wrap",
+            !rule.enabled && "text-muted-foreground",
+          )}
+        >
           {rule.content}
         </p>
       )}
@@ -114,7 +122,7 @@ export function RulesTab() {
   const over = (rules.data?.totalChars ?? 0) > (rules.data?.maxTotalChars ?? Infinity);
   const group = (scope: "global" | "session", title: string) => (
     <Section title={title}>
-      <div className="flex flex-col gap-2">
+      <div className="settings-list flex flex-col gap-3">
         {items.filter((r) => r.scope === scope).length === 0 && <Empty />}
         {items
           .filter((r) => r.scope === scope)
@@ -126,8 +134,8 @@ export function RulesTab() {
   );
   return (
     <>
-      <div className="-mt-2 flex flex-col gap-1">
-        <p className="text-xs text-muted-foreground">{ST.ruleHint}</p>
+      <div className="settings-context-note flex flex-col gap-2 border-l-2 border-border-strong pl-4">
+        <p className="text-xs leading-5 text-muted-foreground">{ST.ruleHint}</p>
         {rules.data && (
           <p className={cn("text-xs", over ? "text-destructive" : "text-muted-foreground")}>
             {ST.ruleTotal(rules.data.totalChars, rules.data.maxTotalChars)}
@@ -135,11 +143,18 @@ export function RulesTab() {
           </p>
         )}
       </div>
-      {group("global", ST.ruleGlobal)}
-      {sessionId && group("session", ST.ruleSession)}
-      <Section title={ST.add}>
+      <LoadStatus data={rules.data} error={rules.error} />
+      {rules.data && group("global", ST.ruleGlobal)}
+      {rules.data && sessionId && group("session", ST.ruleSession)}
+      <Disclosure
+        className="settings-create border-t border-border/70 pt-6"
+        summary={ST.addRule}
+        variant="section"
+        icon={<Icon name="plus" size="sm" />}
+        contentClassName="pt-5"
+      >
         <form
-          className="flex flex-col gap-3"
+          className="settings-form flex flex-col gap-4"
           onSubmit={(e) => {
             e.preventDefault();
             void act
@@ -175,12 +190,12 @@ export function RulesTab() {
               ]}
             />
             <Button type="submit" loading={act.busy}>
-              {ST.add}
+              {ST.addRule}
             </Button>
           </div>
           <Feedback msg={act.msg} />
         </form>
-      </Section>
+      </Disclosure>
     </>
   );
 }

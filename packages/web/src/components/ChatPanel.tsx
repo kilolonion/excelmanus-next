@@ -15,7 +15,6 @@ import {
 import {
   addComposerFiles,
   attachmentUrl,
-  cancelDispatch,
   compactNow,
   composerContext,
   dismissContext,
@@ -32,14 +31,16 @@ import {
   setSessionPermission,
   setSettingsOpen,
   stopAgent,
-  switchModel,
   undoMemory,
   useApp,
 } from "../store.ts";
 import { S, toolTitle } from "../strings.ts";
-import { Icon, type IconName } from "./Icon.tsx";
+import { useChatScroll } from "../use-chat-scroll.ts";
+import { Icon, type IconName, ProviderLogo } from "./Icon.tsx";
 import { Interactions } from "./Interactions.tsx";
+import { ModelReasoningControl } from "./ModelReasoningControl.tsx";
 import { Onboarding } from "./Onboarding.tsx";
+import { PendingMessage } from "./PendingMessage.tsx";
 import {
   type SuggestItem,
   SuggestList,
@@ -55,19 +56,11 @@ import {
   AlertTitle,
   Badge,
   Card,
-  EmptyState,
   RangeChip,
   statusTone,
 } from "./ui/display.tsx";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuTrigger,
-} from "./ui/dropdown-menu.tsx";
 import { Input, Textarea } from "./ui/input.tsx";
-import { Disclosure, ScrollArea } from "./ui/overlay.tsx";
+import { Disclosure, ScrollArea, toast } from "./ui/overlay.tsx";
 import { SimpleSelect } from "./ui/select.tsx";
 import { Dots, Spinner } from "./ui/spinner.tsx";
 import { Tip } from "./ui/tooltip.tsx";
@@ -80,13 +73,6 @@ const TOOL_STATUS: Record<ToolCard["status"], string> = {
   cancelled: S.toolCancelled,
   uncertain: S.toolUncertain,
 };
-
-type DispatchMode = "steer" | "interrupt" | "queue";
-const DISPATCH_MODES: { value: DispatchMode; label: string }[] = [
-  { value: "steer", label: S.modeSteer },
-  { value: "interrupt", label: S.modeInterrupt },
-  { value: "queue", label: S.modeQueue },
-];
 
 /** 用户消息下方的派发状态文案（02 §3.2）；accepted 不显示。 */
 function dispatchLabel(s: SessionState, m: UiMessage): string | null {
@@ -133,7 +119,10 @@ function ToolCardView({ card }: { card: ToolCard }) {
   const hasResult = card.resultSummary !== undefined && card.resultSummary !== "";
   const tone = toolTone(card.status);
   return (
-    <Card elevation="raised" className="flex flex-col gap-2 rounded-xl px-3.5 py-3">
+    <Card
+      elevation="flat"
+      className="flex flex-col gap-2.5 rounded-xl border-border/80 px-4 py-3.5"
+    >
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         <span
           className={cn("flex size-5 items-center justify-center rounded-full", TONE_CIRCLE[tone])}
@@ -191,22 +180,24 @@ function ToolCardView({ card }: { card: ToolCard }) {
           {(hasArgs || hasResult) && (
             <Disclosure
               className="flex-1"
-              summary={
-                <>
-                  {S.toolDetails}
-                  <span className="font-mono"> · {card.name}</span>
-                </>
-              }
+              summary={S.toolDetails}
               contentClassName="flex flex-col gap-2"
             >
+              <span className="font-mono text-2xs text-muted-foreground">{card.name}</span>
               {hasArgs && (
                 <div className="flex flex-col gap-1">
                   <span className="text-2xs font-semibold tracking-wider text-muted-foreground uppercase">
                     {S.toolArgs}
                   </span>
-                  <div className="max-h-80 overflow-auto rounded-md bg-muted p-2.5 font-mono text-xs">
-                    <MessageBody text={card.args as string} docId={card.docId} plain />
-                  </div>
+                  <ScrollArea
+                    className="max-h-80 rounded-md bg-muted"
+                    viewportClassName="max-h-80 overscroll-contain"
+                    viewportProps={{ tabIndex: 0, role: "region", "aria-label": S.toolArgs }}
+                  >
+                    <div className="p-2.5 font-mono text-xs">
+                      <MessageBody text={card.args as string} docId={card.docId} plain />
+                    </div>
+                  </ScrollArea>
                 </div>
               )}
               {hasResult && (
@@ -214,9 +205,15 @@ function ToolCardView({ card }: { card: ToolCard }) {
                   <span className="text-2xs font-semibold tracking-wider text-muted-foreground uppercase">
                     {S.toolResult}
                   </span>
-                  <div className="max-h-80 overflow-auto rounded-md bg-muted p-2.5 font-mono text-xs">
-                    <MessageBody text={card.resultSummary as string} docId={card.docId} plain />
-                  </div>
+                  <ScrollArea
+                    className="max-h-80 rounded-md bg-muted"
+                    viewportClassName="max-h-80 overscroll-contain"
+                    viewportProps={{ tabIndex: 0, role: "region", "aria-label": S.toolResult }}
+                  >
+                    <div className="p-2.5 font-mono text-xs">
+                      <MessageBody text={card.resultSummary as string} docId={card.docId} plain />
+                    </div>
+                  </ScrollArea>
                 </div>
               )}
             </Disclosure>
@@ -278,7 +275,7 @@ function ContextChips() {
   );
 }
 
-/** 输入框上方的图片附件（02 §3.3）：上传中/失败可见，可移除。 */
+/** 输入框上方的图片附件和工作区文件引用（02 §3.3）。 */
 function AttachmentStrip() {
   const items = useApp((s) => s.composerAttachments);
   const visionOff = useApp((s) => {
@@ -293,11 +290,19 @@ function AttachmentStrip() {
         <Tip key={a.id} content={a.error ?? a.name}>
           <span
             className={cn(
-              "relative size-14 overflow-hidden rounded-md border border-border bg-muted",
+              "relative overflow-hidden rounded-md border border-border bg-muted",
+              a.previewUrl ? "size-14" : "flex h-14 max-w-56 items-center gap-2 px-3 pr-7",
               a.status === "error" && "border-destructive",
             )}
           >
-            <img src={a.previewUrl} alt={a.name} className="size-full object-cover" />
+            {a.previewUrl ? (
+              <img src={a.previewUrl} alt={a.name} className="size-full object-cover" />
+            ) : (
+              <>
+                <Icon name="file" size="sm" className="shrink-0 text-muted-foreground" />
+                <span className="truncate text-xs">{a.name}</span>
+              </>
+            )}
             {a.status === "uploading" && (
               <span className="absolute inset-0 grid place-items-center bg-card/70" role="status">
                 <Spinner size="sm" />
@@ -313,18 +318,21 @@ function AttachmentStrip() {
                 <span className="sr-only">{S.attachFailed}</span>
               </span>
             )}
-            <button
-              type="button"
+            <IconButton
+              icon="x"
+              size="icon-xs"
+              tooltip={false}
+              variant="default"
               className="absolute top-0.5 right-0.5 grid size-4 place-items-center rounded-full bg-primary text-primary-foreground focus-visible:outline-2 focus-visible:outline-ring"
-              aria-label={`${S.removeAttachment}：${a.name}`}
+              label={`${S.removeAttachment}：${a.name}`}
               onClick={() => removeComposerAttachment(a.id)}
-            >
-              <Icon name="x" size="xs" />
-            </button>
+            />
           </span>
         </Tip>
       ))}
-      {visionOff && <span className="text-xs text-muted-foreground">{S.imageNotSentHint}</span>}
+      {visionOff && items.some((a) => a.previewUrl) && (
+        <span className="text-xs text-muted-foreground">{S.imageNotSentHint}</span>
+      )}
     </div>
   );
 }
@@ -414,7 +422,6 @@ function SessionTitle({ title, editable }: { title: string; editable: boolean })
 function HeaderControls() {
   const profiles = useApp((s) => s.profiles);
   const agentId = useApp((s) => s.agentId);
-  const current = useApp((s) => s.session.roster[s.agentId]?.modelProfileId ?? null);
   const permission = useApp(
     (s) =>
       s.session.permissionMode ??
@@ -423,22 +430,8 @@ function HeaderControls() {
   );
   const [err, setErr] = useState(false);
   if (profiles.length === 0) return null;
-  const selected = current ?? profiles.find((p) => p.isDefault)?.id ?? "";
   return (
     <>
-      <SimpleSelect
-        value={selected}
-        onChange={(v) => {
-          setErr(false);
-          void switchModel(v).catch(() => setErr(true));
-        }}
-        options={profiles.map((p) => ({ value: p.id, label: p.name }))}
-        ariaLabel={err ? `${S.modelSelectHint}（${S.modelSwitchFailed}）` : S.modelSelectHint}
-        variant="ghost"
-        size="xs"
-        icon="cpu"
-        className={cn("max-w-36", err && "text-destructive")}
-      />
       {agentId === "main" && permission !== null && (
         <SimpleSelect
           value={permission}
@@ -477,7 +470,9 @@ function docName(docId: string): string | null {
   return doc && doc.docId === docId ? (doc.path.split(/[\\/]/).pop() ?? null) : null;
 }
 
-const isStreaming = (it: DisplayItem) => !("kind" in it) && it.id === "streaming";
+const isStreaming = (it: DisplayItem): it is UiMessage => !("kind" in it) && it.id === "streaming";
+const displayKey = (item: DisplayItem) =>
+  "toolCallId" in item ? `tool-${item.toolCallId}` : item.id;
 
 /** 思考块（02 §3.1）：默认折叠，只展示模型实际返回的内容。 */
 function Reasoning({ text, live = false, ms }: { text: string; live?: boolean; ms?: number }) {
@@ -494,29 +489,116 @@ function Reasoning({ text, live = false, ms }: { text: string; live?: boolean; m
   );
 }
 
-function EmptyChat({ onPick }: { onPick: (t: string) => void }) {
+function EmptyChatHeading() {
   return (
-    <EmptyState
-      size="page"
-      icon="sheet"
-      title={S.emptyChatTitle}
-      description={S.emptyChatHint}
-      action={
-        <div className="mt-2 grid w-full max-w-xl grid-cols-1 gap-2 sm:grid-cols-2">
-          {S.emptyChatExamples.map((t) => (
-            <Button
-              key={t}
-              variant="outline"
-              className="h-auto min-h-10 justify-start py-2 text-left whitespace-normal"
-              onClick={() => onPick(t)}
+    <div className="empty-chat landing-heading flex flex-col gap-3 py-3 motion-safe:animate-surface-in">
+      <span className="landing-kicker flex items-center gap-2.5 text-xs font-medium tracking-[0.08em] text-muted-foreground">
+        <span className="h-px w-5 bg-muted-foreground/50" aria-hidden="true" />
+        {S.emptyChatEyebrow}
+      </span>
+      <h1 className="empty-chat-title text-3xl font-semibold tracking-tight text-foreground">
+        {S.emptyChatTitle}
+      </h1>
+      <p className="max-w-[480px] text-sm leading-6 text-muted-foreground">{S.emptyChatHint}</p>
+    </div>
+  );
+}
+
+function EmptyChatExtras({
+  onPick,
+  hasModelProfile,
+  files,
+  activeFile,
+  modelName,
+  modelProvider,
+  onConfigureModel,
+}: {
+  onPick: (t: string) => void;
+  hasModelProfile: boolean;
+  files: number;
+  activeFile: string | null;
+  modelName: string | null;
+  modelProvider?: string;
+  onConfigureModel: () => void;
+}) {
+  return (
+    <div className="landing-extras mx-auto flex w-full max-w-[808px] shrink-0 flex-col gap-6">
+      <div className="empty-chat-context order-last grid grid-cols-2 gap-4 border-t border-border/80 pt-5">
+        <div className="flex min-w-0 items-center gap-3 px-1">
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+            <Icon name="folder" size="sm" />
+          </span>
+          <div className="min-w-0">
+            <div className="text-2xs font-semibold tracking-wide text-muted-foreground uppercase">
+              {S.emptyChatWorkspace}
+            </div>
+            <div className="truncate text-sm font-medium">
+              {files > 0 ? S.emptyChatWorkspaceReady(files) : S.emptyChatWorkspaceEmpty}
+            </div>
+            <div className="empty-chat-file-hint truncate text-xs text-muted-foreground">
+              {activeFile ? S.emptyChatActiveFile(activeFile) : S.emptyChatNoActiveFile}
+            </div>
+          </div>
+        </div>
+        <div className="flex min-w-0 items-center gap-3 px-1">
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+            <ProviderLogo provider={modelProvider} size="lg" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="text-2xs font-semibold tracking-wide text-muted-foreground uppercase">
+              {S.emptyChatModel}
+            </div>
+            <div
+              className={cn("truncate text-sm font-medium", !hasModelProfile && "text-warn-ink")}
             >
-              <Icon name="sparkle" size="sm" className="text-read" />
-              <span className="text-sm font-normal">{t}</span>
+              {hasModelProfile && modelName
+                ? S.emptyChatModelReady(modelName)
+                : S.emptyChatModelMissing}
+            </div>
+            {!hasModelProfile && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">{S.emptyChatModelMissingHint}</span>
+                <Button size="xs" variant="link" onClick={onConfigureModel}>
+                  {S.emptyChatConfigureModel}
+                </Button>
+              </div>
+            )}
+          </div>
+          {hasModelProfile && <Icon name="circleCheck" size="sm" className="text-ok" />}
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-3">
+        <div className="text-xs font-medium tracking-[0.06em] text-muted-foreground">
+          {S.emptyChatTaskLabel}
+        </div>
+        <div className="starter-grid grid gap-3">
+          {S.emptyChatTasks.map((task) => (
+            <Button
+              key={task.title}
+              variant="outline"
+              className="starter-card group relative h-auto min-h-14 items-center justify-start gap-3 rounded-md border-transparent bg-transparent px-2.5 py-2 text-left whitespace-normal shadow-none hover:bg-muted"
+              onClick={() => onPick(task.prompt)}
+            >
+              <span className="starter-icon flex size-7 shrink-0 items-center justify-center text-muted-foreground transition-colors group-hover:text-foreground">
+                <Icon name={task.icon as IconName} size="md" />
+              </span>
+              <span className="flex min-w-0 flex-col gap-0.5">
+                <span className="text-sm font-medium text-foreground">{task.title}</span>
+                <span className="starter-card-hint text-xs font-normal leading-relaxed text-muted-foreground">
+                  {task.hint}
+                </span>
+              </span>
+              <Icon
+                name="chevronRight"
+                size="xs"
+                className="ml-auto text-muted-foreground/45 transition-transform group-hover:translate-x-0.5 group-hover:text-foreground"
+              />
             </Button>
           ))}
         </div>
-      }
-    />
+      </div>
+    </div>
   );
 }
 
@@ -575,6 +657,13 @@ function MessageBody({
   );
 }
 
+function quoteMessage(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n");
+}
+
 function InternalLine({ label, text }: { label: string; text: string }) {
   return (
     <div className="flex flex-col gap-0.5 text-xs">
@@ -607,10 +696,11 @@ export function ChatPanel({ sidebarToggle = false }: { sidebarToggle?: boolean }
   useEffect(() => {
     setTextRaw(localStorage.getItem(draftKey) ?? "");
   }, [draftKey]);
-  const [mode, setMode] = useState<DispatchMode>("steer");
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const uploading = useApp((st) => st.composerAttachments.some((a) => a.status === "uploading"));
+  const attachmentError = useApp((st) => st.composerAttachments.some((a) => a.status === "error"));
   const hasAttachment = useApp((st) => st.composerAttachments.some((a) => a.status === "ready"));
   // 拖入表格文件后由 store 要求追加 @路径（02 §3.3）
   const append = useApp((st) => st.composerAppend);
@@ -643,13 +733,23 @@ export function ChatPanel({ sidebarToggle = false }: { sidebarToggle?: boolean }
     });
   };
   const [sendFailed, setSendFailed] = useState(false);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const chatScroll = useChatScroll(JSON.stringify([sessionId, agentId]), session.cursor);
   const view = agentView(session, agentId);
   const items = displayItems(view);
   const agentRunning = view.running;
   const queued = queuedCount(session, agentId);
   const viewingName = roster[agentId]?.name ?? agentId;
   const hasDoc = useApp((st) => st.doc !== null);
+  const activeFile = useApp((st) => {
+    const path = st.doc?.path;
+    return path ? (path.split(/[\\/]/).pop() ?? null) : null;
+  });
+  const workspaceFileCount = useApp((st) => st.files.filter((file) => file.kind === "file").length);
+  const modelProfile = useApp((st) => {
+    const id =
+      st.session.roster[st.agentId]?.modelProfileId ?? st.profiles.find((p) => p.isDefault)?.id;
+    return st.profiles.find((profile) => profile.id === id);
+  });
   const tableCollapsed = useApp((st) => st.layout.tableCollapsed);
   const hasModelProfile = useApp((st) => st.hasModelProfile);
   const onboarding = useApp((st) => st.onboardingOpen);
@@ -733,11 +833,14 @@ export function ChatPanel({ sidebarToggle = false }: { sidebarToggle?: boolean }
       );
     }
     const isUser = item.role === "user";
+    if (isUser && item.dispatchStatus === "cancelled") return null;
+    const pending =
+      isUser && (item.dispatchStatus === "queued" || item.dispatchStatus === "accepted");
     const footer = (() => {
       const label = dispatchLabel(session, item);
-      const recallable = item.dispatchStatus === "queued" || item.dispatchStatus === "accepted";
+
       const time = isUser && item.at ? clockTime(item.at) : null;
-      if (label === null && !recallable && time === null) return null;
+      if (pending || (label === null && time === null)) return null;
       return (
         <div
           className={cn(
@@ -747,18 +850,16 @@ export function ChatPanel({ sidebarToggle = false }: { sidebarToggle?: boolean }
         >
           {time !== null && <time dateTime={item.at}>{time}</time>}
           {label !== null && <span>{label}</span>}
-          {recallable && (
-            <Button size="xs" variant="ghost" onClick={() => recall(item)}>
-              {S.recall}
-            </Button>
-          )}
         </div>
       );
     })();
     return (
       <div
         key={item.id}
-        className={cn("flex min-w-0 flex-col gap-1.5", isUser ? "items-end" : "items-stretch")}
+        className={cn(
+          "group/message flex min-w-0 flex-col gap-1.5",
+          isUser ? "user-message items-end" : "assistant-message items-stretch",
+        )}
       >
         {item.reasoning !== undefined && (
           <Reasoning
@@ -773,11 +874,19 @@ export function ChatPanel({ sidebarToggle = false }: { sidebarToggle?: boolean }
             ))}
           </div>
         )}
-        {item.text !== "" &&
+        {pending && sessionId ? (
+          <PendingMessage
+            message={item}
+            sessionId={sessionId}
+            agentId={agentId}
+            label={dispatchLabel(session, item)}
+          />
+        ) : (
+          item.text !== "" &&
           (isUser ? (
             <Card
-              elevation="raised"
-              className="max-w-[85%] rounded-xl rounded-tr-sm px-4 py-2.5 text-base"
+              elevation="flat"
+              className="max-w-[88%] rounded-2xl rounded-tr-md border-transparent bg-muted/80 px-4 py-3 text-base"
             >
               <MessageBody text={item.text} />
             </Card>
@@ -785,7 +894,24 @@ export function ChatPanel({ sidebarToggle = false }: { sidebarToggle?: boolean }
             <div className="text-base leading-relaxed">
               <MessageBody text={item.text} />
             </div>
-          ))}
+          ))
+        )}
+        {item.role === "assistant" && item.text !== "" && (
+          <div className="flex items-center gap-0.5 self-start opacity-0 transition-opacity group-hover/message:opacity-100 group-focus-within/message:opacity-100">
+            <IconButton
+              icon={copiedMessageId === item.id ? "check" : "copy"}
+              size="icon-xs"
+              label={copiedMessageId === item.id ? S.copyMessageDone : S.copyMessage}
+              onClick={() => void copyMessage(item)}
+            />
+            <IconButton
+              icon="quote"
+              size="icon-xs"
+              label={S.quoteMessage}
+              onClick={() => quoteIntoComposer(item)}
+            />
+          </div>
+        )}
         {item.context && item.context.length > 0 && (
           <div className={cn("flex flex-wrap gap-1", isUser && "justify-end")}>
             {item.context.map((c) => (
@@ -809,30 +935,58 @@ export function ChatPanel({ sidebarToggle = false }: { sidebarToggle?: boolean }
     );
   };
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ block: "end" });
-  });
-
   const doSend = () => {
+    if (attachmentError) {
+      useApp.setState({ commandNotice: S.attachNotReady });
+      return;
+    }
     if (uploading) {
       useApp.setState({ commandNotice: S.attachWaiting });
       return;
     }
-    // 消息正文必填：只发图片时补一句说明
-    const t = text.trim() === "" && hasAttachment ? S.imageOnlyText : text.trim();
+    const t = text.trim() === "" && hasAttachment ? S.fileOnlyText : text.trim();
     if (t === "" || sessionId === null) return;
     setText("");
     setSendFailed(false);
-    void send(t, mode).catch(() => {
+    void send(t).catch(() => {
       setSendFailed(true);
       setText((current) => (current === "" ? t : current));
     });
   };
 
-  const recall = (m: UiMessage) => {
-    void cancelDispatch(m.id)
-      .then(() => setText((current) => (current === "" ? m.text : current)))
-      .catch(() => {});
+  /** 失败轮的显式重试：重新派发最近一条用户消息，而不是伪造 resume 接口。 */
+  const retryLastMessage = () => {
+    const message = lastUserMessage?.text.trim();
+    if (!message || agentRunning) return;
+    setSendFailed(false);
+    void send(message).catch(() => setSendFailed(true));
+  };
+
+  const copyMessage = async (m: UiMessage) => {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("clipboard-unavailable");
+      await navigator.clipboard.writeText(m.text);
+      setCopiedMessageId(m.id);
+      toast({ tone: "ok", title: S.copyMessageDone, duration: 2000 });
+      window.setTimeout(() => {
+        setCopiedMessageId((current) => (current === m.id ? null : current));
+      }, 2000);
+    } catch {
+      toast({ tone: "err", title: S.copyMessageFailed });
+    }
+  };
+
+  const quoteIntoComposer = (m: UiMessage) => {
+    const quoted = quoteMessage(m.text);
+    const next = text.trim() === "" ? quoted : `${text.replace(/\s+$/, "")}\n\n${quoted}`;
+    setText(next);
+    requestAnimationFrame(() => {
+      const el = inputRef.current ?? focusComposer();
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(next.length, next.length);
+      setCaret(next.length);
+    });
   };
 
   const sessionTitle = useApp(
@@ -844,12 +998,202 @@ export function ChatPanel({ sidebarToggle = false }: { sidebarToggle?: boolean }
       ? Math.min(100, Math.round((usage.tokens / usage.window) * 100))
       : null;
   const empty = items.length === 0 && !agentRunning && view.live.reasoningText === "";
+  const landing = empty && !onboarding;
+  const lastUserMessage = [...session.messages]
+    .reverse()
+    .find(
+      (m) =>
+        m.role === "user" &&
+        m.dispatchStatus !== "cancelled" &&
+        (m.agentId === agentId || (agentId === "main" && (m.agentId == null || m.agentId === ""))),
+    );
+  const errorActions = view.live.error?.actions ?? [];
+  const settingsAction = errorActions.some((action) =>
+    /\u8bbe\u7f6e|\u51ed\u636e|API\s*Key|\u6a21\u578b\u6863\u6848|\u6a21\u578b ID/i.test(action),
+  );
   const sendDisabled = (text.trim() === "" && !hasAttachment) || uploading;
-  const modeLabel = DISPATCH_MODES.find((m) => m.value === mode)?.label ?? S.modeSteer;
+  const pauseButton =
+    agentRunning && text.trim() === "" && !hasAttachment && !uploading && !attachmentError;
+
+  const composer = (
+    <div
+      className="composer-dock mx-auto flex w-full max-w-[808px] shrink-0 flex-col gap-3 bg-card pt-3"
+      data-running={agentRunning || undefined}
+    >
+      <Interactions />
+      {!hasModelProfile && !onboarding && (
+        <Alert tone="info" role="status">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span>
+              <strong className="font-semibold">{S.needModelTitle}</strong> · {S.needModelBody}
+            </span>
+            <Button size="sm" onClick={() => setSettingsOpen(true, "models")}>
+              {S.goSettings}
+            </Button>
+          </div>
+        </Alert>
+      )}
+      {sendFailed && (
+        <Alert tone="err" layout="inline" role="alert">
+          {S.sendFailed}
+        </Alert>
+      )}
+      {commandNotice && (
+        <Alert tone="muted" layout="inline" role="status">
+          {commandNotice}
+        </Alert>
+      )}
+      {referenceError && (
+        <Alert tone="warn" layout="inline" role="alert">
+          {referenceError === "no-document" ? S.openReferenceFile : S.invalidReference}
+        </Alert>
+      )}
+      {!agentRunning && queued > 0 && (
+        <Alert tone="muted" layout="inline" icon="clock">
+          <div className="flex items-center justify-between gap-2">
+            <span>{S.queuedBanner(queued)}</span>
+            <Button size="xs" variant="outline" onClick={() => void resumeAgent().catch(() => {})}>
+              {S.resumeSend}
+            </Button>
+          </div>
+        </Alert>
+      )}
+      {!agentRunning && queued === 0 && session.agentStatus[agentId] === "interrupted" && (
+        <Alert tone="muted" layout="inline" icon="alert">
+          <div className="flex items-center justify-between gap-2">
+            <span>{S.agentInterrupted}</span>
+            <Button size="xs" variant="outline" onClick={() => void resumeAgent().catch(() => {})}>
+              {S.resume}
+            </Button>
+          </div>
+        </Alert>
+      )}
+      <div
+        className={cn(
+          "composer-surface relative rounded-2xl border bg-card shadow-composer focus-within:border-read/50",
+          agentRunning ? "border-read/40" : "border-border-strong/90",
+        )}
+      >
+        <SuggestList
+          items={suggestions}
+          active={suggestIndex}
+          onPick={pickSuggestion}
+          onHover={setSuggestIndex}
+        />
+        <ContextChips />
+        <AttachmentStrip />
+        <div className="px-4 pt-4 pb-2">
+          <Textarea
+            ref={inputRef}
+            id={COMPOSER_INPUT_ID}
+            variant="bare"
+            value={text}
+            placeholder={agentId !== "main" ? S.viewingAgent(viewingName) : S.composerPlaceholder}
+            aria-label={S.composerPlaceholder}
+            role="combobox"
+            aria-autocomplete="list"
+            aria-controls={COMPOSER_SUGGEST_ID}
+            aria-expanded={suggestions.length > 0}
+            aria-activedescendant={
+              suggestions.length > 0 ? suggestOptionId(suggestIndex) : undefined
+            }
+            rows={2}
+            className="min-h-14"
+            onChange={(e) => {
+              setText(e.target.value);
+              setCaret(e.target.selectionStart);
+              setSuggestIndex(0);
+              setSuggestClosed(false);
+            }}
+            onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
+            onPaste={(e) => {
+              const files = [...e.clipboardData.files];
+              if (files.length === 0) return;
+              e.preventDefault();
+              void addComposerFiles(files).catch(() => undefined);
+            }}
+            onKeyDown={(e) => {
+              if (suggestions.length > 0 && !e.nativeEvent.isComposing) {
+                if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                  e.preventDefault();
+                  const n = suggestions.length;
+                  setSuggestIndex((i) => (i + (e.key === "ArrowDown" ? 1 : n - 1)) % n);
+                  return;
+                }
+                if (e.key === "Enter" || e.key === "Tab") {
+                  e.preventDefault();
+                  const it = suggestions[suggestIndex];
+                  if (it) pickSuggestion(it);
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setSuggestClosed(true);
+                  return;
+                }
+              }
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                doSend();
+              }
+            }}
+          />
+        </div>
+        <div className="composer-toolbar flex flex-wrap items-center gap-1.5 gap-y-2 px-3 pb-3">
+          <IconButton icon="plus" label={S.attachFile} onClick={() => fileRef.current?.click()} />
+          <input
+            ref={fileRef}
+            type="file"
+            multiple
+            hidden
+            onChange={(e) => {
+              const files = [...(e.target.files ?? [])];
+              e.target.value = "";
+              void addComposerFiles(files).catch(() => undefined);
+            }}
+          />
+          <IconButton
+            icon="at"
+            label={S.insertReference}
+            onClick={() => {
+              const el = inputRef.current;
+              const pos = el?.selectionStart ?? text.length;
+              const pre = text.slice(0, pos);
+              const add = pre === "" || /\s$/.test(pre) ? "@" : " @";
+              setText(pre + add + text.slice(pos));
+              setSuggestClosed(false);
+              requestAnimationFrame(() => {
+                el?.focus();
+                const c = pos + add.length;
+                el?.setSelectionRange(c, c);
+                setCaret(c);
+              });
+            }}
+          />
+          <span className="flex-1" />
+          <ModelReasoningControl />
+          <IconButton
+            icon={pauseButton ? "stop" : "send"}
+            label={pauseButton ? S.composerPause : S.send}
+            variant="default"
+            size="icon"
+            className="composer-submit ml-auto size-10 rounded-full bg-[#387ef7] text-white hover:bg-[#2871eb] [&_svg]:size-5"
+            disabled={!pauseButton && sendDisabled}
+            tooltip={pauseButton ? S.stopHint : S.sendHint}
+            onClick={() =>
+              agentRunning && sendDisabled
+                ? void stopAgent().catch(() => toast({ tone: "err", title: S.pendingActionFailed }))
+                : doSend()
+            }
+          />
+        </div>
+      </div>
+    </div>
+  );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <header className="@container flex h-12 shrink-0 items-center gap-1.5 border-b border-border bg-background px-3">
+    <div className="chat-panel flex min-h-0 flex-1 flex-col" data-empty={landing || undefined}>
+      <header className="chat-header @container flex h-16 shrink-0 items-center gap-3 border-b border-border/75 bg-card px-5">
         {sidebarToggle && (
           <IconButton
             icon="sidebar"
@@ -865,8 +1209,7 @@ export function ChatPanel({ sidebarToggle = false }: { sidebarToggle?: boolean }
             <span className="truncate">{viewingName}</span>
           </span>
         )}
-        <div className="flex min-w-0 shrink-0 items-center gap-1">
-          <HeaderControls />
+        <div className="chat-header-controls flex min-w-0 shrink-0 items-center gap-1.5">
           {usage && (
             <Tip
               content={
@@ -900,9 +1243,13 @@ export function ChatPanel({ sidebarToggle = false }: { sidebarToggle?: boolean }
           )}
           {sessionId !== null && (
             <Tip content={S.compactHint} side="bottom">
-              <Button size="xs" variant="ghost" onClick={() => void compactNow()}>
-                {S.compactAction}
-              </Button>
+              <IconButton
+                icon="collapse"
+                size="icon-sm"
+                label={S.compactAction}
+                tooltip={false}
+                onClick={() => void compactNow()}
+              />
             </Tip>
           )}
           {agentId !== "main" && (
@@ -927,271 +1274,151 @@ export function ChatPanel({ sidebarToggle = false }: { sidebarToggle?: boolean }
             />
           )}
         </div>
-      </header>
-      <ScrollArea className="flex-1">
-        <div
-          className="mx-auto flex w-full max-w-[760px] flex-col gap-4 px-5 py-6"
-          aria-live="polite"
-          aria-busy={agentRunning || undefined}
-        >
-          {onboarding && agentId === "main" && <Onboarding />}
-          {empty ? (
-            onboarding ? null : (
-              <EmptyChat
-                onPick={(t) => {
-                  setText(t);
-                  requestAnimationFrame(() => focusComposer());
-                }}
-              />
-            )
-          ) : (
-            items.filter((it) => !isStreaming(it)).map(renderItem)
-          )}
-          {view.live.reasoningText !== "" && (
-            <Reasoning text={view.live.reasoningText} live={view.live.streamingText === ""} />
-          )}
-          {items.filter(isStreaming).map(renderItem)}
-          {agentRunning && view.live.streamingText === "" && view.live.reasoningText === "" && (
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Dots />
-              {S.agentWorking}
-            </div>
-          )}
-          {view.live.retry && (
-            <Alert layout="inline" tone="warn" icon="clock" role="status">
-              {S.retrying(view.live.retry.attempt, view.live.retry.waitMs)}
-            </Alert>
-          )}
-          {view.live.error && (
-            <Alert tone="err" role="alert">
-              <AlertTitle>{S.errorKind(view.live.error.kind)}</AlertTitle>
-              <div className="text-xs">{view.live.error.message}</div>
-              <div className="text-xs">{S.errorNextStep(view.live.error.kind)}</div>
-              <AlertActions>
-                <Button size="sm" variant="outline" onClick={() => setSettingsOpen(true, "models")}>
-                  {S.goSettings}
-                </Button>
-              </AlertActions>
-            </Alert>
-          )}
-          <div ref={bottomRef} />
+        <div className="chat-profile-line flex min-w-0 items-center gap-1.5">
+          <HeaderControls />
         </div>
-      </ScrollArea>
-      <div className="mx-auto flex w-full max-w-[808px] flex-col gap-2 px-5 pb-4">
-        <Interactions />
-        {!hasModelProfile && !onboarding && (
-          <Alert tone="info" role="status">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span>
-                <strong className="font-semibold">{S.needModelTitle}</strong> · {S.needModelBody}
-              </span>
-              <Button size="sm" onClick={() => setSettingsOpen(true, "models")}>
-                {S.goSettings}
-              </Button>
-            </div>
-          </Alert>
+      </header>
+      <div
+        className={cn(
+          "chat-body flex min-h-0 flex-1 flex-col",
+          landing ? "overflow-y-auto" : "overflow-hidden",
         )}
-        {sendFailed && (
-          <Alert tone="err" layout="inline" role="alert">
-            {S.sendFailed}
-          </Alert>
-        )}
-        {commandNotice && (
-          <Alert tone="muted" layout="inline" role="status">
-            {commandNotice}
-          </Alert>
-        )}
-        {referenceError && (
-          <Alert tone="warn" layout="inline" role="alert">
-            {referenceError === "no-document" ? S.openReferenceFile : S.invalidReference}
-          </Alert>
-        )}
-        {!agentRunning && queued > 0 && (
-          <Alert tone="muted" layout="inline" icon="clock">
-            <div className="flex items-center justify-between gap-2">
-              <span>{S.queuedBanner(queued)}</span>
-              <Button
-                size="xs"
-                variant="outline"
-                onClick={() => void resumeAgent().catch(() => {})}
-              >
-                {S.resumeSend}
-              </Button>
-            </div>
-          </Alert>
-        )}
-        {!agentRunning && queued === 0 && session.agentStatus[agentId] === "interrupted" && (
-          <Alert tone="muted" layout="inline" icon="alert">
-            <div className="flex items-center justify-between gap-2">
-              <span>{S.agentInterrupted}</span>
-              <Button
-                size="xs"
-                variant="outline"
-                onClick={() => void resumeAgent().catch(() => {})}
-              >
-                {S.resume}
-              </Button>
-            </div>
-          </Alert>
-        )}
+        data-empty={landing || undefined}
+      >
         <div
+          ref={chatScroll.rootRef}
           className={cn(
-            "relative rounded-xl border bg-card shadow-card transition-colors focus-within:border-ring",
-            agentRunning ? "border-read/40" : "border-border",
+            "chat-history relative flex min-h-0 flex-col",
+            landing ? "shrink-0" : "flex-1",
           )}
         >
-          <SuggestList
-            items={suggestions}
-            active={suggestIndex}
-            onPick={pickSuggestion}
-            onHover={setSuggestIndex}
-          />
-          <ContextChips />
-          <AttachmentStrip />
-          <div className="px-3.5 pt-3 pb-1">
-            <Textarea
-              ref={inputRef}
-              id={COMPOSER_INPUT_ID}
-              variant="bare"
-              value={text}
-              placeholder={agentId !== "main" ? S.viewingAgent(viewingName) : S.composerPlaceholder}
-              aria-label={S.composerPlaceholder}
-              role="combobox"
-              aria-autocomplete="list"
-              aria-controls={COMPOSER_SUGGEST_ID}
-              aria-expanded={suggestions.length > 0}
-              aria-activedescendant={
-                suggestions.length > 0 ? suggestOptionId(suggestIndex) : undefined
-              }
-              rows={2}
-              className="min-h-11"
-              onChange={(e) => {
-                setText(e.target.value);
-                setCaret(e.target.selectionStart);
-                setSuggestIndex(0);
-                setSuggestClosed(false);
-              }}
-              onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
-              onPaste={(e) => {
-                const files = [...e.clipboardData.files];
-                if (files.length === 0) return;
-                e.preventDefault();
-                void addComposerFiles(files).catch(() => undefined);
-              }}
-              onKeyDown={(e) => {
-                if (suggestions.length > 0 && !e.nativeEvent.isComposing) {
-                  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-                    e.preventDefault();
-                    const n = suggestions.length;
-                    setSuggestIndex((i) => (i + (e.key === "ArrowDown" ? 1 : n - 1)) % n);
-                    return;
-                  }
-                  if (e.key === "Enter" || e.key === "Tab") {
-                    e.preventDefault();
-                    const it = suggestions[suggestIndex];
-                    if (it) pickSuggestion(it);
-                    return;
-                  }
-                  if (e.key === "Escape") {
-                    e.preventDefault();
-                    setSuggestClosed(true);
-                    return;
-                  }
-                }
-                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                  e.preventDefault();
-                  doSend();
-                }
-              }}
-            />
-          </div>
-          <div className="flex items-center gap-1 px-2 pb-2">
-            <IconButton
-              icon="image"
-              label={S.attachImage}
-              onClick={() => fileRef.current?.click()}
-            />
-            <input
-              ref={fileRef}
-              type="file"
-              accept="image/png,image/jpeg,image/gif,image/webp"
-              multiple
-              hidden
-              onChange={(e) => {
-                const files = [...(e.target.files ?? [])];
-                e.target.value = "";
-                void addComposerFiles(files).catch(() => undefined);
-              }}
-            />
-            <IconButton
-              icon="at"
-              label={S.insertReference}
-              onClick={() => {
-                const el = inputRef.current;
-                const pos = el?.selectionStart ?? text.length;
-                const pre = text.slice(0, pos);
-                const add = pre === "" || /\s$/.test(pre) ? "@" : " @";
-                setText(pre + add + text.slice(pos));
-                setSuggestClosed(false);
-                requestAnimationFrame(() => {
-                  el?.focus();
-                  const c = pos + add.length;
-                  el?.setSelectionRange(c, c);
-                  setCaret(c);
-                });
-              }}
-            />
-            <span className="ml-1 min-w-0 truncate text-2xs text-muted-foreground">
-              {agentRunning ? S.runningHint : S.sendHint}
-            </span>
-            <span className="flex-1" />
-            {agentRunning && (
-              <Tip content={S.stopHint}>
-                <Button size="sm" variant="destructive-outline" onClick={() => void stopAgent()}>
-                  <Icon name="stop" size="xs" />
-                  {S.stop}
-                </Button>
-              </Tip>
+          <ScrollArea
+            className={cn("chat-history-scroll", landing ? "shrink-0 overflow-visible" : "flex-1")}
+            viewportRef={chatScroll.viewportRef}
+            viewportClassName={cn(
+              "chat-history-viewport overscroll-contain [overflow-anchor:none] [scroll-behavior:auto]",
+              landing && "h-auto! overflow-visible!",
             )}
-            <div className="flex items-center">
-              {agentRunning && (
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      size="sm"
-                      aria-label={`${S.dispatchModeLabel}：${modeLabel}`}
-                      className="rounded-r-none border-r border-primary-foreground/20 pr-2"
-                    >
-                      {modeLabel}
-                      <Icon name="chevronDown" size="xs" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" side="top">
-                    <DropdownMenuRadioGroup
-                      value={mode}
-                      onValueChange={(v) => setMode(v as DispatchMode)}
-                    >
-                      {DISPATCH_MODES.map((m) => (
-                        <DropdownMenuRadioItem key={m.value} value={m.value}>
-                          {m.label}
-                        </DropdownMenuRadioItem>
-                      ))}
-                    </DropdownMenuRadioGroup>
-                  </DropdownMenuContent>
-                </DropdownMenu>
+            viewportProps={{ tabIndex: 0, role: "region", "aria-label": S.chatHistory }}
+          >
+            <div
+              ref={chatScroll.contentRef}
+              data-chat-empty={empty || undefined}
+              className={cn(
+                "chat-history-content mx-auto flex w-full max-w-[808px] flex-col gap-5 py-9",
+                landing && "py-0",
               )}
+              aria-live="polite"
+              aria-busy={agentRunning || undefined}
+            >
+              {onboarding && agentId === "main" && <Onboarding />}
+              {empty ? (
+                onboarding ? null : (
+                  <EmptyChatHeading />
+                )
+              ) : (
+                items
+                  .filter((it) => !isStreaming(it))
+                  .map((item) => (
+                    <div
+                      key={displayKey(item)}
+                      data-chat-item={displayKey(item)}
+                      className="min-w-0"
+                    >
+                      {renderItem(item)}
+                    </div>
+                  ))
+              )}
+              {view.live.reasoningText !== "" && (
+                <div data-chat-item="live-reasoning">
+                  <Reasoning text={view.live.reasoningText} live={view.live.streamingText === ""} />
+                </div>
+              )}
+              {items.filter(isStreaming).map((item) => (
+                <div key={item.id} data-chat-item={item.id} className="min-w-0">
+                  {renderItem(item)}
+                </div>
+              ))}
+              {agentRunning && view.live.streamingText === "" && view.live.reasoningText === "" && (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Dots />
+                  {S.agentWorking}
+                </div>
+              )}
+              {view.live.retry && (
+                <Alert layout="inline" tone="warn" icon="clock" role="status">
+                  {S.retrying(view.live.retry.attempt, view.live.retry.waitMs)}
+                </Alert>
+              )}
+              {view.live.error && (
+                <Alert tone="err" role="alert">
+                  <AlertTitle>{S.errorKind(view.live.error.kind)}</AlertTitle>
+                  <div className="text-xs">{view.live.error.message}</div>
+                  {errorActions.length > 0 ? (
+                    <ul className="list-disc space-y-0.5 pl-4 text-xs text-muted-foreground">
+                      {errorActions.map((action) => (
+                        <li key={action}>{action}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <div className="text-xs">{S.errorNextStep(view.live.error.kind)}</div>
+                  )}
+                  {(view.live.error.retryable === true || settingsAction) && (
+                    <AlertActions>
+                      {view.live.error.retryable === true && lastUserMessage && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={agentRunning}
+                          onClick={retryLastMessage}
+                        >
+                          {S.retryTurn}
+                        </Button>
+                      )}
+                      {settingsAction && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setSettingsOpen(true, "models")}
+                        >
+                          {S.goSettings}
+                        </Button>
+                      )}
+                    </AlertActions>
+                  )}
+                </Alert>
+              )}
+            </div>
+          </ScrollArea>
+          {!empty && !chatScroll.following && (
+            <div className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center px-4">
               <Button
                 size="sm"
-                className={agentRunning ? "rounded-l-none" : undefined}
-                disabled={sendDisabled}
-                onClick={doSend}
+                variant="outline"
+                className="pointer-events-auto rounded-full bg-background shadow-card"
+                onClick={chatScroll.followLatest}
               >
-                {S.send}
-                <Icon name="send" size="xs" />
+                <Icon name="chevronDown" size="sm" />
+                {agentRunning ? S.followGeneration : S.backToLatest}
               </Button>
             </div>
-          </div>
+          )}
         </div>
+        {composer}
+        {landing && (
+          <EmptyChatExtras
+            hasModelProfile={hasModelProfile}
+            files={workspaceFileCount}
+            activeFile={activeFile}
+            modelName={modelProfile?.name ?? null}
+            modelProvider={modelProfile?.provider}
+            onConfigureModel={() => setSettingsOpen(true, "models")}
+            onPick={(t) => {
+              setText(t);
+              requestAnimationFrame(() => focusComposer());
+            }}
+          />
+        )}
       </div>
     </div>
   );

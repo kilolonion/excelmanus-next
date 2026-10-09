@@ -5,7 +5,9 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import type { LanguageModelV4StreamPart, LanguageModelV4Usage } from "@ai-sdk/provider";
+import { kernelProjections, SessionLog } from "@excelmanus/kernel";
 import {
   type ApiClient,
   createApiClient,
@@ -238,6 +240,142 @@ class TestWs {
 const AGENT = "main";
 
 describe("M3 消息派发三策略（04 §4.1–4.3）", () => {
+  test("默认派发、原子编辑/打断、幂等与已生效冲突，投影可重建", async () => {
+    const gate = new Gate();
+    const { srv, api, sessionId, calls } = await boot([
+      async () => {
+        await gate.promise;
+        return textOut("旧轮结束");
+      },
+      () => textOut("新轮结束"),
+    ]);
+    const { ticket } = await api.createTicket();
+    const ws = await TestWs.connect(`ws://127.0.0.1:${srv.port}/api/v1/sync?ticket=${ticket}`);
+    ws.send({ type: "sub", topic: `session:${sessionId}`, cursor: 0 });
+    await ws.waitFor((m) => m.type === "sub.ok", "sub.ok");
+    try {
+      await api.updateSettings({ defaultDispatchMode: "queue" });
+      expect((await api.getSettings()).settings.defaultDispatchMode).toBe("queue");
+      await api.sendMessage(sessionId, AGENT, { clientMessageId: "initial", text: "当前任务" });
+      await waitLog(api, sessionId, (i) => i.some((r) => r.type === "step.started"), "step");
+      await sleep(30);
+      const original = await api.sendMessage(sessionId, AGENT, {
+        clientMessageId: "pending",
+        text: "待处理原文",
+      });
+      expect(original.dispatch.mode).toBe("queue");
+      const image = await api.uploadAttachment({
+        name: "fixture.png",
+        data: new Blob(
+          [
+            Buffer.from(
+              "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
+              "base64",
+            ),
+          ],
+          { type: "image/png" },
+        ),
+      });
+      const workspace = (await api.listWorkspaces()).items.find((w) => w.isDefault);
+      if (!workspace) throw new Error("default workspace missing");
+      await api.uploadFile(workspace.id, { name: "data.csv", data: new Blob(["a,b\n1,2\n"]) });
+      const { document } = await api.openDoc(workspace.id, { path: "data.csv" });
+      const context = [{ docId: document.id, rev: document.rev, range: "A1:B2" }];
+      const editBody = {
+        clientMessageId: "edited",
+        text: "已编辑正文 @data.csv",
+        replacesDispatchId: original.dispatch.id,
+        mode: "queue" as const,
+        attachments: [image],
+        context,
+      };
+      const responses = await Promise.all([
+        api.sendMessage(sessionId, AGENT, editBody),
+        api.sendMessage(sessionId, AGENT, editBody),
+      ]);
+      expect(new Set(responses.map((r) => r.dispatch.id)).size).toBe(1);
+      expect(responses.filter((r) => r.deduplicated)).toHaveLength(1);
+      const edited = responses[0];
+      if (!edited) throw new Error("missing replacement response");
+      await ws.waitRec(
+        (r) =>
+          r.record.type === "dispatch.updated" &&
+          r.record.data.dispatchId === original.dispatch.id &&
+          r.record.data.status === "cancelled",
+        "旧派发撤回",
+      );
+      const retry = await api.sendMessage(sessionId, AGENT, editBody);
+      expect(retry.deduplicated).toBe(true);
+      expect(retry.dispatch.id).toBe(edited.dispatch.id);
+      await expect(
+        api.sendMessage(sessionId, AGENT, { ...editBody, replacesDispatchId: "other" }),
+      ).rejects.toThrow();
+      await expect(
+        api.sendMessage(sessionId, AGENT, { ...editBody, clientMessageId: "late-original" }),
+      ).rejects.toThrow();
+      const logs = (await api.getSessionLog(sessionId, { limit: 500 })).items;
+      expect(dispatchStatus(logs, original.dispatch.id)).toBe("cancelled");
+      const cancellation = logs.find(
+        (r) =>
+          r.type === "dispatch.updated" &&
+          r.data.dispatchId === original.dispatch.id &&
+          r.data.status === "cancelled",
+      );
+      const replacement = logs.find(
+        (r) => r.type === "user.message" && r.data.dispatchId === edited.dispatch.id,
+      );
+      expect(replacement?.seq).toBe((cancellation?.seq ?? 0) + 1);
+      expect(replacement?.data.attachments).toEqual([image]);
+      expect(replacement?.data.context).toEqual(context);
+      const interrupted = await api.sendMessage(sessionId, AGENT, {
+        ...editBody,
+        clientMessageId: "interrupt",
+        replacesDispatchId: edited.dispatch.id,
+        mode: "interrupt",
+      });
+      gate.open();
+      const done = await waitLog(
+        api,
+        sessionId,
+        (i) =>
+          dispatchStatus(i, interrupted.dispatch.id) === "applied" &&
+          i.some((r) => r.type === "turn.completed"),
+        "打断派发生效",
+      );
+      expect(dispatchStatus(done, edited.dispatch.id)).toBe("cancelled");
+      expect(calls.slice(1).every((prompt) => !allUserText(prompt).includes("待处理原文"))).toBe(
+        true,
+      );
+      expect(allUserText(calls.at(-1) ?? [])).toContain("已编辑正文 @data.csv");
+      await expect(
+        api.sendMessage(sessionId, AGENT, {
+          ...editBody,
+          clientMessageId: "late-applied",
+          replacesDispatchId: interrupted.dispatch.id,
+        }),
+      ).rejects.toThrow();
+      expect((await api.sendMessage(sessionId, AGENT, editBody)).dispatch.id).toBe(
+        edited.dispatch.id,
+      );
+      const db = new DatabaseSync(join(srv.dataDir, "excelmanus.db"));
+      const snapshot = () => ({
+        dispatches: db
+          .prepare("SELECT * FROM dispatches WHERE session_id = ? ORDER BY id")
+          .all(sessionId),
+        context: db
+          .prepare("SELECT * FROM agent_context WHERE session_id = ? ORDER BY agent_id, idx")
+          .all(sessionId),
+      });
+      const before = snapshot();
+      new SessionLog(db, { projections: kernelProjections() }).rebuild(sessionId);
+      expect(snapshot()).toEqual(before);
+      db.close();
+    } finally {
+      gate.open();
+      ws.close();
+    }
+  }, 30_000);
+
   test("steer：运行中受理 queued，下一步骤边界注入同一轮", async () => {
     const gate = new Gate();
     const { srv, api, sessionId, calls } = await boot([

@@ -1,16 +1,18 @@
 // 设置 → 外观与关于（02 §7）：主题、字号；版本、检查更新（桌面）、快捷键列表、重新打开引导。
 
 import { useState } from "react";
+import userGuide from "../../../../../docs/user-guide.md?raw";
 import { desktop } from "../../api.ts";
+import { renderMarkdown } from "../../md.ts";
 import { SHORTCUTS } from "../../shortcuts.ts";
 import { setOnboardingOpen, setSettingsOpen, useApp } from "../../store.ts";
 import { S, ST } from "../../strings.ts";
 import { getFontSize, getTheme, setFontSize, setTheme, type ThemePref } from "../../theme.ts";
 import { Button } from "../ui/button.tsx";
 import { SegmentedControl, Slider } from "../ui/controls.tsx";
-import { Card } from "../ui/display.tsx";
 import { Label } from "../ui/field.tsx";
 import { Kbd, Shortcut } from "../ui/kbd.tsx";
+import { Disclosure } from "../ui/overlay.tsx";
 import { Feedback, Section, useAction } from "./common.tsx";
 
 export function AboutTab() {
@@ -23,9 +25,9 @@ export function AboutTab() {
   return (
     <>
       <Section title={ST.appearance}>
-        <Card className="flex flex-col divide-y divide-border">
-          <div className="flex items-center justify-between gap-4 px-4 py-3">
-            <span className="text-sm">{ST.theme}</span>
+        <div className="settings-rows flex flex-col divide-y divide-border/65">
+          <div className="settings-row flex flex-wrap items-center justify-between gap-4 pb-5">
+            <span className="text-sm font-medium">{ST.theme}</span>
             <SegmentedControl
               value={theme}
               ariaLabel={ST.theme}
@@ -40,9 +42,9 @@ export function AboutTab() {
               ]}
             />
           </div>
-          <div className="flex items-center justify-between gap-4 px-4 py-3">
-            <Label className="text-sm font-normal text-foreground">{ST.fontSize}</Label>
-            <div className="flex w-64 items-center gap-3">
+          <div className="settings-row flex flex-wrap items-center justify-between gap-4 pt-5">
+            <Label className="text-sm font-medium text-foreground">{ST.fontSize}</Label>
+            <div className="flex w-64 max-w-full items-center gap-3">
               <Slider
                 value={font}
                 min={12}
@@ -59,33 +61,37 @@ export function AboutTab() {
               </span>
             </div>
           </div>
-        </Card>
+        </div>
       </Section>
       <Section title={ST.shortcuts}>
-        <Card asChild className="flex flex-col divide-y divide-border">
-          <dl>
-            {SHORTCUTS.map((s) => (
-              <div key={s.action} className="flex items-center justify-between gap-4 px-4 py-2.5">
-                <dd className="text-sm">{s.label}</dd>
-                <dt>
-                  <Shortcut keys={s.key.toUpperCase()} />
-                </dt>
-              </div>
-            ))}
-            <div className="flex items-center justify-between gap-4 px-4 py-2.5">
-              <dd className="text-sm">{ST.escHint}</dd>
-              <dt>
-                <Kbd>Esc</Kbd>
-              </dt>
+        <dl className="settings-shortcuts grid grid-cols-1 gap-x-9 @min-[640px]:grid-cols-2">
+          {SHORTCUTS.map((s) => (
+            <div
+              key={s.action}
+              className="flex items-center justify-between gap-4 border-b border-border/60 py-3"
+            >
+              <dt className="text-xs text-foreground-secondary">{s.label}</dt>
+              <dd>
+                <Shortcut keys={s.key.toUpperCase()} />
+              </dd>
             </div>
-          </dl>
-        </Card>
+          ))}
+          <div className="flex items-center justify-between gap-4 border-b border-border/60 py-3">
+            <dt className="text-xs text-foreground-secondary">{ST.escHint}</dt>
+            <dd>
+              <Kbd>Esc</Kbd>
+            </dd>
+          </div>
+        </dl>
       </Section>
       <Section title={ST.about}>
-        <p className="text-sm">
-          {S.appName} <span className="font-mono">{version}</span> ·{" "}
-          {shape === "desktop" ? ST.shapeDesktop : ST.shapeWeb}
-        </p>
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <strong className="text-lg font-semibold tracking-tight">{S.appName}</strong>
+          <span className="font-mono text-xs text-muted-foreground">{version}</span>
+          <span className="text-xs text-muted-foreground">
+            {shape === "desktop" ? ST.shapeDesktop : ST.shapeWeb}
+          </span>
+        </div>
         <div className="flex flex-wrap gap-2">
           {d && (
             <Button
@@ -117,6 +123,16 @@ export function AboutTab() {
         </div>
         <Feedback msg={act.msg} />
         <p className="text-xs text-muted-foreground">{ST.privacyNote}</p>
+      </Section>
+      <Section title={ST.userGuide}>
+        <Disclosure summary={ST.userGuideRead}>
+          <div
+            className="md text-sm"
+            ref={(el) => {
+              if (el && !el.hasChildNodes()) el.innerHTML = renderMarkdown(userGuide);
+            }}
+          />
+        </Disclosure>
       </Section>
     </>
   );

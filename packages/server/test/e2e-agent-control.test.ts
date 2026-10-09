@@ -4,11 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
+import { MAX_C, MAX_R } from "@excelmanus/core";
 import { describeDocChange } from "@excelmanus/kernel";
 import { createApiClient } from "@excelmanus/protocol";
+import { summarizeWriteSet, unionArea } from "@excelmanus/workbook";
 import { MockLanguageModelV4 } from "ai/test";
 import { afterAll, describe, expect, test } from "vitest";
-import { unionArea } from "../src/change-summary.ts";
 import { type RunningServer, startServer } from "../src/index.ts";
 
 const servers: RunningServer[] = [];
@@ -315,6 +316,24 @@ describe("多代理控制面", () => {
     expect(unionArea([r(0, 0, 1, 1), r(0, 0, 1, 1)])).toBe(4);
     expect(unionArea([r(0, 0, 1, 1), r(1, 1, 2, 2)])).toBe(7);
     expect(unionArea([r(0, 0, 0, 0), r(5, 5, 5, 5)])).toBe(2);
+    expect(
+      summarizeWriteSet(
+        {
+          ranges: [
+            r(0, 0, MAX_R, MAX_C),
+            r(MAX_R, MAX_C, MAX_R, MAX_C),
+            r(MAX_R, MAX_C, MAX_R, MAX_C),
+          ],
+          structural: [{ sheetId: "s", kind: "removeSheet", index: 0, count: 0 }],
+        },
+        new Map([["s", "Sheet1"]]),
+      ),
+    ).toEqual({
+      cellsBySheet: { Sheet1: 1 },
+      ranges: ["Sheet1!XFD1048576"],
+      structural: ["删除工作表（Sheet1）"],
+      added: [],
+    });
     const base = {
       docId: "d",
       path: "a.xlsx",

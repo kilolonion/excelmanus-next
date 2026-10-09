@@ -34,7 +34,14 @@ import {
   type SandboxPool,
   SdkCallError,
 } from "@excelmanus/sandbox";
-import { ChangeOp, DocNotFoundError, type DocumentService } from "@excelmanus/workbook";
+import {
+  type ChangeOp,
+  DocNotFoundError,
+  type DocumentService,
+  WORKBOOK_ANALYZE_SQL_SHEET_PLACEHOLDER,
+  WORKBOOK_ANALYZE_SQL_TABLE,
+  WorkbookEditInput,
+} from "@excelmanus/workbook";
 import { z } from "zod";
 
 const MAX_SDK_BYTES = 32 * 1024 * 1024;
@@ -70,12 +77,7 @@ const Input = z.object({
 });
 type Args = z.infer<typeof Input>;
 
-const WbEditInput = z.object({
-  docId: z.string().optional(),
-  path: z.string().optional(),
-  create: z.boolean().optional(),
-  ops: z.array(ChangeOp).min(1),
-});
+const WbEditInput = WorkbookEditInput;
 
 interface PendingWorkbook {
   kind: "existing";
@@ -122,21 +124,6 @@ const err = (code: string, message: string, extra?: { data?: unknown }): ToolRes
   error: { code: toToolErrorCode(code), message, retryable: false },
   ...(extra?.data !== undefined ? { data: extra.data } : {}),
 });
-
-const colName = (c0: number): string => {
-  let c = c0 + 1;
-  let s = "";
-  while (c > 0) {
-    const r = (c - 1) % 26;
-    s = String.fromCharCode(65 + r) + s;
-    c = Math.floor((c - 1) / 26);
-  }
-  return s;
-};
-
-/** RangeRef（0 基闭区间）→ `Sheet!A1:B2`。 */
-const rangeA1 = (r: { r0: number; c0: number; r1: number; c1: number }, sheet: string): string =>
-  `${sheet}!${colName(r.c0)}${r.r0 + 1}:${colName(r.c1)}${r.r1 + 1}`;
 
 /** 文本 diff 头：新文件取内容前 maxLines 行；已有文件做公共前后缀裁剪的最小差异段。 */
 function textDiffHead(oldText: string | null, newText: string, maxLines = 40): string {
@@ -192,13 +179,16 @@ export function runScriptTool(deps: {
     name: "run_script",
     title: "运行脚本",
     description: `在 QuickJS 沙箱中运行 TypeScript/JavaScript 脚本，批量读写工作簿与文本文件。
-可用 SDK：wb.read(path或docId, mode:"overview"|"range"|"search", ...)、wb.analyze(path, mode:"sql"|"profile")、
-wb.edit({path|docId, ops} 或 {path, create:true, ops})、files.find({glob})、files.readText({path})、files.writeText({path, content})、console.log。
+可用 SDK：wb.read({path或docId, mode:"overview"|"range"|"search", ...})、wb.analyze({path或docId, mode:"sql"|"profile", sheet?, range?, sql?})、
+wb.analyze 的 sql 会把选定区域注册为 ${WORKBOOK_ANALYZE_SQL_TABLE} 表，也兼容 ${WORKBOOK_ANALYZE_SQL_SHEET_PLACEHOLDER} 作为 ${WORKBOOK_ANALYZE_SQL_TABLE} 的占位符；
+wb.edit({path|docId, ops} 或 {path, create:true, ops})；新建默认含空白 Sheet1，ops:[] 创建空工作簿，默认表改名用 sheet.rename，sheet.add 只新增其他工作表。files.find({glob})、files.readText({path})、files.writeText({path, content})、console.log。
 脚本可顶层 await 与 return 一个 JSON 可序列化的值。
 写语义：所有修改先暂存，脚本成功结束后先向你展示待发布清单（工作簿区域预览/文本前几行），批准后才逐一发布；
 脚本抛错、超时、被拒绝或被取消时全部丢弃。
 注意：同一工作簿先 wb.edit 再 wb.read/wb.analyze 会报错（读不到未发布修改；请先读后写或分两次运行）；
-reader 角色的脚本只能读取（wb.edit/files.writeText 会报错）；发布不保证跨文件断电原子性。`,
+reader 角色的脚本只能读取（wb.edit/files.writeText 会报错）；发布不保证跨文件断电原子性。
+默认执行超时 30 秒，timeoutSeconds 最长 300 秒；没有网络和任意 shell 能力，文件访问只在工作区内。
+console.log 可输出行数、合计等摘要；逐格 SDK 调用会增加往返开销，适合先批量读取、在内存计算、再批量暂存修改。`,
     input: Input,
     output: z.record(z.string(), z.unknown()),
     effect: "write",
@@ -550,6 +540,7 @@ reader 角色的脚本只能读取（wb.edit/files.writeText 会报错）；发�
         const source = { kind: "script" as const, id: `${ctx.sessionId}/${ctx.agentId}` };
         for (const pd of docOrder) {
           if (pd.kind === "create") {
+            svc!.validateCreatePath(root, pd.path);
             const res = await svc!.previewCreate(pd.ops);
             if (res.status !== "ok") {
               throw new PublishError(
@@ -558,13 +549,19 @@ reader 角色的脚本只能读取（wb.edit/files.writeText 会报错）；发�
               );
             }
             const data = res.data as
-              | { preview?: { range: string; values: unknown[][] }[] }
+              | {
+                  preview?: { range: string; values: unknown[][] }[];
+                  changes?: unknown;
+                  sheets?: unknown;
+                }
               | undefined;
             items.push({
               path: pd.path,
               kind: "workbook",
               create: true,
               opsCount: pd.ops.length,
+              changes: data?.changes,
+              sheets: data?.sheets,
               preview: capPreview(data?.preview),
             });
             hashMaterial.push({ path: pd.path, kind: "workbook", ops: pd.ops });
@@ -581,33 +578,12 @@ reader 角色的脚本只能读取（wb.edit/files.writeText 会报错）；发�
             dryRun: true,
           });
           if (!res.ok) throw new PublishError(res.code, res.message);
-          const { snapshot } = await svc!.snapshot(pd.docId, root);
-          const sheetNames = new Map(
-            Object.entries(snapshot.sheets ?? {}).map(([id, s]) => [
-              id,
-              (s as { name?: string }).name ?? id,
-            ]),
-          );
-          const cellsBySheet: Record<string, number> = {};
-          const ranges: string[] = [];
-          for (const r of res.writeSet.ranges) {
-            if (r.sheetId === "*") continue;
-            const name = sheetNames.get(r.sheetId) ?? r.sheetId;
-            cellsBySheet[name] = (cellsBySheet[name] ?? 0) + (r.r1 - r.r0 + 1) * (r.c1 - r.c0 + 1);
-            ranges.push(rangeA1(r, name));
-          }
           items.push({
             path: pd.path,
             kind: "workbook",
             create: false,
             opsCount: pd.ops.length,
-            changes: {
-              cellsBySheet,
-              ranges,
-              structural: res.writeSet.structural.map(
-                (s) => `${s.kind}@${sheetNames.get(s.sheetId) ?? s.sheetId}:${s.index}+${s.count}`,
-              ),
-            },
+            changes: res.changes,
             preview: capPreview(res.preview),
           });
           hashMaterial.push({ path: pd.path, kind: "workbook", ops: pd.ops });
@@ -670,19 +646,18 @@ reader 角色的脚本只能读取（wb.edit/files.writeText 会报错）；发�
               );
               const docId = created.meta.id;
               try {
-                if (pd.ops.length > 0) {
-                  const res = await svc!.submit(docId, root, {
-                    baseRev: 0,
-                    readSet: [],
-                    source,
-                    sessionId: ctx.sessionId,
-                    toolCallId,
-                    ops: pd.ops,
-                  });
-                  if (!res.ok) throw new PublishError(res.code, res.message);
-                  committedRevs.push({ docId, rev: res.rev, path: pd.path });
-                  docRevs[docId] = res.rev;
-                }
+                const res = await svc!.submit(docId, root, {
+                  baseRev: 0,
+                  readSet: [],
+                  source,
+                  sessionId: ctx.sessionId,
+                  toolCallId,
+                  ops: pd.ops,
+                  created: true,
+                });
+                if (!res.ok) throw new PublishError(res.code, res.message);
+                committedRevs.push({ docId, rev: res.rev, path: pd.path });
+                docRevs[docId] = res.rev;
                 await svc!.checkpoint(docId, root);
                 createdDocs.push({ docId, path: pd.path });
                 published.push({
@@ -690,6 +665,9 @@ reader 角色的脚本只能读取（wb.edit/files.writeText 会报错）；发�
                   kind: "workbook",
                   docId,
                   rev: docRevs[docId] ?? 0,
+                  created: true,
+                  sheets: res.sheets,
+                  changes: res.changes,
                 });
               } catch (e) {
                 await svc!.discardCreated(docId, root, ctx.sessionId).catch(() => {});
@@ -714,6 +692,7 @@ reader 角色的脚本只能读取（wb.edit/files.writeText 会报错）；发�
                 kind: "workbook",
                 docId: pd.docId,
                 rev: res.rev,
+                changes: res.changes,
               });
             }
           }

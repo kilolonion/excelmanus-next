@@ -35,7 +35,8 @@ export function agentTools(_coordinator: AgentCoordinator): ToolDefinition[] {
   const spawn: ToolDefinition<z.infer<typeof spawnInput>> = {
     name: "agent_spawn",
     title: "派生子代理",
-    description: "异步派生一个受角色权限与预算限制的子代理，立即返回代理 ID。",
+    description:
+      "异步派生一个受角色权限与预算限制的子代理，立即返回代理 ID；超过并发上限会排队。reader 只读，worker 可读写但不能派生，lead 可派生。files 声明子代理写入租约，路径相对工作区；已有租约冲突会拒绝。结束后运行时向派生者发送最终回复与变更摘要，父代理仍需核验任务结果。",
     input: spawnInput,
     output,
     effect: "agent",

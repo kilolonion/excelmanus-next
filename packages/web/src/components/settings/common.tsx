@@ -2,8 +2,9 @@
 
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { S, ST } from "../../strings.ts";
+import { cn } from "../ui/cn.ts";
 import { useConfirm } from "../ui/confirm.tsx";
-import { Alert, Card, EmptyState } from "../ui/display.tsx";
+import { Alert, Card } from "../ui/display.tsx";
 import { Field as UiField } from "../ui/field.tsx";
 import { toast } from "../ui/overlay.tsx";
 import { Skeleton } from "../ui/spinner.tsx";
@@ -64,19 +65,33 @@ export function Section({
   hint,
   children,
   actions,
+  className,
 }: {
-  title: string;
+  title?: ReactNode;
   hint?: string;
   children: ReactNode;
   actions?: ReactNode;
+  className?: string;
 }) {
   return (
-    <section className="flex flex-col gap-3">
-      <div className="flex min-h-7 items-center justify-between gap-3">
-        <h3 className="text-md font-semibold">{title}</h3>
-        {actions && <div className="flex items-center gap-2">{actions}</div>}
-      </div>
-      {hint && <p className="-mt-1.5 text-xs text-muted-foreground">{hint}</p>}
+    <section className={cn("settings-section flex min-w-0 flex-col gap-5", className)}>
+      {(title || hint || actions) && (
+        <div className="settings-section-heading flex min-h-8 flex-wrap items-start justify-between gap-x-5 gap-y-3">
+          <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+            {title && (
+              <h3 className="text-[15px] leading-6 font-semibold tracking-tight">{title}</h3>
+            )}
+            {hint && (
+              <p className="max-w-[560px] text-xs leading-5 text-muted-foreground">{hint}</p>
+            )}
+          </div>
+          {actions && (
+            <div className="settings-section-actions flex flex-wrap items-center gap-2">
+              {actions}
+            </div>
+          )}
+        </div>
+      )}
       {children}
     </section>
   );
@@ -95,7 +110,7 @@ export function Field({
   className?: string;
 }) {
   return (
-    <UiField label={label} description={hint} className={className}>
+    <UiField label={label} description={hint} className={cn("settings-field gap-2", className)}>
       {children}
     </UiField>
   );
@@ -104,7 +119,13 @@ export function Field({
 /** 列表卡片容器（设置中心统一外观） */
 export function ItemCard({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <Card elevation="flat" className={`flex flex-col gap-2 p-3.5 ${className ?? ""}`}>
+    <Card
+      elevation="flat"
+      className={cn(
+        "settings-item flex flex-col gap-3 rounded-lg border-border/70 p-5 shadow-none",
+        className,
+      )}
+    >
       {children}
     </Card>
   );
@@ -119,8 +140,22 @@ export function Loading() {
   );
 }
 
+export function LoadStatus({ data, error }: { data: unknown; error: string | null }) {
+  if (error)
+    return (
+      <Alert layout="inline" tone="err" role="alert">
+        {error}
+      </Alert>
+    );
+  return data === null ? <Loading /> : null;
+}
+
 export function Empty({ text = ST.empty }: { text?: string }) {
-  return <EmptyState size="section" title={text} />;
+  return (
+    <p className="settings-empty rounded-lg bg-muted/40 px-5 py-7 text-sm leading-6 text-muted-foreground">
+      {text}
+    </p>
+  );
 }
 
 /** "名称: 值" 或 "KEY=值" 多行文本 ↔ 对象。 */

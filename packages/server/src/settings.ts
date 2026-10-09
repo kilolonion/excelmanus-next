@@ -8,6 +8,7 @@ import { EnvHttpProxyAgent, fetch as undiciFetch } from "undici";
 
 export const DEFAULT_SETTINGS: AppSettings = {
   defaultPermissionMode: "standard",
+  defaultDispatchMode: "steer",
   subAgentProfileId: null,
   compactionProfileId: null,
   autoCompact: true,

@@ -3,7 +3,7 @@
 
 import { z } from "zod";
 import { FileIntentMeta } from "./files.ts";
-import { ClassifiedError, JsonObject, ToolCall, Usage } from "./neutral.ts";
+import { ClassifiedError, ErrorGuidance, JsonObject, ToolCall, Usage } from "./neutral.ts";
 
 // ---------- 06 §2.3 统一工具结果 ----------
 
@@ -184,6 +184,7 @@ export const RECORD_DATA_SCHEMAS = {
   "user.message": z.object({
     dispatchId: z.string(),
     clientMessageId: z.string(),
+    replacesDispatchId: z.string().optional(),
     text: z.string(),
     mode: DispatchMode.optional(),
     /** 本轮变化的上下文（04 §7.3），进入上下文时包进 <context> 块。 */
@@ -299,11 +300,7 @@ export const RECORD_DATA_SCHEMAS = {
     waitMs: z.number(),
     reason: z.string(),
   }),
-  "error.guidance": z.object({
-    kind: z.string(),
-    message: z.string(),
-    actions: z.array(z.string()),
-  }),
+  "error.guidance": ErrorGuidance,
   "usage.updated": z.object({
     turnId: z.string().optional(),
     usage: Usage,

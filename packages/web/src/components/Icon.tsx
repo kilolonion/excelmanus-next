@@ -15,6 +15,7 @@ import {
   CircleCheck,
   CircleX,
   Clock,
+  Copy,
   Cpu,
   Download,
   Eye,
@@ -35,6 +36,7 @@ import {
   Minimize2,
   Monitor,
   Moon,
+  MoreHorizontal,
   PanelLeft,
   PanelRight,
   Pencil,
@@ -42,6 +44,7 @@ import {
   PinOff,
   Plug,
   Plus,
+  Quote,
   RotateCcw,
   Search,
   Settings,
@@ -60,6 +63,8 @@ import {
   X,
   Zap,
 } from "lucide-react";
+import type { ReactNode } from "react";
+import { S } from "../strings.ts";
 import { cn } from "./ui/cn.ts";
 
 const ICONS = {
@@ -113,6 +118,7 @@ const ICONS = {
   restore: RotateCcw,
   eye: Eye,
   monitor: Monitor,
+  more: MoreHorizontal,
   keyboard: Keyboard,
   hand: Hand,
   zap: Zap,
@@ -120,12 +126,99 @@ const ICONS = {
   circleCheck: CircleCheck,
   circleX: CircleX,
   circleAlert: CircleAlert,
+  copy: Copy,
+  quote: Quote,
 } satisfies Record<string, LucideIcon>;
 
 export type IconName = keyof typeof ICONS;
 export type IconSize = "xs" | "sm" | "md" | "lg" | "xl";
 
 const PX: Record<IconSize, number> = { xs: 12, sm: 14, md: 16, lg: 20, xl: 24 };
+
+const PROVIDER_LOGOS: Record<string, string> = {
+  openai: "openai",
+  chatgpt: "openai",
+  anthropic: "anthropic",
+  google: "gemini",
+  gemini: "gemini",
+  deepseek: "deepseek",
+  moonshot: "moonshot",
+  qwen: "qwen",
+  zhipu: "zhipu",
+  doubao: "bytedance",
+  minimax: "minimax",
+  mimo: "xiaomi",
+  xai: "xai",
+  openrouter: "openrouter",
+  ollama: "ollama",
+  alibabacloud: "alibabacloud",
+  baidu: "baidu",
+  bytedance: "bytedance",
+  huawei: "huawei",
+  huggingface: "huggingface",
+  meta: "meta",
+  mistral: "mistral",
+  nvidia: "nvidia",
+  perplexity: "perplexity",
+  qq: "qq",
+  siliconcloud: "siliconcloud",
+  siliconflow: "siliconcloud",
+  xiaomi: "xiaomi",
+};
+
+const COLOR_LOGOS = new Set(["alibabacloud", "bytedance", "mistral", "nvidia", "perplexity", "qq"]);
+
+export function ProviderLogo({
+  provider,
+  size = "md",
+  className,
+  label,
+}: {
+  provider?: string;
+  size?: IconSize;
+  className?: string;
+  label?: string;
+}) {
+  const logo = (provider && PROVIDER_LOGOS[provider]) || "default";
+  return (
+    <img
+      src={`/providers/${logo}.svg`}
+      alt={label ?? ""}
+      aria-hidden={label ? undefined : true}
+      width={PX[size]}
+      height={PX[size]}
+      className={cn("shrink-0 object-contain", !COLOR_LOGOS.has(logo) && "dark:invert", className)}
+    />
+  );
+}
+
+export function ProviderLabel({ provider, children }: { provider?: string; children: ReactNode }) {
+  return (
+    <span className="inline-flex min-w-0 max-w-full items-center gap-2 align-middle">
+      <ProviderLogo provider={provider} />
+      <span className="truncate">{children}</span>
+    </span>
+  );
+}
+
+export function BrandMark({
+  className,
+  decorative = true,
+}: {
+  className?: string;
+  decorative?: boolean;
+}) {
+  return (
+    <img
+      src="/brand-icon.png"
+      alt={decorative ? "" : S.appName}
+      aria-hidden={decorative ? true : undefined}
+      width={256}
+      height={256}
+      className={cn("shrink-0 object-contain", className)}
+    />
+  );
+}
 
 export function Icon({
   name,

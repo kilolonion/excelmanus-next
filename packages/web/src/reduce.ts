@@ -6,6 +6,7 @@
 // inbox.sent 还原为 internal 消息（不参与任何代理的对话流归属判定）。
 
 import type { ServerMessage } from "@excelmanus/protocol";
+import { S } from "./strings.ts";
 
 export interface UiMessage {
   id: string;
@@ -33,7 +34,7 @@ export interface UiMessage {
   /** 思考时长（model.output.reasoningMs）。 */
   reasoningMs?: number;
   /** 用户消息：图片附件（只有引用，缩略图按需取）。 */
-  attachments?: { sha256: string; mediaType: string; name: string }[];
+  attachments?: { sha256: string; mediaType: string; name: string; size: number }[];
   /** 用户消息：本条附带的区域上下文（02 §3.2 徽标）。 */
   context?: { docId: string; rev: number; range: string }[];
   /** 记录写入时间（ISO 8601 UTC）。 */
@@ -71,6 +72,7 @@ export interface ChangeEntry {
   backupPath?: string;
   agentId?: string | null;
   seq: number;
+  at?: string;
 }
 
 export interface ApprovalCard {
@@ -86,6 +88,18 @@ export interface ApprovalCard {
   reason?: string;
   remember?: boolean;
   agentId?: string | null;
+}
+
+/** workbook_edit 审批卡片中来自服务端 args 的操作摘要。保留原始字段，便于前端只读展示。 */
+export interface PendingWriteOperation {
+  op: string;
+  range?: string;
+  sheet?: string;
+  values?: unknown[][];
+  at?: number;
+  count?: number;
+  name?: string;
+  what?: string;
 }
 
 export interface QuestionCard {
@@ -109,7 +123,14 @@ export interface AgentLive {
   reasoningText: string;
   pendingToolArgs: Record<string, { name: string; args: string }>;
   retry: { attempt: number; waitMs: number } | null;
-  error: { kind: string; message: string } | null;
+  error: {
+    kind: string;
+    message: string;
+    /** 服务端提供的下一步建议，原样保留供界面展示。 */
+    actions: string[];
+    /** 服务端确认该错误可重新发起请求；缺失表示旧记录/未知。 */
+    retryable?: boolean;
+  } | null;
   /** 该代理最近一次 usage.updated.context（04 §6.1）。 */
   contextUsage: { tokens: number; window: number | null; estimated: boolean } | null;
   /** 正在进行的工作簿活动（workbook_activity 瞬时增量，02 §4.2 "正在读取"）。 */
@@ -216,8 +237,15 @@ export function resultHeadline(result: unknown): string | null {
   const d = result as Record<string, unknown>;
   const parts: string[] = [];
   const num = (v: unknown) => (typeof v === "number" ? v : null);
-  const changes = d.changes as { ranges?: unknown; cellsBySheet?: unknown } | undefined;
-  if (Array.isArray(d.sheets)) {
+  const changes = d.changes as
+    | { ranges?: unknown; cellsBySheet?: unknown; structural?: unknown }
+    | undefined;
+  if (d.created === true && Array.isArray(d.sheets)) {
+    parts.push(
+      d.dryRun === true ? S.workbookCreatePreview : S.workbookCreated,
+      S.workbookSheetCount(d.sheets.length),
+    );
+  } else if (Array.isArray(d.sheets)) {
     const sheets = d.sheets as { cells?: unknown }[];
     const cells = sheets.reduce((n, s) => n + (num(s.cells) ?? 0), 0);
     parts.push(`${sheets.length} 个工作表`, `${cells} 个非空单元格`);
@@ -236,7 +264,10 @@ export function resultHeadline(result: unknown): string | null {
             0,
           )
         : 0;
-    parts.push(d.dryRun === true ? "预览（未写入）" : "已写入", `${cells} 个单元格`);
+    const structures = Array.isArray(changes.structural) ? changes.structural.length : 0;
+    parts.push(d.dryRun === true ? S.workbookEditPreview : S.workbookEdited);
+    if (cells > 0 || structures === 0) parts.push(S.workbookCellCount(cells));
+    if (structures > 0) parts.push(S.workbookStructureCount(structures));
   } else if (Array.isArray(d.items)) {
     parts.push(`${d.items.length} 项`);
   } else if (typeof d.path === "string") {
@@ -261,7 +292,7 @@ function summarizeResult(result: unknown): string {
 function changeEntryOf(
   toolCallId: string,
   raw: unknown,
-  meta: { agentId?: string | null },
+  meta: { agentId?: string | null; at?: string },
   seq: number,
 ): ChangeEntry | null {
   if (!raw || typeof raw !== "object") return null;
@@ -299,6 +330,7 @@ function changeEntryOf(
     ...(typeof d.backupPath === "string" ? { backupPath: d.backupPath } : {}),
     agentId: meta.agentId ?? null,
     seq,
+    ...(meta.at ? { at: meta.at } : {}),
   };
 }
 
@@ -390,13 +422,19 @@ function applyRecord(
             ...(Array.isArray(data.attachments) && data.attachments.length > 0
               ? {
                   attachments: (
-                    data.attachments as { sha256?: unknown; mediaType?: unknown; name?: unknown }[]
+                    data.attachments as {
+                      sha256?: unknown;
+                      mediaType?: unknown;
+                      name?: unknown;
+                      size?: unknown;
+                    }[]
                   )
                     .filter((a) => typeof a.sha256 === "string")
                     .map((a) => ({
                       sha256: a.sha256 as string,
                       mediaType: String(a.mediaType ?? ""),
                       name: String(a.name ?? ""),
+                      size: Number(a.size ?? 0),
                     })),
                 }
               : {}),
@@ -784,7 +822,12 @@ function applyRecord(
       });
     case "error.guidance":
       return patchLive(s, agentOf(meta), {
-        error: { kind: String(data.kind ?? "unknown"), message: String(data.message ?? "") },
+        error: {
+          kind: String(data.kind ?? "unknown"),
+          message: String(data.message ?? ""),
+          actions: Array.isArray(data.actions) ? data.actions.map(String) : [],
+          ...(typeof data.retryable === "boolean" ? { retryable: data.retryable } : {}),
+        },
       });
     case "turn.completed":
     case "turn.interrupted":
@@ -793,7 +836,22 @@ function applyRecord(
       const status =
         type === "turn.completed" ? "idle" : type === "turn.interrupted" ? "interrupted" : "failed";
       const next = patchStatus(s, meta.agentId, status);
-      return patchLive(next, meta.agentId, { streamingText: "", retry: null, activity: [] });
+      const failure =
+        data.error && typeof data.error === "object"
+          ? (data.error as { retryable?: unknown })
+          : undefined;
+      const currentError = next.live[meta.agentId]?.error;
+      const withFailure =
+        currentError && typeof failure?.retryable === "boolean"
+          ? patchLive(next, meta.agentId, {
+              error: { ...currentError, retryable: failure.retryable },
+            })
+          : next;
+      return patchLive(withFailure, meta.agentId, {
+        streamingText: "",
+        retry: null,
+        activity: [],
+      });
     }
     case "usage.updated": {
       const aid = agentOf(meta);
@@ -971,7 +1029,49 @@ export interface DocSyncState {
   >;
 }
 
+/** 可直接呈现在工作台的最新文档提交冲突。未知字段按通用文本保留，避免前端伪造服务端事件。 */
+export interface DocConflict {
+  clientOpId: string;
+  code: string;
+  message?: string;
+  conflicts: Array<{ rev?: number; source?: string; cells: string[] }>;
+}
+
 export const initialDocSync = (rev = 0): DocSyncState => ({ rev, pending: {} });
+
+function asConflict(value: unknown): Omit<DocConflict, "clientOpId"> {
+  if (!value || typeof value !== "object") return { code: "UNKNOWN", conflicts: [] };
+  const raw = value as { code?: unknown; message?: unknown; conflicts?: unknown };
+  const details = Array.isArray(raw.conflicts)
+    ? raw.conflicts.flatMap((item) => {
+        if (!item || typeof item !== "object") return [];
+        const detail = item as { rev?: unknown; source?: unknown; cells?: unknown };
+        return [
+          {
+            ...(typeof detail.rev === "number" ? { rev: detail.rev } : {}),
+            ...(typeof detail.source === "string" ? { source: detail.source } : {}),
+            cells: Array.isArray(detail.cells)
+              ? detail.cells.filter((cell): cell is string => typeof cell === "string")
+              : [],
+          },
+        ];
+      })
+    : [];
+  return {
+    code: typeof raw.code === "string" ? raw.code : "UNKNOWN",
+    ...(typeof raw.message === "string" ? { message: raw.message } : {}),
+    conflicts: details,
+  };
+}
+
+/** 返回最近一次拒绝，供工作台冲突条消费；状态只来自真实 doc.reject/离线拒绝。 */
+export function latestDocConflict(state: DocSyncState): DocConflict | null {
+  const entries = Object.entries(state.pending).filter(([, item]) => item.status === "rejected");
+  const latest = entries.at(-1);
+  if (!latest) return null;
+  const [clientOpId, item] = latest;
+  return { clientOpId, ...asConflict(item.conflict) };
+}
 
 export function reduceDoc(state: DocSyncState, msg: ServerMessage): DocSyncState {
   switch (msg.type) {
@@ -1111,31 +1211,42 @@ export function pendingWriteTargets(card: ApprovalCard): {
   ranges: string[];
   /** cells.set 的拟写入值（二维，按区域）；用于修改前后对比（02 §4.4）。 */
   values: Record<string, unknown[][]>;
+  /** 原始变更操作的安全子集；结构变更审批摘要使用这些字段。 */
+  operations: PendingWriteOperation[];
 } | null {
   if (card.toolName !== "workbook_edit") return null;
   const a = card.args as { path?: unknown; docId?: unknown; ops?: unknown } | undefined;
   if (!a || !Array.isArray(a.ops)) return null;
   const ranges: string[] = [];
   const values: Record<string, unknown[][]> = {};
-  for (const op of a.ops as {
-    op?: unknown;
-    range?: unknown;
-    sheet?: unknown;
-    values?: unknown;
-  }[]) {
-    if (typeof op.range !== "string") continue;
+  const operations: PendingWriteOperation[] = [];
+  for (const raw of a.ops as Record<string, unknown>[]) {
+    const opName = typeof raw.op === "string" ? raw.op : "";
+    const operation: PendingWriteOperation = { op: opName };
+    if (typeof raw.range === "string") operation.range = raw.range;
+    if (typeof raw.sheet === "string") operation.sheet = raw.sheet;
+    if (typeof raw.at === "number") operation.at = raw.at;
+    if (typeof raw.count === "number") operation.count = raw.count;
+    if (typeof raw.name === "string") operation.name = raw.name;
+    if (typeof raw.what === "string") operation.what = raw.what;
+    if (Array.isArray(raw.values)) {
+      operation.values = raw.values as unknown[][];
+    }
+    operations.push(operation);
+    if (typeof operation.range !== "string") continue;
     const r =
-      typeof op.sheet === "string" && !op.range.includes("!")
-        ? `${op.sheet}!${op.range}`
-        : op.range;
+      typeof operation.sheet === "string" && !operation.range.includes("!")
+        ? `${operation.sheet}!${operation.range}`
+        : operation.range;
     ranges.push(r);
-    if (op.op === "cells.set" && Array.isArray(op.values)) values[r] = op.values as unknown[][];
+    if (opName === "cells.set" && operation.values) values[r] = operation.values;
   }
   return {
     ...(typeof a.path === "string" ? { path: a.path } : {}),
     ...(typeof a.docId === "string" ? { docId: a.docId } : {}),
     ranges,
     values,
+    operations,
   };
 }
 

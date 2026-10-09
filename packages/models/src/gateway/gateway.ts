@@ -8,6 +8,7 @@ import { jsonSchema, stepCountIs, streamText, tool } from "ai";
 import { presetFor } from "../presets.ts";
 import { resolveLanguageModel } from "../resolve.ts";
 import { registerModelSecrets } from "../secrets.ts";
+import { MODEL_STRINGS } from "../strings.ts";
 import { toModelMessages } from "./convert.ts";
 import { classifyError } from "./errors.ts";
 
@@ -58,6 +59,42 @@ async function* stepImpl(
   // 10 §4：本次请求的明文凭据登记为待脱敏值（错误文本与会话日志写入前精确替换）
   registerModelSecrets(req.model);
   try {
+    let providerOptions = req.providerOptions;
+    if (req.model.reasoning === "max") {
+      const preset = presetFor(req.model.provider);
+      const adapter = preset?.adapter ?? "openai-compatible";
+      const key =
+        adapter === "openai" || adapter === "chatgpt"
+          ? "openai"
+          : adapter === "anthropic"
+            ? "anthropic"
+            : adapter === "openai-compatible"
+              ? (preset?.id ?? "custom-openai-compatible").replace(/-([a-z])/g, (_, c: string) =>
+                  c.toUpperCase(),
+                )
+              : undefined;
+      if (!key) {
+        yield {
+          kind: "error",
+          error: {
+            kind: "invalid_request",
+            retryable: false,
+            message: MODEL_STRINGS.maxReasoningUnsupported,
+          },
+        };
+        return;
+      }
+      const current = providerOptions?.[key];
+      providerOptions = {
+        ...providerOptions,
+        [key]: {
+          ...(typeof current === "object" && current !== null ? current : {}),
+          ...(adapter === "anthropic"
+            ? { effort: "max", thinking: { type: "adaptive" } }
+            : { reasoningEffort: "max" }),
+        },
+      };
+    }
     const result = streamText({
       model: resolve(req.model) as LanguageModel,
       system: req.system,
@@ -72,9 +109,11 @@ async function* stepImpl(
       stopWhen: stepCountIs(1),
       // 重试由运行时按 04 §9 策略执行；网关只分类，故关掉 SDK 内部重试。
       maxRetries: 0,
-      providerOptions: req.providerOptions as never,
+      providerOptions: providerOptions as never,
       // 09 §3：档案默认思考强度（AI SDK 7 统一取值）；未设置时交给提供商默认
-      ...(req.model.reasoning !== undefined && req.model.reasoning !== "provider-default"
+      ...(req.model.reasoning !== undefined &&
+      req.model.reasoning !== "provider-default" &&
+      req.model.reasoning !== "max"
         ? { reasoning: req.model.reasoning as never }
         : {}),
       // 错误已作为 error 事件交给运行时；关闭 SDK 默认的 console.error（会打印请求 URL 等细节）

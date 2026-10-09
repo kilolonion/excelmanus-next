@@ -1136,6 +1136,7 @@ class AgentActor {
                     ? `工具调用次数已达到上限 ${budgetCheck.max}`
                     : `本轮步数已达到上限 ${maxSteps}`,
               actions: ["缩小任务范围", "继续发送消息以开始新一轮"],
+              retryable: false,
             },
           },
         ]);
@@ -2212,6 +2213,7 @@ class AgentActor {
           kind,
           message: GUIDANCE_MESSAGES[kind] ?? error.message,
           actions: GUIDANCE_ACTIONS[kind] ?? [],
+          retryable: error.retryable,
         },
       },
       // 轮失败时最近一步仍缺结果的工具调用补 not_executed（04 §8.1），历史保持可发送

@@ -143,6 +143,24 @@ describe("workbook 工具", () => {
     expect(sql.data.rowCount).toBe(expectByRegion.size);
   });
 
+  test("sql：兼容 {{sheet}} 占位符", async () => {
+    const { read, analyze, ctx } = setup();
+    const opened = (await read.execute({ path: "sales.xlsx", mode: "overview" }, ctx)) as Ok;
+    const r = (await analyze.execute(
+      {
+        docId: opened.data.docId,
+        mode: "sql",
+        sheet: "销售",
+        range: "A2:F52",
+        sql: "SELECT 地区, COUNT(*) AS 订单数, SUM(金额) AS 总金额 FROM {{sheet}} GROUP BY 地区 ORDER BY 总金额 DESC",
+      },
+      ctx,
+    )) as Ok;
+    expect(r.status).toBe("ok");
+    expect(r.data.columns).toEqual(["地区", "订单数", "总金额"]);
+    expect((r.data.rows as unknown[][])[0]).toEqual(["华北", 12, 761009]);
+  });
+
   test("sql：拒绝写操作", async () => {
     const { analyze, ctx } = setup();
     const r = await analyze.execute(

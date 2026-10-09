@@ -534,6 +534,98 @@ describe("e2e run_script", () => {
 });
 
 describe("e2e run_script 发布时审批（ADR 0009 修订）", () => {
+  test("脚本空工作簿复用工具规则：空 ops 预览、批准与持久化均成功，已有文件空 ops 被拒绝", async () => {
+    const path = "脚本空工作簿.xlsx";
+    const code = [
+      'let error; try { await wb.edit({ path: "existing.xlsx", ops: [] }); } catch (e) { error = e.code; }',
+      'await wb.edit({ path: "existing.xlsx", ops: [{ op: "sheet.delete", sheet: "参数" }] });',
+      `await wb.edit({ path: ${JSON.stringify(path)}, create: true, ops: [] });`,
+      "return error;",
+    ].join("\n");
+    const { srv, api, sessionId, workspaceId } = await boot(
+      [
+        () => toolCallOut("empty-script", "run_script", JSON.stringify({ code })),
+        () => textOut("完成"),
+      ],
+      "confirm",
+    );
+    const before = seedWorkbooks(srv.workspaceRoot, ["existing.xlsx"]);
+    await api.sendMessage(sessionId, AGENT, {
+      clientMessageId: "script-empty",
+      text: "生成空工作簿",
+    });
+    const pending = await waitLog(
+      api,
+      sessionId,
+      (i) => i.some((r) => r.type === "approval.requested"),
+      "空工作簿审批",
+    );
+    const request = pending.find((r) => r.type === "approval.requested");
+    if (!request) throw new Error("缺少审批");
+    const plan = (request.data.args as { publishPlan: unknown[] }).publishPlan;
+    expect(plan).toEqual([
+      expect.objectContaining({
+        path: "existing.xlsx",
+        create: false,
+        opsCount: 1,
+        changes: { cellsBySheet: {}, ranges: [], structural: ["删除工作表（参数）"], added: [] },
+      }),
+      expect.objectContaining({
+        path,
+        create: true,
+        opsCount: 0,
+        sheets: [expect.objectContaining({ name: "Sheet1", cells: 0 })],
+        changes: {
+          cellsBySheet: {},
+          ranges: [],
+          structural: ["新增工作表（Sheet1）"],
+          added: ["工作表 Sheet1"],
+        },
+      }),
+    ]);
+    expect(existsSync(join(srv.workspaceRoot, path))).toBe(false);
+    expect(sha256File(join(srv.workspaceRoot, "existing.xlsx"))).toBe(before["existing.xlsx"]);
+    await api.decideApproval(String(request.data.approvalId), { decision: "approve" });
+    const done = await waitLog(
+      api,
+      sessionId,
+      (i) =>
+        i.some((r) => r.type === "turn.completed") && i.some((r) => r.type === "change.summary"),
+      "空工作簿发布",
+    );
+    expect(scriptResult(done, "empty-script")?.data).toMatchObject({
+      status: "ok",
+      result: {
+        data: {
+          value: "INVALID_ARGUMENT",
+          published: [
+            {
+              path: "existing.xlsx",
+              rev: 1,
+              changes: { cellsBySheet: {}, structural: ["删除工作表（参数）"] },
+            },
+            {
+              path,
+              created: true,
+              rev: 1,
+              sheets: [{ name: "Sheet1", cells: 0 }],
+              changes: { cellsBySheet: {}, structural: ["新增工作表（Sheet1）"] },
+            },
+          ],
+        },
+      },
+    });
+    const { document } = await api.openDoc(workspaceId, { path });
+    const db = dbFile(srv);
+    expect(
+      db
+        .prepare("SELECT COUNT(*) AS n FROM doc_ops WHERE doc_id=? AND tool_call_id='empty-script'")
+        .get(document.id),
+    ).toMatchObject({ n: 1 });
+    db.close();
+    expect(await cellValue(api, workspaceId, path, "A1")).toBeUndefined();
+  }, 60_000);
+
   test("confirm 模式批准：approval.requested 带 publishPlan，批准前两文件未动 → 批准后双发布", async () => {
     const code = [
       'await wb.edit({ path: "p1.xlsx", ops: [{ op: "cells.set", range: "A1", values: [["P"]] }] });',

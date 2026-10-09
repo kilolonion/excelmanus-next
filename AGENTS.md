@@ -36,6 +36,7 @@
 - 前端界面控件只用 `packages/web/src/components/ui/`，图标只经 `Icon.tsx`；不用原生 `select`/`confirm`/`title` 提示（`ui-conventions.test.ts` 强制）。
 
 ## 工作流
+- 技能与模型指导内容遵守 `docs/17-skill-authoring.md`【硬性】：skill 只承载独立任务方法；产品帮助、工具/SDK/发布/角色/租约契约分别归位。不得将软件基础用法或零碎参考章节注册成内置技能，不以固定数量或篇幅验收。技能按需加载，用户方法与范围优先；格式/注入通过不等于真实模型效果通过。
 - 每个里程碑（`docs/15-milestones.md`）开始前先做该阶段的 spike，结论写 ADR；spike 失败按文档给出的备选方案切换，并把范围变化写进 ADR。
 - 每个里程碑的退出条件 = `docs/14-quality.md` 中对应门禁与验收场景；逐项在 `docs/acceptance/` 留证据。
 
@@ -57,6 +58,7 @@
 - 更新模型目录快照：`node scripts/update-model-catalog.ts`
 
 ## 当前进度
+- 2026-10-01 技能职责调整：产品帮助与工具/SDK 契约归位，七个任务技能 v2.0.0，开发约束见 `docs/17-skill-authoring.md`，证据见 `docs/acceptance/skill-boundaries-2026-10-01.md`。技能聚焦 22 项通过；本轮较晚完整测试 321 通过/2 失败（工作簿写回/冲突场景），不能沿用下方历史通过计数宣称当前全绿。真实模型效果未验证。
 - 单仓骨架 + 门禁框架完成：pnpm workspaces，15 个包（protocol/core/kernel/models/sandbox/server/web/desktop + modules/*7），源码优先（exports → `./src/index.ts`，Node 24 原生类型剥离已验证），depcruise + 声明校验的依赖方向门禁（`scripts/dependency-matrix.ts` 单一规则源），许可证门禁，Vitest projects 测试，Biome lint，CI 门禁工作流。
 - 依赖版本策略注意：`autoInstallPeers: false`（peer 显式声明；lightningcss 现作为 Tailwind 4 的构建期依赖存在，受 ADR 0011 例外约束）；typescript 锁定 6.0.3 而非 7.x（depcruise 18 只支持 TS <7 转译器）。
 - M0 已按 ADR 0001–0006 收口；M1 主要纵切已提交为 `af250b6`。2026-09-30 构建、安全与交互修复见 `docs/acceptance/m1-repair.md`；最终工作树尚未验收。
@@ -66,3 +68,4 @@
 - M6a 第一轮前端收口（2026-10-01）：重写 `styles.css` 视觉体系、工作台公式栏/工作表标签/叠加层、选区跟随修复、待处理条与设置中心统一；验收见 `docs/acceptance/m6a-frontend.md`（部分完成，未完成项列于 §5）。页面复核用 `packages/server/test/fixtures/ui-preview-server.ts`（真实后端 + 假模型）。全部改动未提交。
 - M4 实现完成（代理团队与收件箱、并发排队闸门、角色矩阵与文件租约、完成报告、用户 control REST、queued 代理重启恢复修复、前端按代理分流 + 团队视图），2026-09-30 验收见 `docs/acceptance/m4.md`；场景 13 为"部分"（12 文件缩为 3、汇总数判据仅到报告进入 main prompt）、团队视图 UI 未做浏览器验证，全部改动未提交。
 - M6a 第四轮（2026-10-01）：Tailwind CSS 4 + Radix 自写组件层视觉大修（ADR 0011），全部页面迁移、原生控件清零；验收见 `docs/acceptance/m6a-frontend.md` §8（部分完成），全部改动未提交。
+- M6 后端缺陷修复续验（2026-10-01）：完成本轮确定性检查点失败、备份静默降级、契约/安全脱敏与 `/api/docs` 修复；随后修复引擎修订导致的工作簿回读失败，当前 `pnpm check:all` 为 48 files / 317 tests 通过，桌面 `--self-test` 与 `pack:desktop` 也通过。未验证项与边界见 `docs/acceptance/m6-backend-fixes.md`、`docs/acceptance/progress-2026-10-01.md`、`.agents/tasks/m6-backend-audit-2026-10-01/continuation-workbook.md` 和 `continuation-contract-security.md`，不能据此宣称 M6 后端全部完成。

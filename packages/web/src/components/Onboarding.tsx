@@ -4,7 +4,7 @@
 import { type ReactNode, useState } from "react";
 import { openSample, send, setOnboardingOpen, setSettingsOpen, useApp } from "../store.ts";
 import { OB } from "../strings.ts";
-import { Icon } from "./Icon.tsx";
+import { BrandMark, Icon } from "./Icon.tsx";
 import { Button } from "./ui/button.tsx";
 import { cn } from "./ui/cn.ts";
 import { Card } from "./ui/display.tsx";
@@ -25,12 +25,12 @@ function Step({
   children?: ReactNode;
 }) {
   return (
-    <li className="flex gap-3">
+    <li className="onboarding-step flex gap-4 border-b border-border/70 py-5 last:border-0">
       <span
         className={cn(
-          "flex size-6 shrink-0 items-center justify-center rounded-full border text-xs font-semibold",
+          "flex size-7 shrink-0 items-center justify-center rounded-md border text-xs font-semibold",
           state === "done" && "border-transparent bg-ok-soft text-ok-ink",
-          state === "ready" && "border-primary text-foreground",
+          state === "ready" && "border-primary bg-primary text-primary-foreground shadow-xs",
           state === "locked" && "border-border text-muted-foreground",
         )}
       >
@@ -42,7 +42,7 @@ function Step({
         >
           {title}
         </strong>
-        <p className="text-xs text-muted-foreground">{hint}</p>
+        <p className="text-sm leading-6 text-muted-foreground">{hint}</p>
         {children}
       </div>
     </li>
@@ -56,15 +56,22 @@ export function Onboarding() {
   const [samplePath, setSamplePath] = useState<string | null>(null);
 
   return (
-    <Card asChild elevation="raised" className="flex flex-col gap-4 rounded-xl p-5">
+    <Card
+      asChild
+      elevation="flat"
+      className="onboarding-studio flex flex-col gap-5 rounded-none border-transparent p-0 motion-safe:animate-surface-in"
+    >
       <section aria-label={OB.title}>
-        <div className="flex items-center justify-between gap-2">
-          <h2 className="text-lg font-semibold">{OB.title}</h2>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <BrandMark className="size-8" />
+            <h2 className="text-xl font-semibold tracking-tight">{OB.title}</h2>
+          </div>
           <Button size="sm" variant="ghost" onClick={() => setOnboardingOpen(false)}>
             {OB.skip}
           </Button>
         </div>
-        <ol className="flex flex-col gap-4">
+        <ol className="flex flex-col">
           <Step
             n={1}
             state={hasModelProfile ? "done" : "ready"}

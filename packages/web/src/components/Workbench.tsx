@@ -1,22 +1,38 @@
 // 表格工作台（02 §2、§4）：文档标题与保存状态、选区栏与「问代理」、Univer 1.0.2 编辑、变更导航。
 
-import { formatRange, parseRange } from "@excelmanus/core";
+import { formatRange, isDerivedWorkbookMutation, parseRange } from "@excelmanus/core";
+import type { PresenceParticipant } from "@excelmanus/protocol";
 import { CommandType, type IWorkbookData, type Univer } from "@univerjs/core";
 import { UniverSheetsCorePreset } from "@univerjs/preset-sheets-core";
 import zhCN from "@univerjs/preset-sheets-core/locales/zh-CN";
 import { createUniver, LocaleType, mergeLocales } from "@univerjs/presets";
 import type { FWorkbook } from "@univerjs/sheets/facade";
 import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  CHANGE_HIGHLIGHT_MS,
+  changeDeadline,
+  changeHighlightFrame,
+  changeHighlights,
+} from "../change-highlights.ts";
 import { focusComposer } from "../dom-ids.ts";
-import { changeRanges, lastUserSeq, pendingWriteTargets } from "../reduce.ts";
+import {
+  type ChangeEntry,
+  changeRanges,
+  lastUserSeq,
+  latestDocConflict,
+  pendingWriteTargets,
+} from "../reduce.ts";
+import type { OpenDoc } from "../store.ts";
 import {
   apiClientOf,
   closeDocument,
+  dismissDocConflict,
   focusRange,
   markChangesSeen,
   noteManualView,
   openWorkspaceFile,
   registerDocumentEditor,
+  reloadDocument,
   send,
   setFollowAgent,
   setLayout,
@@ -31,14 +47,56 @@ import { Button, IconButton } from "./ui/button.tsx";
 import { cn } from "./ui/cn.ts";
 import { useConfirm } from "./ui/confirm.tsx";
 import { SegmentedControl, Switch } from "./ui/controls.tsx";
-import { Badge, RangeChip, Separator } from "./ui/display.tsx";
+import { Alert, Badge, RangeChip, Separator } from "./ui/display.tsx";
 import { Label } from "./ui/field.tsx";
 import { Input } from "./ui/input.tsx";
+import { Popover, PopoverContent, PopoverTrigger } from "./ui/overlay.tsx";
 import { Dots, Spinner } from "./ui/spinner.tsx";
 import { Tip } from "./ui/tooltip.tsx";
 
-/** 叠加层样式（16 §2.1 语义色，取自主题 token）：已修改 = 绿色底 + 实线，计划修改 = 琥珀虚线。 */
+/** 叠加层语义色取自主题 token；已修改通过短时边框反馈。 */
 const FALLBACK = { read: "#4f46e5", ok: "#059669", warn: "#d97706" } as const;
+
+type OverlayVisibility = {
+  activity: boolean;
+  pending: boolean;
+  changed: boolean;
+};
+
+const DEFAULT_OVERLAY_VISIBILITY: OverlayVisibility = {
+  activity: true,
+  pending: true,
+  changed: true,
+};
+const OVERLAY_VISIBILITY_STORAGE_KEY = "excelmanus.overlayVisibility";
+
+function readOverlayVisibility(): OverlayVisibility {
+  if (typeof window === "undefined") return DEFAULT_OVERLAY_VISIBILITY;
+  try {
+    const raw = window.localStorage.getItem(OVERLAY_VISIBILITY_STORAGE_KEY);
+    if (!raw) return DEFAULT_OVERLAY_VISIBILITY;
+    const parsed = JSON.parse(raw) as Partial<OverlayVisibility>;
+    return {
+      activity: parsed.activity !== false,
+      pending: parsed.pending !== false,
+      changed: parsed.changed !== false,
+    };
+  } catch {
+    return DEFAULT_OVERLAY_VISIBILITY;
+  }
+}
+
+function useOverlayVisibility() {
+  const [visibility, setVisibility] = useState<OverlayVisibility>(readOverlayVisibility);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(OVERLAY_VISIBILITY_STORAGE_KEY, JSON.stringify(visibility));
+    } catch {
+      // 本地存储不可用时仍保留当前会话中的显示状态。
+    }
+  }, [visibility]);
+  return [visibility, setVisibility] as const;
+}
 
 function tokenRgb(name: keyof typeof FALLBACK): [number, number, number] {
   const raw =
@@ -59,12 +117,17 @@ function overlayStyles() {
   return {
     reading: { fill: rgba("read", 0.06), stroke: rgba("read", 1), strokeWidth: 1.5, strokeDash: 4 },
     writing: { fill: rgba("read", 0.1), stroke: rgba("read", 1), strokeWidth: 1.5 },
-    changed: { fill: rgba("ok", 0.1), stroke: rgba("ok", 1), strokeWidth: 1 },
     pending: { fill: rgba("warn", 0.08), stroke: rgba("warn", 1), strokeWidth: 1.5, strokeDash: 5 },
   };
 }
 
-function UniverViewer() {
+function UniverViewer({
+  visibility,
+  changes,
+}: {
+  visibility: OverlayVisibility;
+  changes: ChangeEntry[];
+}) {
   const doc = useApp((s) => s.doc);
   const docId = doc?.docId;
   const snapshot = doc?.snapshot;
@@ -73,12 +136,12 @@ function UniverViewer() {
   const hostRef = useRef<HTMLDivElement>(null);
   const apiRef = useRef<{ univer: Univer; wb: FWorkbook } | null>(null);
   const [ready, setReady] = useState(0);
+  const [snapshotLoad, setSnapshotLoad] = useState<"loading" | "error" | null>(null);
   // 实例创建时刻：canvas 浮层要等首轮布局完成后才能拿到单元格坐标
   const createdAt = useRef(0);
   const [activeSheet, setActiveSheet] = useState<string | null>(null);
   // 主题切换后重绘叠加层（颜色取自 token）
   const [themeKey, setThemeKey] = useState(() => document.documentElement.dataset.theme ?? "");
-  const changed = useChangedRanges();
   const pending = usePendingRanges();
   const pendingValues = usePendingValues();
   const activity = useActivityOverlay();
@@ -86,6 +149,18 @@ function UniverViewer() {
   useEffect(() => {
     const host = hostRef.current;
     if (!host || !docId || !snapshot) return;
+    const current = useApp.getState().doc;
+    if (current?.docId === docId && current.snapshotRev < current.rev) {
+      let alive = true;
+      setSnapshotLoad("loading");
+      void reloadDocument(docId).catch(() => {
+        if (alive) setSnapshotLoad("error");
+      });
+      return () => {
+        alive = false;
+      };
+    }
+    setSnapshotLoad(null);
     const { univer, univerAPI } = createUniver({
       locale: LocaleType.ZH_CN,
       locales: { [LocaleType.ZH_CN]: mergeLocales(zhCN) },
@@ -147,6 +222,7 @@ function UniverViewer() {
     const commandSub = wb.onCommandExecuted((command, options) => {
       if (applyingRemote || options?.fromCollab || options?.fromChangeset) return;
       if (command.type !== CommandType.MUTATION) return;
+      if (isDerivedWorkbookMutation(command)) return;
       void submitDocumentMutation(docId, {
         id: command.id,
         params: command.params ?? {},
@@ -185,24 +261,28 @@ function UniverViewer() {
   useEffect(() => {
     const wb = apiRef.current?.wb;
     if (!wb || !focus) return;
-    const parsed = parseRange(focus.range);
-    const sheet = parsed.sheet ? wb.getSheetByName(parsed.sheet) : wb.getActiveSheet();
-    if (!sheet) return;
-    wb.setActiveSheet(sheet);
-    const range = sheet.getRange(
-      parsed.startRow - 1,
-      parsed.startCol - 1,
-      parsed.endRow - parsed.startRow + 1,
-      parsed.endCol - parsed.startCol + 1,
-    );
-    range.activate();
-    sheet.scrollToCell(parsed.startRow - 1, parsed.startCol - 1);
-    const highlight = range.highlight({ fill: rgba("read", 0.14), stroke: rgba("read", 1) });
-    const timer = setTimeout(() => highlight.dispose(), 2000);
-    return () => {
-      clearTimeout(timer);
-      highlight.dispose();
-    };
+    try {
+      const parsed = parseRange(focus.range);
+      const sheet = parsed.sheet ? wb.getSheetByName(parsed.sheet) : wb.getActiveSheet();
+      if (!sheet) return;
+      const range = sheet.getRange(
+        parsed.startRow - 1,
+        parsed.startCol - 1,
+        parsed.endRow - parsed.startRow + 1,
+        parsed.endCol - parsed.startCol + 1,
+      );
+      wb.setActiveSheet(sheet);
+      range.activate();
+      sheet.scrollToCell(parsed.startRow - 1, parsed.startCol - 1);
+      const highlight = range.highlight({ fill: rgba("read", 0.14), stroke: rgba("read", 1) });
+      const timer = setTimeout(() => highlight.dispose(), 2000);
+      return () => {
+        clearTimeout(timer);
+        highlight.dispose();
+      };
+    } catch {
+      useApp.setState({ referenceError: "invalid-range" });
+    }
   }, [focus]);
 
   useEffect(() => {
@@ -226,15 +306,14 @@ function UniverViewer() {
     }
   }, [preview]);
 
-  // 叠加层（02 §4.2）：「已修改」只依据已提交的 workbook_edit 结果，保留到「已查看」或下一轮；
-  // 「计划修改」来自待审批记录（琥珀虚线），批准或拒绝后消失。叠加层不拦截编辑。
+  // 「计划修改」来自待审批记录，批准或拒绝后消失。
   // biome-ignore lint/correctness/useExhaustiveDependencies: ready 表示 Univer 实例已重建
   useEffect(() => {
     const wb = apiRef.current?.wb;
-    if (!wb || (changed === "" && pending === "")) return;
+    const visiblePending = visibility.pending ? pending : "";
+    if (!wb || visiblePending === "") return;
     const sheet = wb.getActiveSheet();
     if (!sheet) return;
-    const name = sheet.getSheetName();
     const disposers: { dispose(): void }[] = [];
     const OVERLAY = overlayStyles();
     const rangeOf = (key: string) => clampedRange(sheet, key);
@@ -252,10 +331,9 @@ function UniverViewer() {
         }
       }
     };
-    paint(changed, OVERLAY.changed);
-    paint(pending, OVERLAY.pending);
+    paint(visiblePending, OVERLAY.pending);
     // 文字角标：不只靠颜色区分（16 §2.1）。数量多时只标前几处，完整列表在变更导航与审批条
-    const tag = (keys: string, kind: "pending" | "changed", text: string, limit: number) => {
+    const tag = (keys: string, kind: "pending", text: string, limit: number) => {
       if (keys === "") return;
       for (const key of keys.split("\n").slice(0, limit)) {
         try {
@@ -279,8 +357,7 @@ function UniverViewer() {
     const attachAll = () => {
       for (const d of popups.splice(0)) d.dispose();
       if (cancelled) return;
-      tag(pending, "pending", S.overlayPending, 3);
-      tag(changed, "changed", S.overlayChanged, 3);
+      tag(visiblePending, "pending", S.overlayPending, 3);
       attachDiff();
     };
     const firstDelay = Math.max(60, createdAt.current + 800 - Date.now());
@@ -288,7 +365,7 @@ function UniverViewer() {
     const reattachTimer = setTimeout(attachAll, firstDelay + 700);
     // 修改前后对比（02 §4.4）：首个待审批区域的首格，原值取自当前表格，新值取自审批参数
     const values = JSON.parse(pendingValues || "{}") as Record<string, unknown>;
-    const firstKey = pending === "" ? null : (pending.split("\n")[0] ?? null);
+    const firstKey = visiblePending === "" ? null : (visiblePending.split("\n")[0] ?? null);
     const attachDiff = () => {
       if (firstKey && firstKey in values) {
         try {
@@ -319,7 +396,7 @@ function UniverViewer() {
                     ? S.overlayEmpty
                     : String(before),
                 after: String(values[firstKey] ?? ""),
-                total: pending.split("\n").length,
+                total: visiblePending.split("\n").length,
               },
             });
             if (d) popups.push(d);
@@ -336,13 +413,79 @@ function UniverViewer() {
       for (const d of popups) d.dispose();
       for (const d of disposers) d.dispose();
     };
-  }, [changed, pending, pendingValues, activeSheet, ready, themeKey]);
+  }, [pending, pendingValues, activeSheet, ready, themeKey, visibility.pending]);
+
+  // 每个区域的计时绑定提交时间；主题/选区/工作表切换不会重新播放旧改动。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: ready 表示 Univer 实例已重建
+  useEffect(() => {
+    const sheet = apiRef.current?.wb.getActiveSheet();
+    if (!sheet || !visibility.changed || changes.length === 0) return;
+    const marks = changeHighlights(changes, sheet.getSheetName());
+    if (marks.length === 0) return;
+    const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const painted = new Map<string, { signature: string; dispose(): void }>();
+    let timer: ReturnType<typeof setTimeout>;
+    const draw = () => {
+      const now = Date.now();
+      let remaining = false;
+      let nextDelay = CHANGE_HIGHLIGHT_MS;
+      for (const mark of marks) {
+        const age = now - (changeDeadline(mark.entry) - CHANGE_HIGHLIGHT_MS);
+        const frame = changeHighlightFrame(age, motion.matches);
+        const key = `${mark.entry.seq}:${mark.range}`;
+        const previous = painted.get(key);
+        if (frame.stroke === 0) {
+          previous?.dispose();
+          painted.delete(key);
+          continue;
+        }
+        remaining = true;
+        nextDelay = Math.min(
+          nextDelay,
+          motion.matches
+            ? CHANGE_HIGHLIGHT_MS - age
+            : age < 650 || age >= CHANGE_HIGHLIGHT_MS - 900
+              ? 40
+              : CHANGE_HIGHLIGHT_MS - 900 - age,
+        );
+        const signature = JSON.stringify(frame);
+        if (previous?.signature === signature) continue;
+        previous?.dispose();
+        painted.delete(key);
+        try {
+          const range = clampedRange(sheet, mark.range);
+          if (range) {
+            const shape = range.highlight({
+              fill: rgba("ok", frame.fill),
+              stroke: rgba("ok", frame.stroke),
+              strokeWidth: frame.width,
+            });
+            painted.set(key, { signature, dispose: () => shape.dispose() });
+          }
+        } catch {
+          // 无法定位时保留导航，不扩展网格。
+        }
+      }
+      if (remaining) timer = setTimeout(draw, Math.max(1, nextDelay));
+    };
+    const onMotionChange = () => {
+      clearTimeout(timer);
+      draw();
+    };
+    motion.addEventListener("change", onMotionChange);
+    draw();
+    return () => {
+      clearTimeout(timer);
+      motion.removeEventListener("change", onMotionChange);
+      for (const shape of painted.values()) shape.dispose();
+    };
+  }, [changes, activeSheet, ready, themeKey, visibility.changed]);
 
   // 「正在读取 / 正在写入」（02 §4.2）：来自 workbook_activity 瞬时增量，结束后淡出（保留 1.2 秒）
   // biome-ignore lint/correctness/useExhaustiveDependencies: ready 表示 Univer 实例已重建
   useEffect(() => {
     const wb = apiRef.current?.wb;
-    if (!wb || activity.length === 0) return;
+    if (!wb || !visibility.activity || activity.length === 0) return;
     const sheet = wb.getActiveSheet();
     if (!sheet) return;
     const disposers: { dispose(): void }[] = [];
@@ -371,9 +514,40 @@ function UniverViewer() {
     return () => {
       for (const d of disposers) d.dispose();
     };
-  }, [activity, activeSheet, ready, themeKey]);
+  }, [activity, activeSheet, ready, themeKey, visibility.activity]);
 
-  return <div className="univer-host absolute inset-0" ref={hostRef} />;
+  return (
+    <>
+      <div className="univer-host absolute inset-0" ref={hostRef} />
+      {snapshotLoad !== null && (
+        <div className="absolute inset-0 z-10 grid place-items-center bg-card">
+          {snapshotLoad === "error" ? (
+            <div
+              className="flex flex-col items-center gap-3 text-sm text-muted-foreground"
+              role="alert"
+            >
+              {S.docLoadFailed}
+              <Button
+                variant="outline"
+                onClick={() => {
+                  if (!docId) return;
+                  setSnapshotLoad("loading");
+                  void reloadDocument(docId).catch(() => setSnapshotLoad("error"));
+                }}
+              >
+                {S.docConflictReload}
+              </Button>
+            </div>
+          ) : (
+            <span className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
+              <Spinner size="sm" />
+              {S.workbenchLoading}
+            </span>
+          )}
+        </div>
+      )}
+    </>
+  );
 }
 
 /** 当前文档上待审批写入的目标区域（拟修改，02 §4.4），按行拼成稳定键。 */
@@ -447,15 +621,187 @@ function useDocActivity(): {
 }
 
 /** 文档头上的活动提示：整文档读取（没有具体区域）也能看到代理在做什么。 */
-function ActivityChip() {
+function ActivityChip({ visible }: { visible: boolean }) {
   const live = useActivityOverlay();
   const first = live[0];
-  if (!first) return null;
+  if (!visible || !first) return null;
   return (
     <Badge tone="read" role="status">
       <Dots />
       {first.label}
     </Badge>
+  );
+}
+
+/** 控制表格上的瞬时活动、待审批与已修改叠加层；偏好保存在本机浏览器。 */
+function OverlayVisibilityControl({
+  visibility,
+  onChange,
+}: {
+  visibility: OverlayVisibility;
+  onChange: (next: OverlayVisibility) => void;
+}) {
+  const set = (key: keyof OverlayVisibility) => (checked: boolean) =>
+    onChange({ ...visibility, [key]: checked });
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <IconButton
+          icon="sliders"
+          size="icon-sm"
+          label={S.overlayVisibility}
+          pressed={!visibility.activity || !visibility.pending || !visibility.changed}
+        />
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-64">
+        <div className="mb-2">
+          <div className="text-xs font-semibold text-foreground">{S.overlayVisibility}</div>
+          <p className="mt-0.5 text-2xs text-muted-foreground">{S.overlayVisibilityHint}</p>
+        </div>
+        <div className="flex flex-col gap-2">
+          <OverlayVisibilityToggle
+            id="overlay-activity"
+            checked={visibility.activity}
+            onCheckedChange={set("activity")}
+            label={S.overlayShowActivity}
+            hint={S.overlayShowActivityHint}
+          />
+          <OverlayVisibilityToggle
+            id="overlay-pending"
+            checked={visibility.pending}
+            onCheckedChange={set("pending")}
+            label={S.overlayShowPending}
+            hint={S.overlayShowPendingHint}
+          />
+          <OverlayVisibilityToggle
+            id="overlay-changed"
+            checked={visibility.changed}
+            onCheckedChange={set("changed")}
+            label={S.overlayShowChanged}
+            hint={S.overlayShowChangedHint}
+          />
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function OverlayVisibilityToggle({
+  id,
+  checked,
+  onCheckedChange,
+  label,
+  hint,
+}: {
+  id: string;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+  label: string;
+  hint: string;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0">
+        <Label htmlFor={id} className="text-xs font-medium text-foreground">
+          {label}
+        </Label>
+        <p className="mt-0.5 text-2xs text-muted-foreground">{hint}</p>
+      </div>
+      <Switch id={id} size="sm" checked={checked} onCheckedChange={onCheckedChange} />
+    </div>
+  );
+}
+
+/** 文档头的状态详情：把修订、写回、选区和本轮改动集中到一个可扫描的弹层。 */
+function DocumentStatusPopover({
+  doc,
+  selection,
+  changedCount,
+}: {
+  doc: OpenDoc;
+  selection: string | null;
+  changedCount: number;
+}) {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <IconButton icon="info" size="icon-sm" label={S.documentDetails} />
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-72">
+        <div className="flex flex-col gap-3">
+          <div>
+            <div className="text-xs font-semibold text-foreground">{S.documentDetails}</div>
+            <p className="mt-0.5 truncate font-mono text-2xs text-muted-foreground">{doc.path}</p>
+          </div>
+          <dl className="grid grid-cols-2 gap-2 text-xs">
+            <div className="rounded-md bg-muted px-2.5 py-2">
+              <dt className="text-2xs text-muted-foreground">{S.revision}</dt>
+              <dd className="mt-0.5 font-mono font-medium">{S.revLabel(doc.rev)}</dd>
+            </div>
+            <div className="rounded-md bg-muted px-2.5 py-2">
+              <dt className="text-2xs text-muted-foreground">{S.changesThisTurn}</dt>
+              <dd className="mt-0.5 font-mono font-medium">{changedCount}</dd>
+            </div>
+          </dl>
+          <div className="flex items-center justify-between gap-3 border-t border-border pt-2 text-xs">
+            <span className="text-muted-foreground">{S.selectedRange}</span>
+            <span className="max-w-40 truncate font-mono">{selection ?? S.noSelection}</span>
+          </div>
+          <div className="flex items-center gap-2 text-2xs text-muted-foreground">
+            <Icon name="info" size="xs" />
+            {S.documentDetailsHint}
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/** 同一文档上的其他参与者；名称与区域同时显示，避免只依赖选区颜色。 */
+function PresenceSummary() {
+  const participants = useApp((s) => s.presence);
+  const connectionId = useApp((s) => s.presenceConnectionId);
+  if (!connectionId) return null;
+  const others = participants.filter((p) => p.participantId !== connectionId);
+  if (others.length === 0) return null;
+  return (
+    <div
+      className="flex min-w-0 max-w-[36vw] items-center gap-1 overflow-hidden"
+      role="status"
+      aria-label={S.presenceLabel}
+    >
+      <span className="shrink-0 text-2xs text-muted-foreground">{S.presenceLabel}</span>
+      {others.slice(0, 3).map((participant) => (
+        <PresenceBadge key={participant.participantId} participant={participant} />
+      ))}
+      {others.length > 3 && <Badge tone="outline">{S.presenceMore(others.length - 3)}</Badge>}
+    </div>
+  );
+}
+
+function PresenceBadge({ participant }: { participant: PresenceParticipant }) {
+  const location = participant.selection
+    ? `${participant.sheet ? `${participant.sheet}!` : ""}${participant.selection}`
+    : S.presenceNoSelection;
+  return (
+    <Tip content={S.presenceAt(participant.name, location)} side="bottom">
+      <Badge
+        tone="outline"
+        className="max-w-44 overflow-hidden"
+        style={{ borderColor: `${participant.color}66` }}
+        aria-label={S.presenceAt(participant.name, location)}
+      >
+        <span
+          className="size-1.5 shrink-0 rounded-full"
+          style={{ backgroundColor: participant.color }}
+          aria-hidden="true"
+        />
+        <span className="truncate">{participant.name}</span>
+        <span className="max-w-24 truncate font-mono text-2xs text-muted-foreground">
+          {location}
+        </span>
+      </Badge>
+    </Tip>
   );
 }
 
@@ -503,7 +849,6 @@ function OverlayTag({ popup }: PopupProps) {
       className={cn(
         "inline-flex h-5 items-center gap-1 rounded-xs border px-1.5 font-sans text-2xs font-medium whitespace-nowrap shadow-xs",
         kind === "pending" && "border-dashed border-warn bg-warn-soft text-warn-ink",
-        kind === "changed" && "border-ok/50 bg-ok-soft text-ok-ink",
         kind === "reading" && "border-dashed border-read bg-read-soft text-read-ink",
         kind === "writing" && "border-read bg-read-soft text-read-ink",
       )}
@@ -544,13 +889,77 @@ function OverlayDiff({ popup }: PopupProps) {
   );
 }
 
-/** 当前文档本轮（且晚于「已查看」）的已提交变更区域，去重后按行拼成稳定键。 */
-function useChangedRanges(): string {
-  return useApp((s) => {
-    if (!s.doc) return "";
+/** 已过期的历史回放不重新闪烁；清除只影响视觉反馈，不删改变更记录。 */
+function useRecentChanges(): ChangeEntry[] {
+  const key = useApp((s) => {
     const since = Math.max(lastUserSeq(s.session), s.changesSeenSeq);
-    return [...new Set(changeRanges(s.session, s.doc.docId, since).map((c) => c.range))].join("\n");
+    return JSON.stringify(
+      s.doc
+        ? s.session.changes.filter(
+            (c) => c.docId === s.doc?.docId && c.seq > since && c.ranges.length > 0,
+          )
+        : [],
+    );
   });
+  const changes = useMemo(() => JSON.parse(key) as ChangeEntry[], [key]);
+  const [clock, setClock] = useState(Date.now);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: clock 在到期时触发重新计算
+  const recent = useMemo(
+    () => changes.filter((c) => changeDeadline(c) > Date.now()),
+    [changes, clock],
+  );
+  useEffect(() => {
+    if (recent.length === 0) return;
+    const next = Math.min(...recent.map(changeDeadline));
+    const timer = setTimeout(() => setClock(Date.now()), Math.max(0, next - Date.now()));
+    return () => clearTimeout(timer);
+  }, [recent]);
+  return recent;
+}
+
+function ChangeFeedback({ changes }: { changes: ChangeEntry[] }) {
+  const latest = changes.at(-1);
+  if (!latest) return null;
+  const count = new Set(changes.flatMap((c) => c.ranges)).size;
+  const remaining = Math.max(0, changeDeadline(latest) - Date.now());
+  return (
+    <div
+      data-change-feedback=""
+      className="change-feedback pointer-events-none absolute bottom-4 left-4 z-10 flex max-w-[calc(100%-2rem)] items-center gap-3 overflow-hidden rounded-lg border border-ok/25 bg-card/95 px-3 py-2.5 shadow-md backdrop-blur-sm"
+    >
+      <span className="change-feedback-check flex size-8 shrink-0 items-center justify-center rounded-full bg-ok-soft text-ok-ink">
+        <Icon name="check" size="md" />
+      </span>
+      <div className="min-w-0" role="status" aria-live="polite" aria-atomic="true">
+        <div className="flex items-center gap-2 text-xs font-semibold">
+          <span>{S.changeFeedback(count)}</span>
+          {latest.rev !== null && (
+            <span className="font-mono text-2xs font-normal text-muted-foreground">
+              {S.revLabel(latest.rev)}
+            </span>
+          )}
+        </div>
+        <p className="mt-0.5 truncate text-2xs text-muted-foreground">{S.changeFeedbackHint}</p>
+      </div>
+      <Tip content={S.markSeenHint}>
+        <Button
+          size="xs"
+          variant="ghost"
+          onClick={markChangesSeen}
+          className="pointer-events-auto ml-1"
+        >
+          <Icon name="x" size="xs" />
+          {S.markSeen}
+        </Button>
+      </Tip>
+      <span
+        key={latest.seq}
+        aria-hidden="true"
+        className="change-feedback-progress pointer-events-none absolute inset-x-0 bottom-0 h-0.5 origin-left bg-ok/60"
+        style={{ animationDuration: `${remaining}ms` }}
+      />
+    </div>
+  );
 }
 
 function baseName(path: string): string {
@@ -591,6 +1000,69 @@ function SaveState() {
   );
 }
 
+/** doc.submit 被服务端拒绝后的可恢复提示（只读 docSync 中真实冲突，不猜测代理状态）。 */
+function DocumentConflictBar({ docId }: { docId: string }) {
+  const conflict = useApp((s) => latestDocConflict(s.docSync));
+  const [reloading, setReloading] = useState(false);
+  if (!conflict) return null;
+
+  const regions = [
+    ...new Set(
+      conflict.conflicts.flatMap((detail) => detail.cells).filter((cell) => cell.length > 0),
+    ),
+  ];
+  const revisions = [
+    ...new Set(
+      conflict.conflicts
+        .map((detail) => detail.rev)
+        .filter((rev): rev is number => typeof rev === "number"),
+    ),
+  ];
+  const reload = async () => {
+    setReloading(true);
+    try {
+      await reloadDocument(docId);
+      dismissDocConflict(conflict.clientOpId);
+    } catch {
+      useApp.setState({ referenceError: "invalid-range" });
+    } finally {
+      setReloading(false);
+    }
+  };
+
+  return (
+    <Alert layout="bar" tone="warn" role="alert" className="shrink-0">
+      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
+        <strong className="font-semibold">{S.docConflictTitle}</strong>
+        <span className="font-mono text-2xs">{S.docConflictCode(conflict.code)}</span>
+        {revisions.map((rev) => (
+          <span key={rev} className="font-mono text-2xs">
+            {S.docConflictRevision(rev)}
+          </span>
+        ))}
+        {regions.length > 0 ? (
+          <span className="min-w-0 truncate text-2xs">
+            {S.docConflictRegions(regions.join("、"))}
+          </span>
+        ) : (
+          <span className="text-2xs">{S.docConflictNoRegion}</span>
+        )}
+        {conflict.message && <span className="text-2xs">{conflict.message}</span>}
+        <span className="text-2xs text-warn-ink/80">{S.docConflictHint}</span>
+        <span className="flex-1" />
+        <div className="flex shrink-0 items-center gap-1">
+          <Button size="xs" variant="outline" disabled={reloading} onClick={() => void reload()}>
+            {reloading ? S.docConflictReloading : S.docConflictReload}
+          </Button>
+          <Button size="xs" variant="ghost" onClick={() => dismissDocConflict(conflict.clientOpId)}>
+            {S.docConflictDismiss}
+          </Button>
+        </div>
+      </div>
+    </Alert>
+  );
+}
+
 /** 变更导航（02 §4.5）：只依据已提交结果（workbook_edit 的 tool.result），逐处定位。 */
 function ChangeNav() {
   const doc = useApp((s) => s.doc);
@@ -617,7 +1089,7 @@ function ChangeNav() {
   };
   return (
     <nav
-      className="flex h-10 shrink-0 items-center gap-2 overflow-hidden border-t border-border bg-background px-3 text-xs"
+      className="flex min-h-11 shrink-0 flex-wrap items-center gap-2 border-t border-border bg-muted/45 px-4 py-2 text-xs"
       aria-label={S.changesThisTurn}
     >
       <SegmentedControl
@@ -683,7 +1155,7 @@ const beforeCache = new Map<
  */
 function BeforeAfter({ docId, rev, range }: { docId: string; rev: number; range: string }) {
   const workspaceId = useApp((s) => s.workspaceId);
-  const snapshot = useApp((s) => (s.doc?.docId === docId ? s.doc.snapshot : null));
+  const currentRev = useApp((s) => (s.doc?.docId === docId ? s.doc.rev : null));
   const [cell, setCell] = useState<{ before: string; after: string; ref: string } | "same" | null>(
     null,
   );
@@ -703,9 +1175,9 @@ function BeforeAfter({ docId, rev, range }: { docId: string; rev: number; range:
       beforeCache.set(key, req);
       req.catch(() => beforeCache.delete(key));
     }
-    void req
-      .then((res) => {
-        if (!alive) return;
+    void Promise.all([req, apiClientOf().getDocSnapshot(workspaceId, docId)])
+      .then(([res, current]) => {
+        if (!alive || current.document.rev < (currentRev ?? 0)) return;
         // 逆操作为空：这次写入的值与原值相同
         if (res.cells.length === 0) {
           setCell("same");
@@ -720,7 +1192,7 @@ function BeforeAfter({ docId, rev, range }: { docId: string; rev: number; range:
         if (!hit) return;
         const sheets =
           (
-            snapshot as {
+            current.snapshot as {
               sheets?: Record<
                 string,
                 { name?: string; cellData?: Record<string, Record<string, { v?: unknown }>> }
@@ -746,7 +1218,7 @@ function BeforeAfter({ docId, rev, range }: { docId: string; rev: number; range:
     return () => {
       alive = false;
     };
-  }, [docId, rev, range, workspaceId, snapshot]);
+  }, [docId, rev, range, workspaceId, currentRev]);
   if (!cell) return null;
   if (cell === "same")
     return (
@@ -842,6 +1314,12 @@ function FollowToggle() {
 /** 窄屏表格页底部的迷你输入条（02 §2.2）：沿用「引导」派发策略。 */
 function MiniComposer() {
   const [text, setText] = useState("");
+  const pendingApprovals = useApp(
+    (s) => s.session.approvals.filter((item) => item.status === "pending").length,
+  );
+  const pendingQuestions = useApp(
+    (s) => s.session.questions.filter((item) => item.status === "pending").length,
+  );
   const submit = () => {
     const t = text.trim();
     if (t === "") return;
@@ -849,22 +1327,40 @@ function MiniComposer() {
     void send(t).catch(() => setText(t));
     setNarrowTab("chat");
   };
+  const hasPending = pendingApprovals > 0 || pendingQuestions > 0;
   return (
-    <form
-      className="flex h-12 shrink-0 items-center gap-2 border-t border-border bg-background px-3"
-      onSubmit={(e) => {
-        e.preventDefault();
-        submit();
-      }}
-    >
-      <Input
-        value={text}
-        placeholder={S.miniComposer}
-        aria-label={S.miniComposer}
-        onChange={(e) => setText(e.target.value)}
-      />
-      <IconButton icon="send" variant="default" size="icon" label={S.send} type="submit" />
-    </form>
+    <div className="shrink-0 bg-background">
+      {hasPending && (
+        <div className="border-t border-border px-3 pt-1">
+          <Button
+            size="xs"
+            variant="ghost"
+            className="w-full justify-start text-warn-ink"
+            aria-label={S.pendingSummaryHint}
+            onClick={() => setNarrowTab("chat")}
+          >
+            <Icon name="clock" size="xs" />
+            {S.pendingSummary(pendingApprovals, pendingQuestions)}
+            <Icon name="chevronRight" size="xs" className="ml-auto" />
+          </Button>
+        </div>
+      )}
+      <form
+        className="flex h-12 items-center gap-2 border-t border-border px-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          submit();
+        }}
+      >
+        <Input
+          value={text}
+          placeholder={S.miniComposer}
+          aria-label={S.miniComposer}
+          onChange={(e) => setText(e.target.value)}
+        />
+        <IconButton icon="send" variant="default" size="icon" label={S.send} type="submit" />
+      </form>
+    </div>
   );
 }
 
@@ -877,6 +1373,8 @@ export function Workbench({
   sidebarToggle?: boolean;
 }) {
   const doc = useApp((s) => s.doc);
+  const [overlayVisibility, setOverlayVisibility] = useOverlayVisibility();
+  const recentChanges = useRecentChanges();
   const selection = useApp((s) => s.selection);
   const chatCollapsed = useApp((s) => s.layout.chatCollapsed);
   const changedCount = useApp((s) =>
@@ -888,8 +1386,8 @@ export function Workbench({
   if (!doc) return null;
   const sel = selection?.docId === doc.docId ? selection : null;
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border bg-background px-3">
+    <div className="workbench-panel flex min-h-0 flex-1 flex-col">
+      <header className="workbench-header flex h-16 shrink-0 items-center gap-2 border-b border-border/75 bg-card px-4">
         {sidebarToggle && (
           <IconButton
             icon="sidebar"
@@ -898,43 +1396,47 @@ export function Workbench({
             onClick={() => useApp.setState({ sidebarCollapsed: false })}
           />
         )}
-        <Icon name="fileSheet" size="md" className="text-ok" />
-        <Tip content={doc.path} side="bottom">
-          <h2 className="min-w-0 truncate text-sm font-semibold">{baseName(doc.path)}</h2>
-        </Tip>
-        <Badge tone="outline" mono>
-          {S.revLabel(doc.rev)}
-        </Badge>
-        <SaveState />
-        <ActivityChip />
-        <span className="flex-1" />
-        {/* 对齐清单 A9：选区、「已查看」、「问代理」并入文档头，表格多出一行高度 */}
-        <Tip content={sel ? S.attachSelection : S.selectedRange} side="bottom">
-          <span className="min-w-0" tabIndex={-1}>
-            <RangeChip range={sel?.range ?? S.noSelection} tone={sel ? "selected" : "empty"} />
-          </span>
-        </Tip>
-        {changedCount > 0 && (
-          <Tip content={S.markSeenHint} side="bottom">
-            <Button size="xs" variant="ghost" onClick={markChangesSeen}>
-              <span className="size-2.5 rounded-xs border border-ok bg-ok/20" aria-hidden="true" />
-              {S.markSeen}
+        <span className="document-icon flex size-8 shrink-0 items-center justify-center rounded-md bg-muted/70 text-foreground-secondary">
+          <Icon name="fileSheet" size="md" />
+        </span>
+        <div className="document-heading flex min-w-0 flex-1 flex-col gap-1">
+          <Tip content={doc.path} side="bottom">
+            <h2 className="document-title min-w-0 truncate text-sm font-semibold">
+              {baseName(doc.path)}
+            </h2>
+          </Tip>
+          <div className="flex min-w-0 items-center gap-2.5">
+            <span className="document-revision font-mono text-2xs text-muted-foreground">
+              {S.revLabel(doc.rev)}
+            </span>
+            <span className="document-save">
+              <SaveState />
+            </span>
+          </div>
+        </div>
+        <DocumentStatusPopover
+          doc={doc}
+          selection={sel?.range ?? null}
+          changedCount={changedCount}
+        />
+        <ActivityChip visible={overlayVisibility.activity} />
+        <PresenceSummary />
+        <OverlayVisibilityControl visibility={overlayVisibility} onChange={setOverlayVisibility} />
+        {sel && (
+          <Tip content={`${sel.range} · ${S.attachSelection}`} side="bottom">
+            <Button
+              size="sm"
+              variant="accent"
+              onClick={() => {
+                if (narrow) setNarrowTab("chat");
+                else if (chatCollapsed) setLayout({ chatCollapsed: false });
+                requestAnimationFrame(() => focusComposer());
+              }}
+            >
+              <Icon name="sparkle" size="xs" />
+              {S.askAgent}
             </Button>
           </Tip>
-        )}
-        {sel && (
-          <Button
-            size="sm"
-            variant="accent"
-            onClick={() => {
-              if (narrow) setNarrowTab("chat");
-              else if (chatCollapsed) setLayout({ chatCollapsed: false });
-              requestAnimationFrame(() => focusComposer());
-            }}
-          >
-            <Icon name="sparkle" size="xs" />
-            {S.askAgent}
-          </Button>
         )}
         <Separator orientation="vertical" className="h-5 self-center" />
         {!narrow && (
@@ -947,8 +1449,10 @@ export function Workbench({
         )}
         <IconButton icon="x" label={S.closeDocument} onClick={closeDocument} />
       </header>
+      <DocumentConflictBar docId={doc.docId} />
       <div className="relative isolate min-h-0 flex-1 overflow-hidden bg-card">
-        <UniverViewer />
+        <UniverViewer visibility={overlayVisibility} changes={recentChanges} />
+        {overlayVisibility.changed && <ChangeFeedback changes={recentChanges} />}
       </div>
       <ChangeNav />
       {narrow && <MiniComposer />}

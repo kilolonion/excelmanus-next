@@ -8,10 +8,22 @@ import { nowIso } from "@excelmanus/core";
 import type { CapabilityModule, DatabaseSync, Migration, ToolDefinition } from "@excelmanus/kernel";
 import type { Skill, SkillDetail, ToolResult } from "@excelmanus/protocol";
 import { z } from "zod";
-import { globMatch, type ParsedSkill, parseSkillMd, SkillFormatError } from "./parse.ts";
+import {
+  globMatch,
+  missingSkillTools,
+  type ParsedSkill,
+  parseSkillMd,
+  SkillFormatError,
+} from "./parse.ts";
 
 export { importSkills, SkillImportError } from "./import.ts";
-export { globMatch, parseSkillMd, referencedToolNames, SkillFormatError } from "./parse.ts";
+export {
+  globMatch,
+  missingSkillTools,
+  parseSkillMd,
+  referencedToolNames,
+  SkillFormatError,
+} from "./parse.ts";
 
 export const SKILLS_MIGRATION: Migration = {
   id: "skills/001-state",
@@ -32,6 +44,7 @@ const PRIORITY: Record<Source, number> = { builtin: 0, user: 1, workspace: 2 };
 interface LoadedSkill extends ParsedSkill {
   source: Source;
   dir: string;
+  references: string[];
 }
 
 const MAX_RESOURCE_BYTES = 1024 * 1024;
@@ -82,7 +95,12 @@ export class SkillService {
       if (!existsSync(md) || lstatSync(md).isSymbolicLink()) continue;
       try {
         const parsed = parseSkillMd(readFileSync(md, "utf8"));
-        skills.push({ ...parsed, source, dir: skillDir });
+        if (parsed.name !== e.name) throw new SkillFormatError("name 必须与目录名一致");
+        const references = listResources(skillDir)
+          .filter((p) => p.endsWith(".md"))
+          .filter((p) => lstatSync(join(skillDir, p)).size <= MAX_RESOURCE_BYTES)
+          .map((p) => readFileSync(join(skillDir, p), "utf8"));
+        skills.push({ ...parsed, source, dir: skillDir, references });
       } catch (err) {
         errors.push(`${e.name}: ${err instanceof SkillFormatError ? err.message : String(err)}`);
       }
@@ -124,8 +142,7 @@ export class SkillService {
   }
 
   private toDto(s: LoadedSkill, shadowed: Map<string, Source[]>): Skill {
-    const tools = this.opts.toolNames();
-    const missing = s.requiresTools.filter((t) => !tools.has(t));
+    const missing = this.missingTools(s, s.references);
     return {
       name: s.name,
       description: s.description,
@@ -143,6 +160,13 @@ export class SkillService {
   list(workspaceRoot?: string): Skill[] {
     const { winners, shadowed } = this.all(workspaceRoot);
     return winners.map((s) => this.toDto(s, shadowed));
+  }
+
+  missingTools(
+    skill: Pick<ParsedSkill, "requiresTools" | "optionalTools" | "body">,
+    references: string[] = [],
+  ): string[] {
+    return missingSkillTools(skill, this.opts.toolNames(), references);
   }
 
   private find(name: string, workspaceRoot?: string): LoadedSkill | undefined {
@@ -176,7 +200,7 @@ export class SkillService {
       (s) =>
         s.modelInvocable &&
         this.enabled(s.name, s.source) &&
-        s.requiresTools.every((t) => tools.has(t)),
+        missingSkillTools(s, tools, s.references).length === 0,
     );
     const score = (s: LoadedSkill) =>
       s.filePatterns.some((p) => files.some((f) => globMatch(p, f))) ? 1 : 0;
@@ -191,6 +215,8 @@ export class SkillService {
     if (!s) return { error: `技能不存在：${name}` };
     if (!s.userInvocable) return { error: `技能 ${name} 不允许用户直接调用` };
     if (!this.enabled(s.name, s.source)) return { error: `技能 ${name} 已禁用` };
+    const missing = this.missingTools(s, s.references);
+    if (missing.length > 0) return { error: `技能 ${name} 缺少工具：${missing.join("、")}` };
     return { body: s.body };
   }
 

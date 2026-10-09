@@ -23,6 +23,7 @@
 | 15 | [14 质量与验收](14-quality.md) | 测试分层、门禁、验收场景 |
 | 16 | [15 里程碑](15-milestones.md) | 分阶段交付与每阶段退出条件 |
 | 17 | [16 页面设计参考](16-design-reference.md) | 如何按实际功能利用后补的桌面与手机草案；参考身份、视觉方向、差异处理和阶段索引 |
+| 18 | [17 技能开发约束](17-skill-authoring.md) | 技能、工具契约与产品帮助如何分工；新增、评审和效果验收的要求 |
 | 附录 | [A 旧功能对照](appendix-a-legacy-mapping.md) · [B 术语表](appendix-b-glossary.md) · [C 待决问题](appendix-c-open-questions.md) | 查漏、统一用语、未定事项 |
 
 前端相关环节结合阅读 [02 交互设计](02-interaction.md) 与 [16 页面设计参考](16-design-reference.md)。后者由 `stitch/` 整理而来，**仅是参考草案，不要求一比一复刻**；最终页面从实际功能和用户任务出发，示例按钮与数据不自动成为需求。接入决定见 [ADR 0007](decisions/0007-design-reference-integration.md)。
@@ -67,7 +68,11 @@
 
 ## 维护规则
 
-2026-09-30 的 M1 修复与验证边界见 [M1 修复记录](acceptance/m1-repair.md)。初始纵切报告保留为历史记录，最终工作树未完成验收，不将未验证项目标记为通过。
+技能与指导内容的开发以 [17](17-skill-authoring.md) 为约束；用户帮助源文件为 [user-guide.md](user-guide.md)，技能评测见 [skill-evals.md](skill-evals.md)。2026-10-01 调整见 [验收记录](acceptance/skill-boundaries-2026-10-01.md)。
+
+2026-10-01 的当前工作树门禁、桌面自检、生产启动和里程碑状态见[当前进度全面核验](acceptance/progress-2026-10-01.md)。M1 修复与历史验证边界见 [M1 修复记录](acceptance/m1-repair.md)；未验证项目仍不能标记为通过。
+
+2026-10-01 工作区绑定会话、默认空白落点与侧栏登记入口的续修见 [ADR 0015](decisions/0015-workspace-session-landing.md)、[交互设计 §2.3](02-interaction.md#23-工作区与会话落点) 和 [专项验收](acceptance/workspace-session-landing.md)。这是本轮增量验收，不替代已有里程碑边界。
 
 - 文档与实现冲突时，先判断哪边错。文档错就改文档；实现错就改实现。不允许两边长期不一致。
 - 每个里程碑结束时，对照 [14 质量与验收](14-quality.md) 更新验收记录。

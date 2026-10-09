@@ -161,7 +161,7 @@ describe("M5 扩展能力", () => {
     expect(r.status).toBe(201);
     const skills = await call("GET", "/skills");
     expect(skills.json.items.map((s: { name: string }) => s.name)).toEqual(
-      expect.arrayContaining(["report-building", "data-cleaning", "excelmanus-guide"]),
+      expect.arrayContaining(["report-building", "data-cleaning", "reconciliation"]),
     );
     // 04 §7.1：内置技能 requires-tools 全部可用（workbook_render 已装配）
     expect(

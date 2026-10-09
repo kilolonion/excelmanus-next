@@ -2,6 +2,7 @@
 // 字段一律 camelCase。
 
 import { z } from "zod";
+import { DispatchMode } from "./records.ts";
 
 // ---------- 规则（12 §3） ----------
 
@@ -200,6 +201,7 @@ export const PollLoginBody = z.strictObject({ attemptId: z.string() });
 export const AppSettings = z.object({
   /** 新会话默认权限模式（附录 C P-2 建议 standard）。 */
   defaultPermissionMode: z.enum(["confirm", "standard", "auto"]),
+  defaultDispatchMode: DispatchMode,
   /** 子代理默认模型档案；空 = 与主对话相同。 */
   subAgentProfileId: z.string().nullable(),
   /** 上下文压缩摘要模型档案；空 = 与主对话相同。 */

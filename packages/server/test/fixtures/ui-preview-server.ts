@@ -1,5 +1,5 @@
 // 前端页面复核夹具（16 §6）：真实 startServer + 真实工具/日志/同步通道，假模型只替代模型输出。
-// 用法：node packages/server/test/fixtures/ui-preview-server.ts <dataDir> [port]
+// 用法：node packages/server/test/fixtures/ui-preview-server.ts <dataDir> [port] [webDist]
 // 每条用户消息触发同一段脚本：思考 → 读取工作簿 → 区域确认提问 → 写入（confirm 模式下走审批）→ 带表格与区域引用的总结。
 // 消息含「失败」时改为一次模型认证错误，用于检查错误指引。
 
@@ -14,6 +14,7 @@ if (!dataDir) {
   process.exit(2);
 }
 const port = process.argv[3] ? Number(process.argv[3]) : undefined;
+const webDist = process.argv[4];
 const FILE = "月度销售报表.csv";
 
 const USAGE: LanguageModelV4Usage = {
@@ -63,6 +64,7 @@ let n = 0;
 const srv = await startServer({
   dataDir,
   ...(port !== undefined ? { port } : {}),
+  ...(webDist !== undefined ? { webDist } : {}),
   dev: true,
   resolveLanguageModel: () =>
     new MockLanguageModelV4({

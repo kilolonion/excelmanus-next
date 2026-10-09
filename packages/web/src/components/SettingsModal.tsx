@@ -1,6 +1,6 @@
 // 设置中心（02、16 §4）：左侧导航 + 搜索，右侧分页；Esc 关闭，焦点陷阱由 Dialog 提供。
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { setSettingsOpen, useApp } from "../store.ts";
 import { S, ST } from "../strings.ts";
 import { Icon, type IconName } from "./Icon.tsx";
@@ -35,9 +35,16 @@ const TAB_ICONS: Record<Tab, IconName> = {
 };
 
 export function SettingsModal() {
+  const open = useApp((s) => s.settingsOpen);
   const initial = useApp((s) => s.settingsTab) as Tab;
   const [tab, setTab] = useState<Tab>(initial in ST.tabs ? initial : "models");
   const [q, setQ] = useState("");
+  useEffect(() => {
+    if (open) {
+      setTab(initial in ST.tabs ? initial : "models");
+      setQ("");
+    }
+  }, [open, initial]);
   const profiles = useApp((s) => s.profiles);
   // 导航上的状态值只取已知真实数据（对齐清单 A10）
   const status: Partial<Record<Tab, string>> = {
@@ -46,20 +53,24 @@ export function SettingsModal() {
   const matches = (t: Tab, needle: string) =>
     needle === "" || `${ST.tabs[t]} ${ST.tabKeywords[t]}`.toLowerCase().includes(needle);
   const tabs = (Object.keys(ST.tabs) as Tab[]).filter((t) => matches(t, q.trim().toLowerCase()));
+  const groupTitle = ST.groups.find((group) => group.tabs.includes(tab))?.title;
   return (
-    <Dialog open onOpenChange={(o) => !o && setSettingsOpen(false)}>
+    <Dialog open={open} onOpenChange={(o) => !o && setSettingsOpen(false)}>
       <DialogContent
         aria-describedby="settings-intro"
-        className="grid h-[min(780px,calc(100vh-48px))] w-[min(1080px,calc(100vw-48px))] grid-cols-[220px_minmax(0,1fr)] overflow-hidden p-0"
+        className="settings-shell grid h-[min(820px,calc(100dvh-48px))] w-[min(1120px,calc(100vw-48px))] grid-cols-[228px_minmax(0,1fr)] overflow-hidden p-0 max-[900px]:grid-cols-[196px_minmax(0,1fr)] max-[700px]:h-[calc(100dvh-24px)] max-[700px]:w-[calc(100vw-24px)] max-[700px]:grid-cols-1 max-[700px]:grid-rows-[auto_minmax(0,1fr)]"
       >
         <nav
-          className="flex min-h-0 flex-col gap-3 border-r border-border bg-background"
+          className="settings-nav flex min-h-0 flex-col gap-7 border-r border-border/70 bg-muted/60 max-[700px]:gap-3 max-[700px]:border-r-0 max-[700px]:border-b"
           aria-label={ST.title}
         >
-          <div className="flex flex-col gap-3 px-3 pt-5">
-            <DialogTitle className="px-1 text-lg">{ST.title}</DialogTitle>
+          <div className="flex flex-col gap-6 px-5 pt-8 max-[700px]:flex-row max-[700px]:items-center max-[700px]:gap-4 max-[700px]:pt-5">
+            <DialogTitle className="settings-nav-title px-1 text-lg font-semibold tracking-tight max-[700px]:shrink-0">
+              {ST.title}
+            </DialogTitle>
             <SearchInput
               size="sm"
+              className="settings-search min-w-0 max-[700px]:flex-1 [&>input]:border-border/70 [&>input]:bg-card/65 [&>input]:shadow-none"
               placeholder={ST.search}
               aria-label={ST.search}
               value={q}
@@ -72,20 +83,33 @@ export function SettingsModal() {
               }}
             />
           </div>
-          <ScrollArea className="flex-1">
-            <div className="flex flex-col gap-4 px-3 pb-4">
+          <ScrollArea
+            className="flex-1 max-[700px]:flex-none"
+            viewportClassName="max-[700px]:overflow-x-auto!"
+          >
+            <div className="flex flex-col gap-7 px-4 pb-6 max-[700px]:w-max max-[700px]:flex-row max-[700px]:gap-1 max-[700px]:px-4 max-[700px]:pb-3">
               {ST.groups.map((g) => {
                 const items = g.tabs.filter((t) => tabs.includes(t as Tab)) as Tab[];
                 if (items.length === 0) return null;
                 return (
-                  <div className="flex flex-col gap-0.5" key={g.title}>
-                    <SectionLabel className="px-2 pb-1">{g.title}</SectionLabel>
+                  <div
+                    className="settings-nav-group flex flex-col gap-1 max-[700px]:flex-row"
+                    key={g.title}
+                  >
+                    <SectionLabel className="px-2.5 pb-2 max-[700px]:hidden">
+                      {g.title}
+                    </SectionLabel>
                     {items.map((t) => (
                       <NavItem
                         key={t}
+                        className="settings-nav-item h-10 max-[700px]:h-9"
                         current={t === tab}
                         icon={
-                          <Icon name={TAB_ICONS[t]} size="sm" className="text-muted-foreground" />
+                          <Icon
+                            name={TAB_ICONS[t]}
+                            size="sm"
+                            className={t === tab ? "text-foreground" : "text-muted-foreground"}
+                          />
                         }
                         meta={status[t] ? <Badge tone="neutral">{status[t]}</Badge> : undefined}
                         onClick={() => setTab(t)}
@@ -100,11 +124,17 @@ export function SettingsModal() {
             </div>
           </ScrollArea>
         </nav>
-        <div className="flex min-h-0 min-w-0 flex-col">
-          <div className="flex shrink-0 items-start gap-4 border-b border-border px-8 pt-6 pb-5">
-            <div className="flex min-w-0 flex-1 flex-col gap-1">
-              <h2 className="text-xl font-semibold">{ST.tabs[tab]}</h2>
-              <DialogDescription id="settings-intro" className="max-w-[680px]">
+        <div className="settings-page @container flex min-h-0 min-w-0 flex-col">
+          <div className="settings-page-header flex min-h-[140px] shrink-0 items-start gap-4 border-b border-border/70 px-10 py-6 @max-[600px]:min-h-0 @max-[600px]:px-6 @max-[600px]:py-5">
+            <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+              <SectionLabel className="settings-eyebrow">{groupTitle}</SectionLabel>
+              <h2 className="text-[28px] leading-tight font-semibold tracking-[-0.04em] @max-[600px]:text-2xl">
+                {ST.tabs[tab]}
+              </h2>
+              <DialogDescription
+                id="settings-intro"
+                className="max-w-[620px] text-sm leading-6 text-muted-foreground"
+              >
                 {ST.tabIntro[tab]}
               </DialogDescription>
             </div>
@@ -121,8 +151,8 @@ export function SettingsModal() {
               onClick={() => setSettingsOpen(false)}
             />
           </div>
-          <ScrollArea className="flex-1">
-            <div className="flex max-w-[860px] scroll-pb-16 flex-col gap-8 px-8 py-6">
+          <ScrollArea key={tab} className="flex-1">
+            <div className="settings-body flex w-full scroll-pb-20 flex-col gap-9 px-10 py-7 @max-[600px]:gap-7 @max-[600px]:px-6 @max-[600px]:py-6">
               {tab === "models" && <ModelsTab />}
               {tab === "accounts" && <AccountsTab />}
               {tab === "general" && <GeneralTab />}

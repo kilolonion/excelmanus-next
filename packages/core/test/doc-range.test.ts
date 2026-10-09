@@ -5,6 +5,7 @@ import {
   type RangeRef,
   type StructuralOp,
   structuralTouchesInterior,
+  subtractRanges,
   transformRange,
 } from "../src/doc-range.ts";
 
@@ -15,6 +16,16 @@ const r = (r0: number, c0: number, r1: number, c1: number, sheetId = S): RangeRe
   c0,
   r1,
   c1,
+});
+
+test("分块重读的并集消除已知格，保留空洞、表边界与不同表的保护", () => {
+  expect(subtractRanges(r(0, 0, 9, 2), [r(0, 0, 4, 2), r(5, 0, 9, 2)])).toEqual([]);
+  expect(subtractRanges(r(0, 0, 9, 2), [r(0, 0, 3, 2), r(5, 0, 9, 2)])).toEqual([r(4, 0, 4, 2)]);
+  expect(subtractRanges(r(0, 0, 1, 2), [r(0, 0, 1, 0), r(0, 2, 1, 2)])).toEqual([r(0, 1, 1, 1)]);
+  expect(subtractRanges(r(0, 0, 1, 1), [r(0, 0, 1, 1, "other")])).toEqual([r(0, 0, 1, 1)]);
+  expect(subtractRanges(r(MAX_R, MAX_C, MAX_R, MAX_C), [r(MAX_R, MAX_C, MAX_R, MAX_C)])).toEqual(
+    [],
+  );
 });
 
 describe("transformRange", () => {

@@ -28,7 +28,7 @@ export const Label = forwardRef<HTMLLabelElement, ComponentPropsWithoutRef<typeo
       <L.Root
         ref={ref}
         data-slot="label"
-        className={cn("text-xs font-medium text-foreground-secondary select-none", className)}
+        className={cn("text-sm font-medium leading-snug text-foreground select-none", className)}
         {...props}
       />
     );
@@ -45,7 +45,11 @@ export function HelpText({
   className?: string;
 }) {
   return (
-    <p id={id} className={cn("text-xs text-muted-foreground", className)}>
+    <p
+      id={id}
+      data-slot="field-help"
+      className={cn("text-xs leading-relaxed text-muted-foreground", className)}
+    >
       {children}
     </p>
   );
@@ -53,7 +57,12 @@ export function HelpText({
 
 export function FieldError({ id, children }: { id?: string; children: ReactNode }) {
   return (
-    <p id={id} role="alert" className="text-xs text-destructive">
+    <p
+      id={id}
+      data-slot="field-error"
+      role="alert"
+      className="text-xs leading-relaxed text-destructive"
+    >
       {children}
     </p>
   );
@@ -82,9 +91,13 @@ export function Field({
   if (orientation === "horizontal") {
     return (
       <Ctx.Provider value={ctx}>
-        <div data-slot="field" className={cn("flex items-start gap-2.5", className)}>
+        <div
+          data-slot="field"
+          data-orientation="horizontal"
+          className={cn("flex items-start gap-3", className)}
+        >
           <div className="pt-0.5">{children}</div>
-          <div className="flex min-w-0 flex-col gap-0.5">
+          <div className="flex min-w-0 flex-col gap-1">
             <Label htmlFor={id} className="text-sm font-normal text-foreground">
               {label}
             </Label>
@@ -97,7 +110,11 @@ export function Field({
   }
   return (
     <Ctx.Provider value={ctx}>
-      <div data-slot="field" className={cn("flex min-w-0 flex-col gap-1.5", className)}>
+      <div
+        data-slot="field"
+        data-orientation="vertical"
+        className={cn("flex min-w-0 flex-col gap-2", className)}
+      >
         <Label htmlFor={id}>{label}</Label>
         {children}
         {description && <HelpText id={descId}>{description}</HelpText>}

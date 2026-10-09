@@ -51,6 +51,28 @@ export function rangeIntersection(a: RangeRef, b: RangeRef): RangeRef | null {
   };
 }
 
+/** 从区域中减去已知区域的并集，保留尚未覆盖的矩形；不把重读块之间的空洞视为已知。 */
+export function subtractRanges(range: RangeRef, covered: RangeRef[]): RangeRef[] {
+  let remaining = [range];
+  for (const cover of covered) {
+    const next: RangeRef[] = [];
+    for (const r of remaining) {
+      const ix = rangeIntersection(r, cover);
+      if (!ix) {
+        next.push(r);
+        continue;
+      }
+      if (r.r0 < ix.r0) next.push({ ...r, r1: ix.r0 - 1 });
+      if (r.r1 > ix.r1) next.push({ ...r, r0: ix.r1 + 1 });
+      if (r.c0 < ix.c0) next.push({ ...r, r0: ix.r0, r1: ix.r1, c1: ix.c0 - 1 });
+      if (r.c1 > ix.c1) next.push({ ...r, r0: ix.r0, r1: ix.r1, c0: ix.c1 + 1 });
+    }
+    remaining = next;
+    if (remaining.length === 0) break;
+  }
+  return remaining;
+}
+
 /**
  * 按一条结构操作变换区域坐标（03 §6.1）。
  * - 插入：起点 ≥ index 的整段平移；跨越插入点的区域随之下边界扩展。

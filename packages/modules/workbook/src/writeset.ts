@@ -35,24 +35,30 @@ const fromRanges = (sheetId: string, ranges: R[]): RangeRef[] =>
     c1: r.endColumn,
   }));
 
-/** ObjectMatrix {row:{col:cell}} → 最小包围矩形；空矩阵 = 整表。 */
+/** 稀疏矩阵只覆盖明确携带的格，同行连续列及相邻行相同列段合并；缺失矩阵保守整表。 */
 const matrixRegion = (sheetId: string, matrix: unknown): RangeRef[] => {
-  const rows = numKeys(matrix);
-  if (rows.length === 0) return [{ sheetId, r0: 0, c0: 0, r1: MAX_R, c1: MAX_C }];
+  if (!matrix || typeof matrix !== "object") return [wholeSheet(sheetId)];
+  const rows = numKeys(matrix).sort((a, b) => a - b);
   const m = matrix as Record<string, Record<string, unknown>>;
-  let r0 = Infinity;
-  let r1 = -Infinity;
-  let c0 = Infinity;
-  let c1 = -Infinity;
+  const ranges: RangeRef[] = [];
+  const tails = new Map<string, RangeRef>();
   for (const r of rows) {
-    r0 = Math.min(r0, r);
-    r1 = Math.max(r1, r);
-    for (const c of numKeys(m[String(r)])) {
-      c0 = Math.min(c0, c);
-      c1 = Math.max(c1, c);
+    const cols = numKeys(m[String(r)]).sort((a, b) => a - b);
+    for (let i = 0; i < cols.length; i++) {
+      const c0 = cols[i] as number;
+      let c1 = c0;
+      while (cols[i + 1] === c1 + 1) c1 = cols[++i] as number;
+      const key = `${c0}:${c1}`;
+      const tail = tails.get(key);
+      if (tail && tail.r1 === r - 1) tail.r1 = r;
+      else {
+        const ref = { sheetId, r0: r, c0, r1: r, c1 };
+        ranges.push(ref);
+        tails.set(key, ref);
+      }
     }
   }
-  return [{ sheetId, r0, c0, r1, c1 }];
+  return ranges;
 };
 
 /** 行/列插删写集 = [index, 表尾) × 全维（坐标空间整体平移，影响所有下游区域）。 */

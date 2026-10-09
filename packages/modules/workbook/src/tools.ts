@@ -17,12 +17,15 @@ import type { ICellData, IWorkbookData, IWorksheetData } from "@univerjs/core";
 import { z } from "zod";
 import { workbookEditTool } from "./edit.ts";
 import { DocNotFoundError, type DocumentService } from "./service.ts";
+import { workbookSheets } from "./summary.ts";
 
 const MAX_CELLS = 2000;
 const MAX_CHARS = 16000;
 const SQL_PREVIEW_ROWS = 200;
 const SEARCH_LIMIT = 100;
 const PROFILE_TOP = 5;
+export const WORKBOOK_ANALYZE_SQL_TABLE = "data";
+export const WORKBOOK_ANALYZE_SQL_SHEET_PLACEHOLDER = "{{sheet}}";
 
 interface DocRef {
   docId: string;
@@ -209,6 +212,15 @@ function checkSql(sql: string): string | undefined {
   return undefined;
 }
 
+/**
+ * The SQL tool exposes the selected worksheet/range as the `data` table. Keep
+ * the prompt-friendly `{{sheet}}` spelling as a compatibility alias so a
+ * model does not have to know the internal table name.
+ */
+function normalizeSql(sql: string): string {
+  return sql.replace(/\{\{\s*sheet\s*\}\}/gi, WORKBOOK_ANALYZE_SQL_TABLE);
+}
+
 function colName(raw: unknown, idx: number, used: Set<string>): string {
   let n = String(raw ?? "").trim();
   if (n === "") n = `col${idx + 1}`;
@@ -239,8 +251,10 @@ function loadRegionTable(
     cols.push(colName(sheet.cellData?.[r0]?.[c]?.v, c - c0, used));
   }
   const quoted = cols.map((c) => `"${c.replace(/"/g, '""')}"`);
-  db.exec(`CREATE TABLE data (${quoted.join(",")})`);
-  const insert = db.prepare(`INSERT INTO data VALUES (${cols.map(() => "?").join(",")})`);
+  db.exec(`CREATE TABLE ${WORKBOOK_ANALYZE_SQL_TABLE} (${quoted.join(",")})`);
+  const insert = db.prepare(
+    `INSERT INTO ${WORKBOOK_ANALYZE_SQL_TABLE} VALUES (${cols.map(() => "?").join(",")})`,
+  );
   let rowCount = 0;
   for (let r = r0 + 1; r <= r1; r++) {
     const row = sheet.cellData?.[r] as Record<number, ICellData> | undefined;
@@ -433,19 +447,7 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
               ...base,
               mode: "overview",
               name: doc.name,
-              sheets: doc.sheetOrder.map((id) => {
-                const s = doc.sheets[id];
-                const nm = s?.name ?? id;
-                return {
-                  id,
-                  name: nm,
-                  rows: s?.rowCount ?? 0,
-                  cols: s?.columnCount ?? 0,
-                  cells: e.imported.cellCounts[nm] ?? 0,
-                  formulas: e.imported.formulaCounts[nm] ?? 0,
-                  hidden: !!s?.hidden,
-                };
-              }),
+              sheets: workbookSheets({ sheetOrder: doc.sheetOrder, sheets: doc.sheets }),
               unsupported: e.imported.unsupported,
             },
           };
@@ -536,8 +538,7 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
   const workbookAnalyze: ToolDefinition = {
     name: "workbook_analyze",
     title: "分析工作簿",
-    description:
-      "对工作簿区域做分析。mode=sql 把指定工作表/区域（首行为表头）装入内存 SQLite 执行只读 SELECT/WITH 查询，预览 ≤200 行；mode=profile 返回每列的类型/非空数/去重数/min/max/mean/top 值。输入 docId 或工作区相对 path。",
+    description: `对工作簿区域做分析。mode=sql 把指定工作表/区域（首行为表头）注册为 SQLite 的 ${WORKBOOK_ANALYZE_SQL_TABLE} 表并执行只读 SELECT/WITH 查询（也兼容 ${WORKBOOK_ANALYZE_SQL_SHEET_PLACEHOLDER} 作为 ${WORKBOOK_ANALYZE_SQL_TABLE} 的占位符），预览 ≤200 行；mode=profile 返回每列的类型/非空数/去重数/min/max/mean/top 值。输入 docId 或工作区相对 path。`,
     input: analyzeInput,
     output: z.record(z.string(), z.unknown()),
     effect: (a: z.infer<typeof analyzeInput> | null) => (a?.saveTo ? "write" : "read"),
@@ -562,7 +563,8 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
         const base = { docId: doc.docId, path: doc.path, ...docRevsOf(doc.docId, doc.rev) };
         if (a.mode === "sql") {
           if (a.sql === undefined) throw new Error("sql 模式需要 sql 参数");
-          const bad = checkSql(a.sql);
+          const sql = normalizeSql(a.sql);
+          const bad = checkSql(sql);
           if (bad !== undefined) {
             return {
               status: "error",
@@ -572,7 +574,7 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
           const mem = new DatabaseSync(":memory:");
           try {
             loadRegionTable(mem, doc, a.sheet, a.range);
-            const all = mem.prepare(a.sql.trim().replace(/;\s*$/, "")).all() as Record<
+            const all = mem.prepare(sql.trim().replace(/;\s*$/, "")).all() as Record<
               string,
               unknown
             >[];

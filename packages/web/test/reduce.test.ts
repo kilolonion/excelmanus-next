@@ -10,12 +10,66 @@ import {
   displayItems,
   initialDocSync,
   initialSessionState,
+  latestDocConflict,
   queueAhead,
   queuedCount,
   reduceDoc,
   reduceSession,
+  resultHeadline,
   trackDocSubmit,
 } from "../src/reduce.ts";
+
+test("空创建与结构修改保留变更导航，卡片区分创建、结构与单元格", () => {
+  const data = {
+    docId: "empty",
+    path: "空工作簿.xlsx",
+    created: true,
+    sheets: [{ name: "Sheet1", cells: 0 }],
+    docRevs: { empty: 1 },
+    changes: { cellsBySheet: {}, ranges: [], structural: ["新增工作表（Sheet1）"] },
+  };
+  expect(resultHeadline(data)).toBe("已创建工作簿 · 1 个工作表 · 修订 1");
+  expect(resultHeadline({ ...data, dryRun: true })).toBe(
+    "创建预览（未落盘） · 1 个工作表 · 修订 1",
+  );
+  expect(
+    resultHeadline({
+      docId: "empty",
+      docRevs: { empty: 2 },
+      changes: { cellsBySheet: {}, ranges: [], structural: ["删除工作表（临时）"] },
+    }),
+  ).toBe("已修改 · 1 项结构变更 · 修订 2");
+  const state = reduceSession(
+    initialSessionState(),
+    ServerMessage.parse({
+      type: "rec",
+      topic: "session:s",
+      seq: 1,
+      record: {
+        sessionId: "s",
+        seq: 1,
+        agentId: "main",
+        type: "tool.result",
+        data: {
+          toolCallId: "create",
+          toolName: "workbook_edit",
+          status: "ok",
+          result: { status: "ok", data },
+        },
+        createdAt: "2026-10-01T00:00:00.000Z",
+      },
+    }),
+  );
+  expect(state.changes).toEqual([
+    expect.objectContaining({
+      docId: "empty",
+      path: "空工作簿.xlsx",
+      rev: 1,
+      cells: 0,
+      structural: ["新增工作表（Sheet1）"],
+    }),
+  ]);
+});
 
 const fixturePath = join(dirname(fileURLToPath(import.meta.url)), "fixtures/session-stream.json");
 
@@ -530,5 +584,27 @@ describe("reduceDoc", () => {
     );
     expect(s.pending.c2?.status).toBe("rejected");
     expect(s.rev).toBe(3); // reject 不前进 rev
+  });
+
+  test("最新拒绝保留冲突码、修订和区域，供工作台冲突条消费", () => {
+    let s = trackDocSubmit(initialDocSync(2), "c1");
+    s = reduceDoc(
+      s,
+      ServerMessage.parse({
+        type: "doc.reject",
+        clientOpId: "c1",
+        conflict: {
+          code: "VERSION_CONFLICT",
+          message: "修订已变化",
+          conflicts: [{ rev: 4, source: "user:peer", cells: ["Sheet1!B2", "Sheet1!B3"] }],
+        },
+      }),
+    );
+    expect(latestDocConflict(s)).toEqual({
+      clientOpId: "c1",
+      code: "VERSION_CONFLICT",
+      message: "修订已变化",
+      conflicts: [{ rev: 4, source: "user:peer", cells: ["Sheet1!B2", "Sheet1!B3"] }],
+    });
   });
 });

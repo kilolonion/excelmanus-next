@@ -3,17 +3,18 @@
 import { useState } from "react";
 import { apiClientOf, refreshWorkspaces, useApp } from "../../store.ts";
 import { ST } from "../../strings.ts";
+import { AddWorkspaceDialog } from "../AddWorkspaceDialog.tsx";
 import { Icon } from "../Icon.tsx";
 import { Button } from "../ui/button.tsx";
 import { useConfirm } from "../ui/confirm.tsx";
 import { RadioCard, RadioGroup } from "../ui/controls.tsx";
 import { Badge, Card } from "../ui/display.tsx";
-import { Input } from "../ui/input.tsx";
 import { Tip } from "../ui/tooltip.tsx";
 import {
   Empty,
   Feedback,
   ItemCard,
+  LoadStatus,
   Section,
   useAction,
   useConfirmDelete,
@@ -34,11 +35,12 @@ function BackupList({ workspaceId, kind }: { workspaceId: string; kind: "backups
   const confirmDelete = useConfirmDelete();
   return (
     <Section title={kind === "backups" ? ST.backups : ST.trash}>
+      <LoadStatus data={list.data} error={list.error} />
       <Feedback msg={act.msg} />
-      <div className="flex flex-col gap-2">
+      <div className="settings-list flex flex-col gap-2">
         {list.data?.items.length === 0 && <Empty />}
         {list.data?.items.map((b) => (
-          <ItemCard key={b.id} className="flex-row items-center gap-3 py-2.5">
+          <ItemCard key={b.id} className="flex-row flex-wrap items-center gap-3 px-4 py-3.5">
             <Icon
               name={kind === "backups" ? "history" : "trash"}
               size="sm"
@@ -52,7 +54,7 @@ function BackupList({ workspaceId, kind }: { workspaceId: string; kind: "backups
                 {formatSize(b.size)} · {new Date(b.createdAt).toLocaleString()}
               </span>
             </div>
-            <div className="flex shrink-0 items-center gap-1">
+            <div className="flex shrink-0 flex-wrap items-center gap-1 @max-[600px]:w-full @max-[600px]:justify-end">
               <Button
                 size="xs"
                 variant="ghost"
@@ -122,13 +124,22 @@ export function FilesTab() {
   const dataDir = useApp((s) => s.dataDir);
   const current = useApp((s) => s.workspaceId);
   const list = useLoad(() => api.listWorkspaces(), []);
-  const [path, setPath] = useState("");
+  const [addOpen, setAddOpen] = useState(false);
   const [selected, setSelected] = useState(current);
   const act = useAction();
   const confirmDelete = useConfirmDelete();
   return (
     <>
-      <Section title={ST.workspaces}>
+      <Section
+        title={ST.workspaces}
+        actions={
+          <Button size="sm" variant="outline" onClick={() => setAddOpen(true)}>
+            <Icon name="plus" size="xs" />
+            {ST.addWorkspace}
+          </Button>
+        }
+      >
+        <LoadStatus data={list.data} error={list.error} />
         <RadioGroup aria-label={ST.workspaces} value={selected} onValueChange={setSelected}>
           {list.data?.items.map((w) => (
             <div key={w.id} className="relative">
@@ -163,36 +174,20 @@ export function FilesTab() {
             </div>
           ))}
         </RadioGroup>
-        <form
-          className="flex items-center gap-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void act
-              .run(async () => {
-                await api.addWorkspace(path.trim());
-                list.reload();
-                await refreshWorkspaces();
-              })
-              .then((ok) => ok && setPath(""));
-          }}
-        >
-          <Input
-            mono
-            value={path}
-            required
-            aria-label={ST.workspacePath}
-            placeholder={ST.workspacePath}
-            onChange={(e) => setPath(e.target.value)}
+        {addOpen && (
+          <AddWorkspaceDialog
+            open
+            onOpenChange={setAddOpen}
+            onAdded={() => {
+              list.reload();
+              setSelected(useApp.getState().workspaceId);
+            }}
           />
-          <Button type="submit" variant="outline" loading={act.busy}>
-            <Icon name="plus" size="xs" />
-            {ST.addWorkspace}
-          </Button>
-        </form>
+        )}
         <Feedback msg={act.msg} />
       </Section>
       <Section title={ST.dataDirTitle} hint={ST.backupLocationNote}>
-        <Card className="flex items-center gap-2.5 px-3.5 py-3">
+        <Card className="settings-data-location flex items-center gap-3 border-0 bg-muted/45 px-4 py-4 shadow-none">
           <Icon name="folder" size="md" className="text-muted-foreground" />
           <span className="min-w-0 truncate font-mono text-xs">{dataDir ?? ST.dataDirUnknown}</span>
         </Card>

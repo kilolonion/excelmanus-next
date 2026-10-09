@@ -1,4 +1,4 @@
-// REST 网关（11 §2、§4）：/api/v1 前缀、Bearer 设备令牌、请求 ID、统一错误体。
+// REST 网关（11 §2、§4）：/api/v1 前缀、Bearer 设备令牌/浏览器会话 Cookie、请求 ID、统一错误体。
 
 import { randomBytes, randomUUID } from "node:crypto";
 import {
@@ -43,6 +43,7 @@ import {
   QuestionAnswerBody,
   ResolveExternalBody,
   SendMessageBody,
+  SessionListQuery,
   UpdateModelProfileBody,
   UpdateSessionBody,
 } from "@excelmanus/protocol";
@@ -86,6 +87,8 @@ export interface AppDeps {
   resolveDeps?: ResolveDeps;
   tickets: Map<string, number>;
   ticketTtlMs: number;
+  /** 当前本机设备令牌，仅用于在同源登录请求中签发 HttpOnly Cookie。 */
+  token: string;
   defaultWorkspaceId: string;
   moduleIds: string[];
   /** workbook 模块提供；未装配时 docs/files 路由返回 501。 */
@@ -103,6 +106,7 @@ export interface AppDeps {
   dataDir?: string;
   /** M5 扩展端点（规则/记忆/技能/MCP/账号/设置等），挂在鉴权之后。 */
   extensions?(fail: FailFn): Hono;
+  defaultDispatchMode?(): "steer" | "interrupt" | "queue";
   /** 新会话冻结系统提示词所需的环境（技能索引、规则）与默认权限模式。 */
   sessionEnv?(workspaceRoot: string): {
     skills: { name: string; description: string }[];
@@ -270,10 +274,14 @@ export function createApp(deps: AppDeps): Hono {
     if (len > maxSize) {
       return fail(c, 413, "payload_too_large", "请求体超过大小上限");
     }
-    // 只对 /api/ 要求令牌；前端静态资源可被无令牌加载（令牌在 URL fragment，不进请求）
-    if (c.req.path.startsWith("/api/") && c.req.path !== "/api/v1/health") {
+    // 浏览器首次打开时通过同源 POST 建立 HttpOnly 会话；其他 API 仍要求令牌。
+    const browserSessionRoute =
+      c.req.path === "/api/v1/auth/session" || c.req.path === "/api/v1/auth/logout";
+    if (c.req.path.startsWith("/api/") && c.req.path !== "/api/v1/health" && !browserSessionRoute) {
       const auth = c.req.header("authorization") ?? "";
-      const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+      const cookie = c.req.header("cookie") ?? "";
+      const cookieToken = /(?:^|;\s*)excelmanus_session=([^;]+)/.exec(cookie)?.[1] ?? "";
+      const token = auth.startsWith("Bearer ") ? auth.slice(7) : cookieToken;
       const device = token
         ? db
             .prepare("SELECT id FROM devices WHERE token_hash = ? AND revoked_at IS NULL")
@@ -367,6 +375,36 @@ export function createApp(deps: AppDeps): Hono {
 
   app.get("/api/v1/health", (c) => c.json({ ok: true, protocolVersion, version: APP_VERSION }));
 
+  // 本机 Web 登录：令牌只在服务端启动时生成，浏览器通过受 Origin/Host 保护的同源请求
+  // 换成 HttpOnly Cookie；令牌不会进入 URL、localStorage、前端状态或日志。
+  app.post("/api/v1/auth/session", (c) => {
+    const origin = c.req.header("origin");
+    if (origin === undefined || !deps.allowedOrigins().has(origin)) {
+      return fail(c, 403, "forbidden_origin", "登录请求来源不被允许");
+    }
+    const auth = c.req.header("authorization") ?? "";
+    const current = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    const device = current
+      ? db
+          .prepare("SELECT id FROM devices WHERE token_hash = ? AND revoked_at IS NULL")
+          .get(sha256(current))
+      : undefined;
+    if (current !== "" && !device) return fail(c, 401, "unauthorized", "设备会话已失效");
+    c.header(
+      "Set-Cookie",
+      `excelmanus_session=${deps.token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800`,
+    );
+    return c.json({
+      authenticated: true,
+      expiresAt: new Date(Date.now() + 8 * 3600_000).toISOString(),
+    });
+  });
+
+  app.post("/api/v1/auth/logout", (c) => {
+    c.header("Set-Cookie", "excelmanus_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0");
+    return c.json({ ok: true });
+  });
+
   // 契约入口：开发/测试客户端可取得机器可读的 API 描述（11 §1）。
   // 路由仍由 protocol 包中的 Zod 契约定义；这里仅发布版本与资源索引，避免复制 DTO。
   app.get("/api/docs", (c) =>
@@ -376,6 +414,8 @@ export function createApp(deps: AppDeps): Hono {
       servers: [{ url: "/api/v1" }],
       paths: {
         "/health": { get: {} },
+        "/auth/session": { post: {} },
+        "/auth/logout": { post: {} },
         "/bootstrap": { get: {} },
         "/sessions": { get: {}, post: {} },
         "/workspaces": { get: {}, post: {} },
@@ -497,13 +537,18 @@ export function createApp(deps: AppDeps): Hono {
   // ---------- 会话 ----------
 
   app.get("/api/v1/sessions", (c) => {
-    const limit = Math.min(Number(c.req.query("limit") ?? 50), 200);
-    const cursor = c.req.query("cursor");
+    const query = parse(SessionListQuery, c.req.query());
+    if ("issues" in query) return fail(c, 400, "bad_request", "查询参数不合法", query.issues);
+    const limit = query.limit ?? 50;
+    const cursor = query.cursor;
     // 11 §4 会话列表搜索：按标题子串匹配（不区分大小写，% _ 按字面匹配）
-    const q = c.req.query("q")?.trim() ?? "";
+    const q = query.q?.trim() ?? "";
     const like = `%${q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
-    const search = q === "" ? "" : "AND COALESCE(title, '') LIKE ? ESCAPE '\\'";
-    const searchArgs = q === "" ? [] : [like];
+    const search = `${q === "" ? "" : "AND COALESCE(title, '') LIKE ? ESCAPE '\\'"} ${query.workspaceId === undefined ? "" : "AND workspace_id = ?"}`;
+    const searchArgs = [
+      ...(q === "" ? [] : [like]),
+      ...(query.workspaceId === undefined ? [] : [query.workspaceId]),
+    ];
     let rows: SessionRowLike[];
     if (cursor !== undefined) {
       const sep = cursor.indexOf("~");
@@ -537,6 +582,32 @@ export function createApp(deps: AppDeps): Hono {
     const ws =
       body.workspaceId !== undefined ? getWorkspace(db, body.workspaceId) : defaultWorkspace(db);
     if (!ws) return fail(c, 400, "bad_request", "工作区不存在");
+    if (body.reuseBlank) {
+      if (
+        body.title !== undefined ||
+        body.permissionMode !== undefined ||
+        body.modelProfileId !== undefined
+      )
+        return fail(c, 400, "bad_request", "复用空白会话时不能指定标题、权限或模型档案");
+      const blank = db
+        .prepare(`
+        SELECT s.* FROM sessions s
+        WHERE s.workspace_id = ? AND (s.title IS NULL OR s.title = '')
+          AND NOT EXISTS (
+            SELECT 1 FROM session_log l WHERE l.session_id = s.id
+            AND l.type NOT IN ('session.created', 'agent.spawned')
+          )
+          AND (SELECT COUNT(*) FROM agents a WHERE a.session_id = s.id) = 1
+          AND EXISTS (SELECT 1 FROM agents a WHERE a.session_id = s.id AND a.id = 'main' AND a.status = 'idle')
+        ORDER BY s.updated_at DESC, s.id DESC LIMIT 1
+      `)
+        .get(ws.id) as SessionRowLike | undefined;
+      if (blank)
+        return c.json({
+          session: sessionDto(blank),
+          agents: listAgents(db, blank.id).map(agentDto),
+        });
+    }
     const sessionId = newId("ses");
     const env = deps.sessionEnv?.(ws.path);
     const permissionMode = body.permissionMode ?? env?.defaultPermissionMode ?? "standard";
@@ -768,7 +839,7 @@ export function createApp(deps: AppDeps): Hono {
     }
     const body = parse(SendMessageBody, await c.req.json().catch(() => null));
     if ("issues" in body) return fail(c, 400, "bad_request", "请求体不合法", body.issues);
-    const mode = body.mode ?? "steer";
+    const mode = body.mode ?? deps.defaultDispatchMode?.() ?? "steer";
 
     // 重启后仍 blocked（持久化待审批/待回答）：steer/queue 持久化为 queued 挂起，
     // 等审批决定后由运行时继续；interrupt 以"用户发送了新指令"拒绝待审批后开新一轮
@@ -786,39 +857,51 @@ export function createApp(deps: AppDeps): Hono {
       }
     }
 
-    // 幂等：同 clientMessageId 同内容返回原记录，不同内容返回冲突（04 §4.3）
-    const existing = db
-      .prepare(
-        "SELECT d.*, m.data AS msg FROM dispatches d LEFT JOIN session_log m ON m.session_id = d.session_id AND m.type = 'user.message' AND json_extract(m.data, '$.dispatchId') = d.id WHERE d.session_id = ? AND d.agent_id = ? AND d.client_message_id = ?",
-      )
-      .get(sessionId, agentId, body.clientMessageId) as
-      | { id: string; status: string; mode: string; msg: string | null }
-      | undefined;
-    if (existing) {
-      const old = existing.msg
-        ? (JSON.parse(existing.msg) as { text?: string; context?: unknown; mode?: string })
-        : undefined;
-      if (
-        old?.text !== body.text ||
-        JSON.stringify(old.context ?? []) !== JSON.stringify(body.context ?? []) ||
-        JSON.stringify((old as { attachments?: unknown }).attachments ?? []) !==
-          JSON.stringify(body.attachments ?? []) ||
-        (old.mode ?? "steer") !== mode
-      ) {
-        return fail(c, 409, "conflict", "clientMessageId 已使用且内容不同");
+    // 同幂等键不因当前默认策略变化而改变已受理结果。
+    const deduplicate = () => {
+      const existing = db
+        .prepare(
+          "SELECT d.*, m.data AS msg FROM dispatches d LEFT JOIN session_log m ON m.session_id = d.session_id AND m.type = 'user.message' AND json_extract(m.data, '$.dispatchId') = d.id WHERE d.session_id = ? AND d.agent_id = ? AND d.client_message_id = ?",
+        )
+        .get(sessionId, agentId, body.clientMessageId) as
+        | { id: string; status: string; mode: string; msg: string | null }
+        | undefined;
+      if (existing) {
+        const old = existing.msg
+          ? (JSON.parse(existing.msg) as {
+              text?: string;
+              context?: unknown;
+              mode?: string;
+              replacesDispatchId?: string;
+            })
+          : undefined;
+        if (
+          old?.text !== body.text ||
+          JSON.stringify(old.context ?? []) !== JSON.stringify(body.context ?? []) ||
+          JSON.stringify((old as { attachments?: unknown }).attachments ?? []) !==
+            JSON.stringify(body.attachments ?? []) ||
+          (body.mode !== undefined && (old.mode ?? "steer") !== mode) ||
+          old.replacesDispatchId !== body.replacesDispatchId
+        ) {
+          return fail(c, 409, "conflict", "clientMessageId 已使用且内容不同");
+        }
+        return c.json({
+          dispatch: {
+            id: existing.id,
+            sessionId,
+            agentId,
+            clientMessageId: body.clientMessageId,
+            mode: existing.mode,
+            status: existing.status,
+          },
+          deduplicated: true,
+        });
       }
-      return c.json({
-        dispatch: {
-          id: existing.id,
-          sessionId,
-          agentId,
-          clientMessageId: body.clientMessageId,
-          mode: existing.mode,
-          status: existing.status,
-        },
-        deduplicated: true,
-      });
-    }
+
+      return undefined;
+    };
+    const previous = deduplicate();
+    if (previous) return previous;
 
     // 04 §4：附件在受理前校验已上传
     for (const a of body.attachments ?? []) {
@@ -849,6 +932,9 @@ export function createApp(deps: AppDeps): Hono {
       }
     }
 
+    const committedDuringValidation = deduplicate();
+    if (committedDuringValidation) return committedDuringValidation;
+
     let prepared: {
       text: string;
       memories?: { id: string; category: string; content: string }[];
@@ -867,16 +953,38 @@ export function createApp(deps: AppDeps): Hono {
       prepared = out;
     }
 
+    // 最后一次 await 之后重新检查，检查与日志事务之间没有异步让出。
+    if (body.replacesDispatchId) {
+      const replaced = db
+        .prepare("SELECT agent_id, status FROM dispatches WHERE id = ? AND session_id = ?")
+        .get(body.replacesDispatchId, sessionId) as
+        | { agent_id: string; status: string }
+        | undefined;
+      if (!replaced || replaced.agent_id !== agentId)
+        return fail(c, 404, "not_found", "待处理消息不存在");
+      if (replaced.status !== "accepted" && replaced.status !== "queued") {
+        return fail(c, 409, "conflict", "消息已生效或已删除，无法替换");
+      }
+    }
     const dispatchId = newId("dsp");
     const running = deps.runtime.isRunning(sessionId, agentId);
     // 挂起语义：运行中或等待审批/回答期间受理的消息都先记 queued（04 §4.1/§4.2）
     const initialStatus = running || blockedIdle ? "queued" : "accepted";
     deps.log.append(sessionId, agentId, [
+      ...(body.replacesDispatchId
+        ? [
+            {
+              type: "dispatch.updated" as const,
+              data: { dispatchId: body.replacesDispatchId, status: "cancelled" as const },
+            },
+          ]
+        : []),
       {
         type: "user.message",
         data: {
           dispatchId,
           clientMessageId: body.clientMessageId,
+          ...(body.replacesDispatchId ? { replacesDispatchId: body.replacesDispatchId } : {}),
           text: body.text,
           mode,
           ...(body.context !== undefined ? { context: body.context } : {}),
@@ -898,6 +1006,8 @@ export function createApp(deps: AppDeps): Hono {
       // 待审批被新指令打断：视为拒绝，resumePersistedApproval 收口旧轮后 pump 开新轮
       deps.runtime.decideApproval(blockedPending.id, "denied", "用户发送了新指令");
     }
+    if (body.replacesDispatchId)
+      deps.runtime.cancelDispatch(sessionId, agentId, body.replacesDispatchId);
     deps.runtime.enqueue(sessionId, agentId, dispatchId, mode);
     return c.json(
       {

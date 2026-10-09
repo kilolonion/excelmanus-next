@@ -55,6 +55,82 @@ function model(over: Partial<ResolvedModel>): ResolvedModel {
   };
 }
 
+describe("最高思考等级", () => {
+  test.each([
+    { provider: "openai", modelId: "gpt-6", key: "openai" },
+    { provider: "anthropic", modelId: "claude-opus-5", key: "anthropic" },
+    { provider: "custom-openai-compatible", modelId: "m", key: "custom-openai-compatible" },
+  ])("$provider：真实 SDK 请求以 max 覆盖已有低等级", async ({ provider, modelId, key }) => {
+    const cap = capture(
+      () =>
+        new Response(
+          JSON.stringify({
+            error: { type: "invalid_request_error", message: "fixture rejection" },
+          }),
+          {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+    );
+    const events = await drain(
+      createGateway().step({
+        model: model({ provider, model: modelId, reasoning: "max", fetch: cap.fetch }),
+        history: [{ kind: "user", text: "hi" }],
+        providerOptions: {
+          ...(provider === "custom-openai-compatible"
+            ? { customOpenaiCompatible: { reasoningEffort: "low" } }
+            : {}),
+          [key]:
+            provider === "anthropic"
+              ? { effort: "low", thinking: { type: "disabled" } }
+              : { reasoningEffort: "low" },
+        },
+        signal: new AbortController().signal,
+      }),
+    );
+    expect(cap.bodies).toHaveLength(1);
+    const body = cap.bodies[0];
+    if (provider === "anthropic") {
+      expect(body?.output_config).toMatchObject({ effort: "max" });
+      expect(body?.thinking).toMatchObject({ type: "adaptive" });
+    } else if (provider === "openai") {
+      expect(body?.reasoning).toMatchObject({ effort: "max" });
+    } else {
+      expect(body?.reasoning_effort).toBe("max");
+    }
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: "error",
+        error: expect.objectContaining({ kind: "invalid_request" }),
+      }),
+    );
+  });
+
+  test("不支持的适配器显式拒绝，不调用模型或降级", async () => {
+    let requested = false;
+    const events = await drain(
+      createGateway({
+        resolveLanguageModel: () => {
+          requested = true;
+          throw new Error("unexpected request");
+        },
+      }).step({
+        model: model({ provider: "google", reasoning: "max" }),
+        history: [{ kind: "user", text: "hi" }],
+        signal: new AbortController().signal,
+      }),
+    );
+    expect(requested).toBe(false);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: "error",
+        error: expect.objectContaining({ kind: "invalid_request", retryable: false }),
+      }),
+    );
+  });
+});
+
 describe("脱敏", () => {
   test("已登记凭据精确替换；常见密钥格式正则兜底", () => {
     registerModelSecrets({

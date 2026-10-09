@@ -40,6 +40,7 @@
 
 - 单个工具说明（不含 schema）控制在约 1200 个汉字以内。
 - 不写与其他工具重复的通用规则（如"所有写入都要声明基于的修订与读集"写在系统提示词的通用原则里一次）。
+- 工具必须独立提供正确调用所需的契约；SDK、脚本发布、超时、角色和租约限制不能藏在需另行加载的技能中。任务路线与质量判断见 [17](17-skill-authoring.md)。
 - 自动检查：说明中引用的其他工具名必须存在；示例必须通过 schema 校验。
 
 ### 2.3 统一结果结构【硬性】
@@ -106,16 +107,20 @@ type ToolResult = {
 
 | mode | 作用 |
 | --- | --- |
-| `sql` | 把一个或多个来源（工作表、区域、CSV 文件）注册为表，执行只读 SQL（连接、分组、窗口函数）。结果预览返回给模型；`saveTo` 可写入新工作表或新文件 |
+| `sql` | 把指定工作表/区域（或其对应的 CSV 文档）注册为 `data` 表，执行只读 SQL（分组、窗口函数）。结果预览返回给模型；`saveTo` 可写入新工作表或新文件 |
 | `profile` | 字段画像：类型推断、空值率、唯一值数、数值统计、高频值 |
 | `diff` | 比较两个区域/工作表/文件：按位置或按业务键对齐，报告新增、删除、修改的行与单元格 |
 | `check` | 规则校验：`required`、`unique`、`foreign_key`、`range`（数值/日期区间）、`pattern`、`row_expression`（行级表达式）、`cell`（某单元格等于期望值，带容差）、`total`（合计核对）、`formula_errors`（查 `#REF!` 等） |
+
+`sql` 模式把当前 `sheet`/`range` 作为内存 SQLite 的 `data` 表；为兼容模型生成的查询，`{{sheet}}` 也会解析为 `data`。
 
 ### 4.3 `workbook_edit`（write）
 
 以一组类型化操作（ChangeSet）修改或新建工作簿，整批原子提交。
 
 参数：`path`、`baseRev`（可选，显式声明基于的修订；不传时用读集与当前修订判定）、`create`（新建）、`ops[]`、`dryRun`。
+
+新建语义（[ADR 0014](decisions/0014-empty-workbook-tool-chain.md)）：`create=true` 必须提供尚不存在的 `.xlsx` 路径，不接受 `docId`。新工作簿默认已有一个空白 `Sheet1`；`ops=[]` 正式支持创建空工作簿，最小调用为 `{"create":true,"path":"空工作簿.xlsx","ops":[]}`。默认工作表改名用 `sheet.rename`；`sheet.add` 只新增其他名称唯一的工作表。修改已有文件仍要求至少一个操作。预览与脚本 `wb.edit` 使用相同参数规则；失败的创建不留下占用该路径的文件。
 
 操作类型【推荐】（每种一个判别字段 `op`，参数各自独立，禁止一个宽松对象复用字段）：
 
@@ -131,7 +136,8 @@ type ToolResult = {
 | 其他 | `hyperlink.set`、`note.set`（批注，P1）、`print.set`（打印设置，P1）、`recalculate` |
 
 返回：
-- `changes`：实际受影响的范围（整行/整列操作会报告区域外的受影响单元格数）、每类操作的数量。
+- `changes`：实际受影响的有限区域及其并集单元格数（重叠不重复计数），结构变化单独报告。冲突检测用的整行/整列/整表范围不作为实际修改格计数；删除空工作表不会报告 Excel 容量为修改格数。工具回执、脚本审批预览及轮次摘要共用此规则。
+- 新建回执包含 `created=true` 与当前快照的 `sheets` 清单（名称、非空格数、公式数）；`dryRun=true` 中表示拟创建。即使 `ops=[]`，也提交可恢复的创建修订，记录默认工作表为新增结构。`workbook_read overview` 的计数来自当前修订快照，不使用导入时的缓存。
 - 写入公式的**计算后的值**（引擎能算的），以及算不了的函数清单。
 - 新修订号 `rev`（经 `docRevs` 返回）。
 - `dryRun=true` 时不落盘，返回将产生的变更与预览引用（前端可渲染预览层，见 [02 §4.3](02-interaction.md#43-提问时让用户在表格上选择硬性确认结果必须绑定修订号)）。
@@ -141,6 +147,8 @@ type ToolResult = {
 ### 4.4 `workbook_render`（read）
 
 把一个区域渲染成图片交给视觉模型。参数：`path`、`range`、`rev`（可选，默认当前修订）。返回图片（作为视觉输入）、渲染所用的修订号、行列与像素的对应关系、渲染限制说明（如"条件格式未渲染"）。当前模型不支持视觉时，此工具不出现在工具列表中。
+
+截图成功后，实际渲染区域（按行列/尺寸上限截断后的 `range`）及所用修订记入代理读集，并可从持久上下文重建；渲染失败不记读集。它与区域读取采用同一冲突规则（[ADR 0018](decisions/0018-workbook-observations-and-derived-mutations.md)）。
 
 ### 4.5 `workbook_export`（write）
 
@@ -237,6 +245,6 @@ MCP 工具以 `mcp__<服务器>__<工具>` 命名加入列表，`effect` 由服�
 | `offer_download` | `present` |
 | `todolist` | `todo` |
 | `spawn_subagent`、`list_subagents`、`read_subagent`、`control_subagent` | `agent_*` 五件套 |
-| `introspect_capability`（知识门户） | 删除。工具用法写在工具说明里；产品自我说明做成一个内置技能 |
+| `introspect_capability`（知识门户） | 删除。工具用法随工具提供；产品说明放用户帮助和设置 UI，动态能力以实际工具目录与结果为准 |
 | `delivery_status`、`verify_visual`（交付账本） | 删除。由运行时自动生成的变更摘要取代"模型自报交付证据" |
 | Word 四件套 | 删除 |

@@ -4,7 +4,7 @@ import type { LoginAttempt } from "@excelmanus/protocol";
 import { useEffect, useRef, useState } from "react";
 import { apiClientOf, refreshProfiles } from "../../store.ts";
 import { ST } from "../../strings.ts";
-import { Icon } from "../Icon.tsx";
+import { Icon, ProviderLabel, ProviderLogo } from "../Icon.tsx";
 import { Button } from "../ui/button.tsx";
 import { Alert, Badge, Card } from "../ui/display.tsx";
 import { Spinner } from "../ui/spinner.tsx";
@@ -12,6 +12,7 @@ import {
   Empty,
   Feedback,
   ItemCard,
+  LoadStatus,
   Section,
   useAction,
   useConfirmDelete,
@@ -64,8 +65,11 @@ export function AccountsTab() {
     }, ST.loginWaiting);
 
   return (
-    <Section title="ChatGPT / Codex" hint={ST.subscriptionNote}>
-      <div className="flex flex-wrap gap-2">
+    <Section
+      title={<ProviderLabel provider="chatgpt">{ST.subscriptionProviderName}</ProviderLabel>}
+      hint={ST.subscriptionNote}
+    >
+      <div className="settings-account-actions flex flex-wrap gap-2">
         <Button disabled={act.busy} onClick={() => start("browser")}>
           <Icon name="monitor" size="xs" />
           {ST.loginBrowser}
@@ -77,7 +81,10 @@ export function AccountsTab() {
       </div>
       <Feedback msg={attempt ? null : act.msg} />
       {attempt && (
-        <Card className="flex flex-col gap-2 p-4" aria-live="polite">
+        <Card
+          className="settings-login-state flex flex-col gap-3 border-border/70 bg-muted/30 p-5"
+          aria-live="polite"
+        >
           {attempt.status === "pending" && attempt.method === "browser" && attempt.authorizeUrl && (
             <p className="flex items-center gap-2 text-sm">
               <Spinner size="xs" />
@@ -129,14 +136,17 @@ export function AccountsTab() {
           )}
         </Card>
       )}
-      <div className="flex flex-col gap-2">
+      <LoadStatus data={accounts.data} error={accounts.error} />
+      <div className="settings-list flex flex-col gap-3">
         {accounts.data?.items.length === 0 && <Empty />}
         {accounts.data?.items.map((a) => (
           <ItemCard key={a.id}>
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex min-w-0 items-center gap-2">
-                <Icon name="user" size="sm" className="text-muted-foreground" />
-                <strong className="truncate text-sm font-semibold">{a.label}</strong>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex min-w-0 flex-wrap items-center gap-2.5">
+                <span className="flex size-9 items-center justify-center rounded-full bg-muted text-foreground-secondary">
+                  <ProviderLogo provider={a.provider} size="lg" />
+                </span>
+                <strong className="truncate text-[15px] font-semibold">{a.label}</strong>
                 {a.plan && (
                   <Badge tone="neutral">
                     {ST.plan} {a.plan}

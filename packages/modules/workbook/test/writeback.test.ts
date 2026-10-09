@@ -97,6 +97,35 @@ describe("xlsx 写回保真", () => {
     );
   });
 
+  test("仅有引擎修订时写回公式缓存，不把结果误判成作者结构改动（P0-04）", () => {
+    const bytes = book([
+      `<sheetData><row r="1"><c r="A1"><f>1+1</f><v>2</v></c></row></sheetData>`,
+    ]);
+    const imported = importXlsx(bytes, "t.xlsx");
+    const after = structuredClone(imported.snapshot);
+    const cell = cells(after, "s0")[0]?.[0];
+    if (!cell) throw new Error("fixture cell missing");
+    cell.f = "=1+1";
+    cell.v = 3;
+    const out = exportXlsx(
+      imported,
+      after,
+      imported.snapshot,
+      pendingChanges([
+        {
+          writeSet: {
+            ranges: [{ sheetId: "s0", r0: 0, c0: 0, r1: 0, c1: 0 }],
+            structural: [],
+          },
+          sourceKind: "engine",
+        },
+      ]),
+    );
+    expect(dec(unzipSync(out)["xl/worksheets/sheet1.xml"])).toMatch(
+      /<c r="A1"[^>]*><f>1\+1<\/f><v>3<\/v><\/c>/,
+    );
+  });
+
   test("追加行保留原行开标签与分组；行内单元格按列排序（P0-05/06）", () => {
     const bytes = book([
       `<dimension ref="A1:C2"/><sheetData><row r="1" spans="1:3" s="1" customFormat="1"><c r="A1"><v>1</v></c><c r="B1" s="1"/><c r="C1"><v>3</v></c></row><row r="2" outlineLevel="1" hidden="1"><c r="A2"><v>2</v></c></row></sheetData>`,
@@ -306,7 +335,12 @@ describe("xlsx 写回保真（真实 DocumentService + SQLite + 公式引擎）"
       mutations: [
         {
           id: "sheet.mutation.set-range-values",
-          params: { unitId, subUnitId: "s0", cellValue: { 0: { 3: { f: "=A1+2" } } } },
+          params: {
+            unitId,
+            subUnitId: "s0",
+            trigger: "sheet.command.set-range-values",
+            cellValue: { 0: { 3: { f: "=A1+2" } } },
+          },
         },
       ],
     });

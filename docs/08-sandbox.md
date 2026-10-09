@@ -78,8 +78,8 @@ SDK 的能力与工具一一对应，参数与返回结构**直接复用工具�
 ```ts
 // 示意
 const ov = await wb.read({ path: "sales.xlsx", mode: "overview" });
-const rows = await wb.analyze({ mode: "sql", sources: [{ name: "s", path: "sales.xlsx", sheet: "明细" }],
-  sql: "select 区域, sum(金额) as 合计 from s group by 1" });
+const rows = await wb.analyze({ path: "sales.xlsx", mode: "sql", sheet: "明细",
+  sql: "select 区域, sum(金额) as 合计 from {{sheet}} group by 1" });
 await wb.edit({ path: "out.xlsx", create: true, ops: [
   { op: "cells.set", range: "汇总!A1", values: [["区域", "合计"], ...rows.data.rows] },
 ] });
@@ -88,6 +88,7 @@ console.log(`处理了 ${list.data.entries.length} 个文件`);
 ```
 
 - 可用：`wb.read`、`wb.analyze`、`wb.edit`、`wb.export`、`files.find`、`files.readText`、`files.writeText`、`files.manage`（复制/移动/建目录；删除不可用）、`console.log`。
+- `wb.edit` 与 `workbook_edit` 共用创建/操作参数校验：`{path:"空工作簿.xlsx",create:true,ops:[]}` 暂存一个默认含空白 `Sheet1` 的新工作簿；预览、批准后的创建修订和落盘走同一文档路径（[06 §4.3](06-tools.md#43-workbook_editwrite)、[ADR 0014](decisions/0014-empty-workbook-tool-chain.md)）。已有工作簿不能传空 `ops`。
 - 不可用：`ask_user`、`agent_*`、`memory`、MCP、`run_script` 自身。
 - `reader` 角色运行脚本时，写入类 SDK 调用直接报错。
 - 预置少量纯 JS 工具库（【开放】如日期处理），在工具说明中列出。

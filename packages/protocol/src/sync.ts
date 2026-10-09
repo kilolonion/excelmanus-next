@@ -1,4 +1,4 @@
-// 同步通道消息（11 §3.3）。doc:* 与 presence 先只定义类型，服务端 M1 不实现。
+// 同步通道消息（11 §3.3）。presence 是瞬时状态，不写入会话日志。
 
 import { z } from "zod";
 import { LogRecord } from "./records.ts";
@@ -147,10 +147,21 @@ export const DocReloadMsg = z.strictObject({
   rev: z.int().nonnegative(),
   reason: z.string(),
 });
+export const PresenceParticipant = z.strictObject({
+  participantId: z.string(),
+  kind: z.enum(["client", "agent"]),
+  name: z.string(),
+  color: z.string(),
+  sheet: z.string(),
+  selection: z.string(),
+  viewport: z.unknown().optional(),
+  updatedAt: z.iso.datetime(),
+});
+export type PresenceParticipant = z.infer<typeof PresenceParticipant>;
 export const PresenceStateMsg = z.strictObject({
   type: z.literal("presence"),
   docId: z.string(),
-  participants: z.array(z.unknown()),
+  participants: z.array(PresenceParticipant),
 });
 export const AppEventMsg = z.strictObject({
   type: z.literal("app.event"),

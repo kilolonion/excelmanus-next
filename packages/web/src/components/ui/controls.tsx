@@ -20,7 +20,7 @@ export const Checkbox = forwardRef<HTMLButtonElement, ComponentPropsWithoutRef<t
         data-slot="checkbox"
         {...f}
         className={cn(
-          "peer inline-flex size-4 shrink-0 items-center justify-center rounded-xs border border-input bg-card transition-colors disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground",
+          "peer inline-flex size-4 shrink-0 items-center justify-center rounded-xs border border-input bg-card transition-[color,background-color,border-color] duration-150 hover:border-foreground-secondary disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground",
           focus,
           className,
         )}
@@ -45,7 +45,7 @@ export const Switch = forwardRef<
       data-slot="switch"
       {...f}
       className={cn(
-        "peer inline-flex shrink-0 items-center rounded-full border border-transparent bg-input transition-colors disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:bg-primary",
+        "peer inline-flex shrink-0 items-center rounded-full border border-transparent bg-input transition-colors duration-200 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:bg-primary",
         size === "sm" ? "h-4 w-7" : "h-5 w-9",
         focus,
         className,
@@ -54,7 +54,7 @@ export const Switch = forwardRef<
     >
       <SW.Thumb
         className={cn(
-          "pointer-events-none block rounded-full bg-card shadow-xs transition-transform data-[state=unchecked]:translate-x-0.5",
+          "pointer-events-none block rounded-full bg-card shadow-xs transition-transform duration-200 ease-out data-[state=unchecked]:translate-x-0.5 motion-reduce:transition-none",
           size === "sm"
             ? "size-3 data-[state=checked]:translate-x-3.5"
             : "size-4 data-[state=checked]:translate-x-[18px]",
@@ -77,8 +77,9 @@ export const RadioGroupItem = forwardRef<
   return (
     <RG.Item
       ref={ref}
+      data-slot="radio-item"
       className={cn(
-        "inline-flex size-4 shrink-0 items-center justify-center rounded-full border border-input bg-card disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary",
+        "inline-flex size-4 shrink-0 items-center justify-center rounded-full border border-input bg-card transition-colors duration-150 hover:border-foreground-secondary disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary",
         focus,
         className,
       )}
@@ -99,14 +100,14 @@ export const RadioCard = forwardRef<
       ref={ref}
       data-slot="radio-card"
       className={cn(
-        "group relative flex w-full min-w-0 items-start gap-3 rounded-lg border border-border bg-card p-3 text-left transition-colors hover:bg-accent/60 disabled:opacity-50 data-[state=checked]:border-primary data-[state=checked]:ring-1 data-[state=checked]:ring-primary",
+        "group relative flex w-full min-w-0 items-start gap-3 rounded-lg border border-border-strong bg-card p-4 text-left transition-[background-color,border-color] duration-150 hover:border-input hover:bg-muted/60 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary/70 data-[state=checked]:bg-muted/60",
         focus,
         className,
       )}
       {...props}
     >
       {icon && (
-        <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-foreground-secondary group-data-[state=checked]:bg-primary group-data-[state=checked]:text-primary-foreground">
+        <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center text-muted-foreground group-data-[state=checked]:text-foreground">
           <Icon name={icon} size="md" />
         </span>
       )}
@@ -117,6 +118,29 @@ export const RadioCard = forwardRef<
     </RG.Item>
   );
 });
+
+export const ChoiceItem = forwardRef<HTMLButtonElement, ComponentPropsWithoutRef<typeof RG.Item>>(
+  function ChoiceItem({ className, children, ...props }, ref) {
+    return (
+      <RG.Item
+        ref={ref}
+        className={cn(
+          "flex w-full items-center gap-2 text-left text-base font-normal outline-none hover:bg-muted focus-visible:bg-muted disabled:opacity-45",
+          focus,
+          className,
+        )}
+        {...props}
+      >
+        {children}
+        <span className="ml-auto shrink-0">
+          <RG.Indicator>
+            <Icon name="check" size="lg" />
+          </RG.Indicator>
+        </span>
+      </RG.Item>
+    );
+  },
+);
 
 export function SegmentedControl<V extends string>({
   value,
@@ -139,16 +163,18 @@ export function SegmentedControl<V extends string>({
       value={value}
       onValueChange={(v) => v && onChange(v as V)}
       aria-label={ariaLabel}
-      className={cn("inline-flex items-center gap-0.5 rounded-lg bg-muted p-0.5", className)}
+      data-slot="segmented-control"
+      className={cn("inline-flex items-center gap-0.5 rounded-md bg-muted p-0.5", className)}
     >
       {options.map((o) => (
         <TG.Item
           key={o.value}
           value={o.value}
+          data-slot="segmented-item"
           aria-label={o.ariaLabel}
           className={cn(
-            "inline-flex items-center justify-center gap-1.5 rounded-md font-medium whitespace-nowrap text-muted-foreground transition-colors hover:text-foreground data-[state=on]:bg-card data-[state=on]:text-foreground data-[state=on]:shadow-xs",
-            size === "xs" ? "h-5 px-2 text-2xs" : "h-7 px-3 text-xs",
+            "inline-flex items-center justify-center gap-1.5 rounded-sm font-medium whitespace-nowrap text-muted-foreground transition-colors duration-150 hover:text-foreground data-[state=on]:bg-card data-[state=on]:text-foreground data-[state=on]:shadow-xs",
+            size === "xs" ? "h-6 px-2 text-2xs" : "h-8 px-3 text-sm",
             focus,
           )}
         >
@@ -163,6 +189,8 @@ export function SegmentedControl<V extends string>({
 export function Slider({
   value,
   onChange,
+  onCommit,
+  disabled,
   min,
   max,
   step = 1,
@@ -172,6 +200,8 @@ export function Slider({
 }: {
   value: number;
   onChange: (v: number) => void;
+  onCommit?: (v: number) => void;
+  disabled?: boolean;
   min: number;
   max: number;
   step?: number;
@@ -181,6 +211,8 @@ export function Slider({
 }) {
   return (
     <SL.Root
+      disabled={disabled}
+      onValueCommit={(v) => v[0] !== undefined && onCommit?.(v[0])}
       value={[value]}
       onValueChange={(v) => v[0] !== undefined && onChange(v[0])}
       min={min}
@@ -188,13 +220,16 @@ export function Slider({
       step={step}
       className={cn("relative flex h-5 w-full touch-none items-center select-none", className)}
     >
-      <SL.Track className="relative h-1.5 grow overflow-hidden rounded-full bg-muted">
+      <SL.Track className="relative h-1 grow overflow-hidden rounded-full bg-accent">
         <SL.Range className="absolute h-full bg-primary" />
       </SL.Track>
       <SL.Thumb
         aria-label={ariaLabel}
         aria-valuetext={valueText}
-        className={cn("block size-4 rounded-full border-2 border-primary bg-card shadow-xs", focus)}
+        className={cn(
+          "block size-4 rounded-full border border-border-strong bg-card shadow-xs transition-colors hover:border-primary",
+          focus,
+        )}
       />
     </SL.Root>
   );

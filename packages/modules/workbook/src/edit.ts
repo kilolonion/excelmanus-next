@@ -1,4 +1,3 @@
-import { rangeRefToA1 } from "@excelmanus/core";
 import { FileOperationError, PathSafetyError } from "@excelmanus/kernel";
 // workbook_edit（06 §4.3）：以类型化 ChangeOp 批量修改工作簿，整批原子提交。
 // baseRev = 显式参数 ?? 按读集逐 op 推定 ?? 当前 head；读集 = 运行时记录的所读区域（各带读取修订）。
@@ -6,50 +5,21 @@ import { FileOperationError, PathSafetyError } from "@excelmanus/kernel";
 
 import type { ToolContext, ToolDefinition } from "@excelmanus/kernel";
 import type { ToolResult } from "@excelmanus/protocol";
-import type { IWorksheetData } from "@univerjs/core";
 import { z } from "zod";
-import { ChangeOp } from "./ops.ts";
-import { DocNotFoundError, type DocumentService, type SubmitOk } from "./service.ts";
-
-const editInput = z.object({
-  docId: z.string().optional(),
-  path: z.string().optional(),
-  baseRev: z.number().int().nonnegative().optional(),
-  dryRun: z.boolean().optional(),
-  create: z.boolean().optional(),
-  ops: z.array(ChangeOp).min(1),
-});
+import { WorkbookEditInput as editInput } from "./edit-input.ts";
+import { DocNotFoundError, type DocumentService } from "./service.ts";
 
 const err = (code: string, message: string): ToolResult => ({
   status: "error",
   error: { code, message, retryable: false },
 });
 
-function summarize(result: SubmitOk, sheetNames: Map<string, string>): Record<string, unknown> {
-  const cellsBySheet: Record<string, number> = {};
-  for (const r of result.writeSet.ranges) {
-    if (r.sheetId === "*") continue;
-    const area = (r.r1 - r.r0 + 1) * (r.c1 - r.c0 + 1);
-    const name = sheetNames.get(r.sheetId) ?? r.sheetId;
-    cellsBySheet[name] = (cellsBySheet[name] ?? 0) + area;
-  }
-  return {
-    cellsBySheet,
-    ranges: result.writeSet.ranges
-      .filter((r) => r.sheetId !== "*")
-      .map((r) => rangeRefToA1(r, sheetNames.get(r.sheetId) ?? r.sheetId)),
-    structural: result.writeSet.structural.map(
-      (s) => `${s.kind}@${sheetNames.get(s.sheetId) ?? s.sheetId}:${s.index}+${s.count}`,
-    ),
-  };
-}
-
 export function workbookEditTool(svc: DocumentService): ToolDefinition {
   return {
     name: "workbook_edit",
     title: "修改工作簿",
     description:
-      "修改工作簿或用 create=true 和新 .xlsx path 创建工作簿（默认表 Sheet1）：ops 为类型化操作数组（sheet.add/rename/delete、cells.set（二维数组，= 开头为公式）、cells.clear、style.set、merge、unmerge、rows/cols.insert/delete、freeze、recalculate（等待公式重算完成）），整批原子提交。结果 calc=computed 时 formulaValues 为写入公式的计算值；calc=pending 表示大表重算稍后以新修订到达，需要结果时提交 [{op:'recalculate'}]。baseRev 不传时自动用读集判定；冲突返回 VERSION_CONFLICT 与被改单元格，重读后再写。dryRun=true 只预览不落库。",
+      '修改工作簿或用 create=true 和新的 .xlsx path 创建工作簿，整批原子提交。新建已含一个空白 Sheet1，ops=[] 即可创建空工作簿，无需 sheet.add、清空单元格或 recalculate；自定义默认表名用 sheet.rename，sheet.add 只新增其他工作表且名称必须唯一。示例：{"create":true,"path":"空工作簿.xlsx","ops":[]}。修改已有文件时 ops 至少一个。ops 支持 sheet.add/rename/delete、cells.set（二维数组，= 开头为公式）、cells.clear、style.set、merge、unmerge、rows/cols.insert/delete、freeze、recalculate（等待公式重算完成）。changes 区分单元格与结构变化，重叠区域只计一次；新建回执含 created 与实际 sheets。calc=computed 时 formulaValues 为写入公式的计算值；calc=pending 表示稍后重算，需要计算值时用 recalculate。baseRev 不传时自动用读集判定；VERSION_CONFLICT → 重读被改单元格后再写。dryRun=true 只预览不落库。',
     input: editInput,
     output: z.record(z.string(), z.unknown()),
     effect: "write",
@@ -100,9 +70,16 @@ export function workbookEditTool(svc: DocumentService): ToolDefinition {
     },
     async execute(args, ctx: ToolContext): Promise<ToolResult> {
       const a = editInput.parse(args);
-      if (a.create && (!a.path || a.docId))
-        return err("INVALID_ARGUMENT", "create=true 需要新的 path，不能提供 docId");
-      if (a.create && a.dryRun) return svc.previewCreate(a.ops);
+      if (a.create && a.dryRun) {
+        try {
+          svc.validateCreatePath(ctx.workspaceRoot, a.path as string);
+          return svc.previewCreate(a.ops);
+        } catch (e) {
+          if (e instanceof FileOperationError || e instanceof PathSafetyError)
+            return err(e.code, e.message);
+          return err("INTERNAL", "新建预览失败");
+        }
+      }
       try {
         const created = a.create
           ? await svc.create(
@@ -133,6 +110,7 @@ export function workbookEditTool(svc: DocumentService): ToolDefinition {
           toolCallId: ctx.toolCallId,
           ops: a.ops,
           dryRun: a.dryRun,
+          ...(created ? { created: true } : {}),
         });
         if (!result.ok) {
           if (created) await svc.discardCreated(doc.id, ctx.workspaceRoot, ctx.sessionId);
@@ -148,18 +126,15 @@ export function workbookEditTool(svc: DocumentService): ToolDefinition {
               },
             };
           }
-          return err(result.code, result.message);
+          const failure = err(result.code, result.message);
+          if (a.create && result.message === "工作表名称无效或重复" && failure.error)
+            failure.error.hint =
+              "新建工作簿已含 Sheet1；空工作簿使用 ops=[]，改默认表名使用 sheet.rename";
+          return failure;
         }
         if (created) await svc.checkpoint(doc.id, ctx.workspaceRoot);
         // 提交成功后把写集并入读集（代理读过自己写的）
         if (!result.dryRun) ctx.reads.record(doc.id, result.writeSet.ranges, result.rev);
-        const { snapshot } = await svc.snapshot(doc.id, ctx.workspaceRoot);
-        const sheetNames = new Map(
-          Object.entries(snapshot.sheets ?? {}).map(([id, s]) => [
-            id,
-            (s as IWorksheetData).name ?? id,
-          ]),
-        );
         return {
           status: "ok",
           docRevs: { [doc.id]: result.rev },
@@ -168,7 +143,8 @@ export function workbookEditTool(svc: DocumentService): ToolDefinition {
             path: doc.path,
             docRevs: { [doc.id]: result.rev },
             dryRun: result.dryRun,
-            changes: summarize(result, sheetNames),
+            changes: result.changes,
+            ...(created ? { created: true, sheets: result.sheets } : {}),
             formulas: result.formulas,
             // ADR 0002：公式计算状态与计算值；pending 时可用 recalculate op 等待
             calc: result.calc,

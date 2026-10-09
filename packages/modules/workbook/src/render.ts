@@ -247,6 +247,20 @@ export function workbookRenderTool(
       } catch (e) {
         return fail("UNSUPPORTED_FEATURE", e instanceof Error ? e.message : String(e));
       }
+      const observed = parseRange(out.range);
+      ctx.reads.record(
+        docId,
+        [
+          {
+            sheetId: sheet.id ?? snapshot.sheetOrder[0] ?? "*",
+            r0: observed.startRow - 1,
+            c0: observed.startCol - 1,
+            r1: observed.endRow - 1,
+            c1: observed.endCol - 1,
+          },
+        ],
+        meta.rev,
+      );
       return {
         status: "ok",
         data: {

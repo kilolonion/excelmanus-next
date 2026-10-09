@@ -9,6 +9,7 @@ import {
   useApp,
 } from "../store.ts";
 import { agentRoleLabel, agentStatusLabel, S, toolTitle } from "../strings.ts";
+import { ProviderLogo } from "./Icon.tsx";
 import { Button } from "./ui/button.tsx";
 import { cn } from "./ui/cn.ts";
 import { Alert, Badge, SectionLabel, StatusDot, statusTone } from "./ui/display.tsx";
@@ -90,6 +91,7 @@ function RowActions({ agent }: { agent: RosterEntry }) {
 
 export function TeamPanel() {
   const roster = useApp((s) => s.session.roster);
+  const profiles = useApp((s) => s.profiles);
   const messages = useApp((s) => s.session.messages);
   const agentId = useApp((s) => s.agentId);
   const rows = useMemo(() => buildTree(roster), [roster]);
@@ -130,6 +132,7 @@ export function TeamPanel() {
       )}
       {rows.map(({ agent, depth }) => {
         const active = agent.id === agentId;
+        const profile = profiles.find((p) => p.id === agent.modelProfileId);
         return (
           <div
             className={cn(
@@ -144,6 +147,7 @@ export function TeamPanel() {
               pulse={agent.status === "running"}
               label={agentStatusLabel(agent.status)}
             />
+            {profile && <ProviderLogo provider={profile.provider} size="sm" />}
             <div className="flex min-w-0 flex-1 flex-col">
               <Tip content={agent.id} side="right">
                 <button

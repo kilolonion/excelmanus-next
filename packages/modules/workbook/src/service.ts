@@ -8,6 +8,7 @@ import { extname } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import {
   indexToCol,
+  isDerivedWorkbookMutation,
   MAX_C,
   MAX_R,
   newId,
@@ -19,6 +20,7 @@ import {
   rangeRefToA1,
   type StructuralOp,
   structuralTouchesInterior,
+  subtractRanges,
   transformRange,
   transformRangeAll,
 } from "@excelmanus/core";
@@ -59,6 +61,13 @@ import {
   transformChangeOp,
   transformMutation,
 } from "./ops.ts";
+import {
+  boundedWriteRanges,
+  sheetNamesOf,
+  summarizeWriteSet,
+  type WorkbookChanges,
+  workbookSheets,
+} from "./summary.ts";
 import { fixupMutationForTransport, reconcileFilterResource } from "./transport.ts";
 import { deriveWriteSetAll } from "./writeset.ts";
 import { type ImportedWorkbook, importXlsx } from "./xlsx.ts";
@@ -192,6 +201,8 @@ export interface SubmitBatch {
   /** user 来源：工作台 mutation 复现（经传输修补）。 */
   mutations?: DocMutation[];
   dryRun?: boolean;
+  /** 新建文件的首次提交：把默认工作表也记入结构变更与可恢复日志。 */
+  created?: boolean;
   /** 用户提交的传输修补需要发送方快照（可选）。 */
   senderSnapshot?: unknown;
 }
@@ -214,6 +225,8 @@ export interface SubmitOk {
   rev: number;
   dryRun: boolean;
   writeSet: DocWriteSet;
+  changes: WorkbookChanges;
+  sheets?: ReturnType<typeof workbookSheets>;
   mutations: DocMutation[];
   formulas: string[];
   /** ADR 0002：computed = 本次写入引起的重算已完成并并入本修订；pending = 稍后以 engine 修订到达。 */
@@ -743,7 +756,7 @@ export class DocumentService {
     // 之前异步到达的引擎结果先成为独立修订，本次冲突检查能看到它
     await this.commitEngine(entry);
     const recalc = batch.ops?.some((o) => o.op === "recalculate") === true;
-    if (recalc && batch.ops?.every((o) => o.op === "recalculate")) {
+    if (!batch.created && recalc && batch.ops?.every((o) => o.op === "recalculate")) {
       const done = await entry.live.boot.waitCalc(RECALC_MS);
       await this.commitEngine(entry);
       if (done) delete entry.meta.calcPending;
@@ -753,6 +766,7 @@ export class DocumentService {
         rev: entry.meta.rev,
         dryRun: batch.dryRun === true,
         writeSet: { ranges: [], structural: [] },
+        changes: summarizeWriteSet({ ranges: [], structural: [] }, new Map()),
         mutations: [],
         formulas: [],
         calc: done ? "computed" : "pending",
@@ -861,6 +875,12 @@ export class DocumentService {
         mutations = [];
       } else {
         const raw = normalizeMutations(mutIn ?? []);
+        if (!opts.revert && batch.source.kind === "user" && raw.some(isDerivedWorkbookMutation))
+          return {
+            ok: false,
+            code: "UNSUPPORTED_FEATURE",
+            message: "工作台不能回传公式派生状态或计算结果；请提交由用户命令触发的修改",
+          };
         mutations = raw.map((m) =>
           fixupMutationForTransport(
             m,
@@ -880,14 +900,23 @@ export class DocumentService {
       compiled !== undefined
         ? { ranges: [...compiled.ranges], structural: [...compiled.structural] }
         : deriveWriteSetAll(mutations);
+    if (batch.created) {
+      const snapshot = live.save();
+      writeSet.structural.unshift(
+        ...snapshot.sheetOrder.map(
+          (sheetId, index): StructuralOp => ({ sheetId, kind: "insertSheet", index, count: 0 }),
+        ),
+      );
+    }
     // ---- 2. 冲突检查（统一在 head 坐标系；写集已在编译前平移；同源修订不算冲突） ----
     const conflict = this.checkConflicts(entry, batch, batch.readSet ?? [], writeSet, minBase);
     if (conflict) return conflict;
 
     // ---- 3. 20 万格上限（无界区域不计入） ----
-    const boundedCells = writeSet.ranges
-      .filter((r) => r.r1 < MAX_R && r.c1 < MAX_C)
-      .reduce((s, r) => s + (r.r1 - r.r0 + 1) * (r.c1 - r.c0 + 1), 0);
+    const boundedCells = boundedWriteRanges(writeSet.ranges).reduce(
+      (s, r) => s + (r.r1 - r.r0 + 1) * (r.c1 - r.c0 + 1),
+      0,
+    );
     if (boundedCells > MAX_SUBMIT_CELLS) {
       return {
         ok: false,
@@ -924,6 +953,7 @@ export class DocumentService {
         rev: head,
         dryRun: true,
         writeSet,
+        changes: summarizeWriteSet(writeSet, compiled?.sheetNames ?? sheetNamesOf(live.save())),
         mutations: [],
         formulas: [],
         calc: "computed",
@@ -1095,6 +1125,8 @@ export class DocumentService {
         rev: head,
         dryRun: true,
         writeSet: finalWriteSet,
+        changes: summarizeWriteSet(finalWriteSet, sheetNamesOf(preSnap, postSnap)),
+        ...(batch.created ? { sheets: workbookSheets(postSnap) } : {}),
         mutations: emitted,
         formulas,
         calc,
@@ -1151,6 +1183,8 @@ export class DocumentService {
       rev,
       dryRun: false,
       writeSet: finalWriteSet,
+      changes: summarizeWriteSet(finalWriteSet, sheetNamesOf(preSnap, postSnap)),
+      ...(batch.created ? { sheets: workbookSheets(postSnap) } : {}),
       mutations: emitted,
       formulas,
       calc,
@@ -1267,6 +1301,7 @@ export class DocumentService {
           if (t !== "deleted") {
             if (
               !shadow &&
+              !e.coarse &&
               isOther(h) &&
               (s.kind === "deleteRows" || s.kind === "deleteCols") &&
               structuralTouchesInterior(cur, s)
@@ -1281,10 +1316,14 @@ export class DocumentService {
       }
       return { rev: e.rev, coarse: e.coarse, head: cur, shadow, removedBy, trimmedBy };
     });
-    const known = (ix: RangeRef, rev: number) =>
-      projected.some(
-        (p) => p.rev >= rev && !p.coarse && !p.shadow && !p.removedBy && rangeContains(p.head, ix),
+    const unknown = (ix: RangeRef, rev: number) =>
+      subtractRanges(
+        ix,
+        projected
+          .filter((p) => p.rev >= rev && !p.coarse && !p.shadow && !p.removedBy)
+          .map((p) => p.head),
       );
+    const known = (ix: RangeRef, rev: number) => unknown(ix, rev).length === 0;
     const fail = (h: DocOpRecord, message: string, cells: RangeRef[]): SubmitFail => ({
       ok: false,
       code: "VERSION_CONFLICT",
@@ -1332,8 +1371,9 @@ export class DocumentService {
       for (const w of written) {
         for (const r of incoming) {
           const ix = rangeIntersection(w, r.range);
-          if (ix && !known(ix, h.rev)) {
-            hits.push(ix);
+          const missing = ix ? unknown(ix, h.rev) : [];
+          if (missing.length > 0) {
+            hits.push(...missing);
             deleted ||= r.shadow;
           }
         }
@@ -1433,9 +1473,18 @@ export class DocumentService {
   private remapPreservation(imported: ImportedWorkbook, snapshot: IWorkbookData): void {
     if (!imported.preservation) return;
     const refs = imported.preservation.sheetParts;
+    const sourceByName = new Map<string, string>();
+    for (const id of imported.snapshot.sheetOrder) {
+      const name = imported.snapshot.sheets[id]?.name;
+      if (name !== undefined && !sourceByName.has(name)) sourceByName.set(name, id);
+    }
     imported.preservation.sheetParts = Object.fromEntries(
       snapshot.sheetOrder
-        .map((id, i) => [id, refs[imported.snapshot.sheetOrder[i] ?? ""]])
+        .map((id) => {
+          const name = snapshot.sheets[id]?.name;
+          const sourceId = name === undefined ? undefined : sourceByName.get(name);
+          return [id, refs[sourceId ?? ""]] as const;
+        })
         .filter((x) => x[1] !== undefined),
     ) as typeof refs;
   }
@@ -1830,11 +1879,22 @@ export class DocumentService {
     agentId: string,
     sheetName = "Sheet1",
   ): Promise<OpenedDoc> {
+    this.validateCreatePath(root, path);
+    const snapshot = this.newWorkbookSnapshot(path, sheetName);
+    atomicWrite(root, path, minimalXlsx(snapshot), null);
+    this.backups.bind({ workspaceId, workspaceRoot: root, sessionId, agentId }).markCreated(path);
+    return this.open(workspaceId, root, path);
+  }
+
+  validateCreatePath(root: string, path: string): void {
     const { abs } = resolveWorkspacePath(root, path);
     if (existsSync(abs)) throw new FileOperationError("VERSION_CONFLICT", "新工作簿路径已存在");
     if (extname(path).toLowerCase() !== ".xlsx")
       throw new FileOperationError("INVALID_ARGUMENT", "新建工作簿必须使用 .xlsx");
-    const snapshot: IWorkbookData = {
+  }
+
+  private newWorkbookSnapshot(path: string, sheetName = "Sheet1"): IWorkbookData {
+    return {
       id: newId("wbk"),
       name: path,
       appVersion: ENGINE_VERSION,
@@ -1843,25 +1903,26 @@ export class DocumentService {
       sheetOrder: ["s0"],
       sheets: { s0: { id: "s0", name: sheetName, rowCount: 1000, columnCount: 26, cellData: {} } },
     };
-    atomicWrite(root, path, minimalXlsx(snapshot), null);
-    this.backups.bind({ workspaceId, workspaceRoot: root, sessionId, agentId }).markCreated(path);
-    return this.open(workspaceId, root, path);
   }
 
   async previewCreate(ops: ChangeOp[]): Promise<ToolResult> {
     const boot = bootUniver();
     try {
-      const snapshot: IWorkbookData = {
-        id: "preview",
-        name: "preview.xlsx",
-        appVersion: ENGINE_VERSION,
-        locale: "zh-CN" as never,
-        styles: {},
-        sheetOrder: ["s0"],
-        sheets: { s0: { id: "s0", name: "Sheet1", rowCount: 1000, columnCount: 26, cellData: {} } },
-      };
+      const snapshot = importXlsx(
+        minimalXlsx(this.newWorkbookSnapshot("preview.xlsx")),
+        "preview.xlsx",
+      ).snapshot;
       const book = createBook(boot, snapshot);
       const compiled = compileOps({ unitId: book.unitId, snapshot: book.workbook.save() }, ops);
+      const boundedCells = boundedWriteRanges(compiled.ranges).reduce(
+        (sum, r) => sum + (r.r1 - r.r0 + 1) * (r.c1 - r.c0 + 1),
+        0,
+      );
+      if (boundedCells > MAX_SUBMIT_CELLS)
+        throw new FileOperationError(
+          "LIMIT_EXCEEDED",
+          `单次提交最多 ${MAX_SUBMIT_CELLS} 格，本次约 ${boundedCells} 格`,
+        );
       for (const cmd of compiled.commands)
         if (!(await boot.executeCommand(cmd.id, cmd.params)))
           throw new OpCompileError("预览操作未生效");
@@ -1872,6 +1933,18 @@ export class DocumentService {
         data: {
           dryRun: true,
           rev: 0,
+          created: true,
+          sheets: workbookSheets(after),
+          changes: summarizeWriteSet(
+            {
+              ranges: compiled.ranges,
+              structural: [
+                { sheetId: "s0", kind: "insertSheet", index: 0, count: 0 },
+                ...compiled.structural,
+              ],
+            },
+            compiled.sheetNames,
+          ),
           preview: readPreview({ ranges: compiled.ranges, structural: compiled.structural }, after),
         },
       };
@@ -1989,7 +2062,10 @@ function conflictRanges(ws: DocWriteSet): RangeRef[] {
 
 function mergeStructural(a: StructuralOp[], b: StructuralOp[]): StructuralOp[] {
   const out = [...a];
-  const key = (s: StructuralOp) => `${s.sheetId}|${s.kind}|${s.index}|${s.count}`;
+  const key = (s: StructuralOp) =>
+    s.kind === "insertSheet" || s.kind === "removeSheet" || s.kind === "renameSheet"
+      ? `${s.sheetId}|${s.kind}`
+      : `${s.sheetId}|${s.kind}|${s.index}|${s.count}`;
   const seen = new Set(out.map(key));
   for (const s of b) {
     // op 声明的 insertSheet 用真实 id 替换通配占位
@@ -2126,13 +2202,20 @@ function cellTotal(imported: ImportedWorkbook): number {
   return Object.values(imported.cellCounts ?? {}).reduce((s, n) => s + n, 0);
 }
 
-/** 外部文件快照按位置改用应用快照的工作表 id（重启后以外部包为底写回时的导出基线）。 */
+/** 外部文件快照按工作表名改用应用快照的 id，避免外部重排工作表后按位置错配。 */
 function rekeyLike(ext: IWorkbookData, app: IWorkbookData): IWorkbookData {
   const sheets: Record<string, IWorksheetData> = {};
   const sheetOrder: string[] = [];
-  ext.sheetOrder.forEach((id, i) => {
+  const extByName = new Map<string, IWorksheetData>();
+  for (const id of ext.sheetOrder) {
     const sheet = ext.sheets[id];
-    const nid = app.sheetOrder[i];
+    if (sheet?.name !== undefined && !extByName.has(sheet.name)) {
+      extByName.set(sheet.name, sheet as IWorksheetData);
+    }
+  }
+  app.sheetOrder.forEach((nid) => {
+    const appSheet = app.sheets[nid] as IWorksheetData | undefined;
+    const sheet = appSheet?.name === undefined ? undefined : extByName.get(appSheet.name);
     if (!sheet || nid === undefined) return;
     sheets[nid] = { ...sheet, id: nid } as IWorksheetData;
     sheetOrder.push(nid);

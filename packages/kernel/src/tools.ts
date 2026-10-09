@@ -135,7 +135,7 @@ export function createReadTable(seed?: () => Iterable<ReadRecord>): ReadTable {
 /**
  * 从代理上下文（含已被压缩替换的条目）中的读取类工具结果重建读集（10 §3.4）：
  * 结果带 docId 与该文档修订号，区域取 range 模式的 `range`、search 的命中 `ref`、
- * 写入结果的 `changes.ranges`（A1，表名待文档能力解析）。
+ * 写入结果的 `changes.ranges`、截图成功结果的实际 `range`（A1，表名待文档能力解析）。
  */
 export function persistedReads(db: DatabaseSync, sessionId: string, agentId: string): ReadRecord[] {
   const rows = db
@@ -143,7 +143,7 @@ export function persistedReads(db: DatabaseSync, sessionId: string, agentId: str
     .all(sessionId, agentId) as { item: string }[];
   const out: ReadRecord[] = [];
   for (const row of rows) {
-    let item: { kind?: unknown; output?: unknown };
+    let item: { kind?: unknown; toolName?: unknown; output?: unknown };
     try {
       item = JSON.parse(row.item) as typeof item;
     } catch {
@@ -169,7 +169,7 @@ export function persistedReads(db: DatabaseSync, sessionId: string, agentId: str
     const rev = output.docRevs?.[data.docId] ?? data.docRevs?.[data.docId];
     if (typeof rev !== "number" || !Number.isInteger(rev) || rev < 0) continue;
     const refs: unknown[] = [];
-    if (data.mode === "range") refs.push(data.range);
+    if (data.mode === "range" || item.toolName === "workbook_render") refs.push(data.range);
     if (data.mode === "search" && Array.isArray(data.matches))
       for (const m of data.matches) refs.push((m as { ref?: unknown } | null)?.ref);
     if (Array.isArray(data.changes?.ranges)) refs.push(...data.changes.ranges);

@@ -1,18 +1,32 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { desktop } from "./api.ts";
 import { ChatPanel } from "./components/ChatPanel.tsx";
-import { Icon } from "./components/Icon.tsx";
+import { BrandMark, Icon } from "./components/Icon.tsx";
 import { SessionList } from "./components/SessionList.tsx";
-import { SettingsModal } from "./components/SettingsModal.tsx";
+import { Button } from "./components/ui/button.tsx";
 import { ConfirmProvider } from "./components/ui/confirm.tsx";
-import { Alert, EmptyState } from "./components/ui/display.tsx";
+import { Alert } from "./components/ui/display.tsx";
 import { Tabs, TabsList, TabsTrigger, Toaster, toast } from "./components/ui/overlay.tsx";
 import { Spinner } from "./components/ui/spinner.tsx";
 import { TooltipProvider } from "./components/ui/tooltip.tsx";
-import { Workbench } from "./components/Workbench.tsx";
 import { installShortcuts } from "./shortcuts.ts";
-import { addComposerFiles, init, selectSession, setLayout, setNarrowTab, useApp } from "./store.ts";
+import {
+  addComposerFiles,
+  init,
+  resumeAuth,
+  selectSession,
+  setLayout,
+  setNarrowTab,
+  useApp,
+} from "./store.ts";
 import { S } from "./strings.ts";
+
+const Workbench = lazy(() =>
+  import("./components/Workbench.tsx").then((m) => ({ default: m.Workbench })),
+);
+const SettingsModal = lazy(() =>
+  import("./components/SettingsModal.tsx").then((m) => ({ default: m.SettingsModal })),
+);
 
 /** 02 §2.2：< 1280px 时表格与对话改为标签页切换。 */
 const NARROW_QUERY = "(max-width: 1279px)";
@@ -44,16 +58,20 @@ function Splitter({ container }: { container: React.RefObject<HTMLDivElement | n
     const up = () => {
       target.removeEventListener("pointermove", move);
       target.removeEventListener("pointerup", up);
+      target.removeEventListener("pointercancel", up);
+      target.removeEventListener("lostpointercapture", up);
       document.body.classList.remove("resizing");
     };
     document.body.classList.add("resizing");
     target.addEventListener("pointermove", move);
     target.addEventListener("pointerup", up);
+    target.addEventListener("pointercancel", up);
+    target.addEventListener("lostpointercapture", up);
   };
   return (
     // biome-ignore lint/a11y/useSemanticElements: 可拖动分隔条没有对应的原生元素
     <div
-      className="group relative w-[9px] cursor-col-resize outline-none before:absolute before:inset-y-0 before:left-1 before:w-px before:bg-border before:transition-all hover:before:left-[3px] hover:before:w-[3px] hover:before:bg-read/55 focus-visible:before:left-[3px] focus-visible:before:w-[3px] focus-visible:before:bg-ring [body.resizing_&]:before:left-[3px] [body.resizing_&]:before:w-[3px] [body.resizing_&]:before:bg-read/55"
+      className="group relative w-[9px] touch-none cursor-col-resize bg-muted/45 outline-none before:absolute before:inset-y-0 before:left-1 before:w-px before:bg-border/60 before:transition-all before:duration-150 hover:before:left-[3px] hover:before:w-[3px] hover:before:bg-read/55 focus-visible:before:left-[3px] focus-visible:before:w-[3px] focus-visible:before:bg-ring [body.resizing_&]:before:left-[3px] [body.resizing_&]:before:w-[3px] [body.resizing_&]:before:bg-read/55"
       role="separator"
       aria-orientation="vertical"
       aria-label={S.resizePanels}
@@ -96,6 +114,16 @@ function AppBody() {
   const narrow = useNarrow();
   const splitRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
+  const [settingsMounted, setSettingsMounted] = useState(false);
+
+  useEffect(() => {
+    if (settingsOpen) {
+      setSettingsMounted(true);
+      return;
+    }
+    const timer = window.setTimeout(() => setSettingsMounted(false), 200);
+    return () => window.clearTimeout(timer);
+  }, [settingsOpen]);
 
   useEffect(() => {
     void init();
@@ -110,17 +138,42 @@ function AppBody() {
     setNarrowTab(hasDoc ? "sheet" : "chat");
   }, [hasDoc]);
 
-  if (fatal === "no-token") {
+  if (fatal === "auth-failed" || fatal === "signed-out") {
+    const signedOut = fatal === "signed-out";
     return (
-      <main className="grid h-dvh place-items-center bg-background">
-        <EmptyState size="page" icon="shield" title={S.noToken} />
+      <main className="grid min-h-dvh place-items-center bg-background px-6">
+        <section className="w-full max-w-md rounded-2xl border border-border bg-card p-8 text-center shadow-card">
+          <div className="mx-auto mb-5 flex size-14 items-center justify-center">
+            <BrandMark className="size-10" decorative={false} />
+          </div>
+          <h1 className="text-xl font-semibold">{signedOut ? S.authSignedOut : S.authFailed}</h1>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
+            {signedOut ? S.authSignedOutHint : S.authFailedHint}
+          </p>
+          <Button
+            className="mt-6 w-full"
+            onClick={() => (signedOut ? resumeAuth() : window.location.reload())}
+          >
+            {signedOut ? S.resumeConnection : S.retryConnection}
+          </Button>
+        </section>
       </main>
     );
   }
   if (!ready) {
     return (
-      <main className="grid h-dvh place-items-center bg-background">
-        <EmptyState size="page" icon={<Spinner size="lg" />} title={S.connecting} />
+      <main className="grid min-h-dvh place-items-center bg-background px-6">
+        <section className="w-full max-w-md rounded-2xl border border-border bg-card p-8 text-center shadow-card">
+          <div className="mx-auto mb-5 flex size-14 items-center justify-center">
+            <BrandMark className="size-10" decorative={false} />
+          </div>
+          <h1 className="text-xl font-semibold">{S.authTitle}</h1>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">{S.authDescription}</p>
+          <div className="mt-6 flex items-center justify-center gap-2 text-xs text-muted-foreground">
+            <Spinner size="xs" />
+            {S.connecting}
+          </div>
+        </section>
       </main>
     );
   }
@@ -130,7 +183,7 @@ function AppBody() {
     e.preventDefault();
     setDragging(false);
     const files = [...e.dataTransfer.files];
-    // 02 §3.3：图片进附件；其他文件上传到工作区（已有同名文件直接引用）并以 @路径 引用
+    // 02 §3.3：图片进附件；其他文件上传到工作区并以 @路径 引用
     void addComposerFiles(files).catch((err: unknown) =>
       toast({ tone: "err", title: err instanceof Error ? err.message : S.uploadFailed }),
     );
@@ -147,7 +200,7 @@ function AppBody() {
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: 拖放上传是鼠标便利；键盘用侧栏「上传」按钮
     <div
-      className={`grid h-dvh overflow-hidden bg-background text-foreground ${collapsed ? "grid-cols-1" : "grid-cols-[248px_minmax(0,1fr)]"}`}
+      className={`app-shell grid h-dvh overflow-hidden bg-background text-foreground ${collapsed ? "grid-cols-1" : "grid-cols-[244px_minmax(0,1fr)] max-[1100px]:grid-cols-[224px_minmax(0,1fr)]"}`}
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes("Files")) {
           e.preventDefault();
@@ -161,13 +214,16 @@ function AppBody() {
     >
       {!collapsed && (
         <aside
-          className="flex min-h-0 min-w-0 flex-col border-r border-border bg-background"
+          className="app-sidebar flex min-h-0 min-w-0 flex-col bg-muted/65"
           aria-label={S.sessions}
         >
           <SessionList />
         </aside>
       )}
-      <main className="flex min-h-0 min-w-0 flex-col" aria-label={S.appName}>
+      <main
+        className="app-stage flex min-h-0 min-w-0 flex-col overflow-hidden border-l border-border/80 bg-card"
+        aria-label={S.appName}
+      >
         {!connected && (
           <Alert layout="bar" tone="muted" role="status" icon={false}>
             <span className="flex items-center gap-2">
@@ -179,7 +235,7 @@ function AppBody() {
           <Tabs
             value={narrowTab}
             onValueChange={(v) => setNarrowTab(v as "sheet" | "chat")}
-            className="flex h-11 shrink-0 items-center border-b border-border px-3"
+            className="flex h-12 shrink-0 items-center border-b border-border/70 bg-muted/30 px-4"
           >
             <TabsList aria-label={S.workbench}>
               {(["sheet", "chat"] as const).map((t) => (
@@ -198,12 +254,27 @@ function AppBody() {
         >
           {showTable && (
             <section className="flex min-h-0 min-w-0 flex-col bg-card" aria-label={S.workbench}>
-              <Workbench narrow={narrow} sidebarToggle={collapsed} />
+              <Suspense
+                fallback={
+                  <div
+                    className="grid min-h-0 flex-1 place-items-center text-muted-foreground"
+                    role="status"
+                    aria-label={S.workbenchLoading}
+                  >
+                    <span className="flex items-center gap-2 text-sm">
+                      <Spinner size="sm" />
+                      {S.workbenchLoading}
+                    </span>
+                  </div>
+                }
+              >
+                <Workbench narrow={narrow} sidebarToggle={collapsed} />
+              </Suspense>
             </section>
           )}
           {split && <Splitter container={splitRef} />}
           {showChat && (
-            <section className="flex min-h-0 min-w-0 flex-col bg-background" aria-label={S.tabChat}>
+            <section className="flex min-h-0 min-w-0 flex-col bg-card" aria-label={S.tabChat}>
               <ChatPanel sidebarToggle={collapsed && !showTable} />
             </section>
           )}
@@ -217,7 +288,11 @@ function AppBody() {
           </div>
         </div>
       )}
-      {settingsOpen && <SettingsModal />}
+      {(settingsOpen || settingsMounted) && (
+        <Suspense fallback={null}>
+          <SettingsModal />
+        </Suspense>
+      )}
     </div>
   );
 }

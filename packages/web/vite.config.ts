@@ -15,5 +15,24 @@ export default defineConfig({
       "/api": { target: backend, ws: true, changeOrigin: true },
     },
   },
-  build: { outDir: "dist" },
+  build: {
+    outDir: "dist",
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (/\/node_modules\/(?:react|react-dom|scheduler)\//.test(id)) {
+            return "shared-ui";
+          }
+          // 共享组件与状态独立于入口，懒加载页面无需反向导入首屏包。
+          if (
+            id.includes("/packages/web/src/") &&
+            !/\/(?:main|App|Workbench|SettingsModal)\.[jt]sx?$/.test(id)
+          ) {
+            return "shared-ui";
+          }
+          return undefined;
+        },
+      },
+    },
+  },
 });

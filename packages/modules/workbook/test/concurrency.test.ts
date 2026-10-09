@@ -3,6 +3,7 @@ import { cpSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDerivedWorkbookMutation } from "@excelmanus/core";
 import type { ToolContext, ToolDefinition } from "@excelmanus/kernel";
 import {
   BACKUPS_MIGRATION,
@@ -16,6 +17,8 @@ import type { ToolResult } from "@excelmanus/protocol";
 import type { ICellData } from "@univerjs/core";
 import { afterAll, describe, expect, test } from "vitest";
 import { workbookEditTool } from "../src/edit.ts";
+import { bootUniver, createBook } from "../src/engine.ts";
+import { workbookRenderTool } from "../src/render.ts";
 import {
   CHECKPOINT_MIGRATION,
   DOC_OPS_MIGRATION,
@@ -23,6 +26,7 @@ import {
   DocumentService,
 } from "../src/service.ts";
 import { workbookTools } from "../src/tools.ts";
+import { deriveWriteSet } from "../src/writeset.ts";
 
 const SAMPLE = fileURLToPath(new URL("../../../../samples/sales.xlsx", import.meta.url));
 const dirs: string[] = [];
@@ -100,6 +104,130 @@ function tool(svc: DocumentService, name: string): ToolDefinition {
 }
 
 describe("读集按区域记录读取修订（P0-02）", () => {
+  test("真实引擎事件区分用户公式/样式与派生结果；截图观察在重建读集中保留", async () => {
+    const { db, root, svc, docId } = await setup();
+    const { snapshot } = await svc.snapshot(docId, root);
+    const boot = bootUniver();
+    const seen: { id: string; params: unknown }[] = [];
+    boot.onCommandExecuted((info) => {
+      if (info.id.includes(".mutation.")) seen.push({ id: info.id, params: info.params });
+    });
+    try {
+      const book = createBook(boot, structuredClone(snapshot));
+      await boot.executeCommand("sheet.command.set-range-values", {
+        unitId: book.unitId,
+        subUnitId: "s0",
+        range: { startRow: 59, endRow: 59, startColumn: 0, endColumn: 1 },
+        value: [[{ v: 12345 }, { f: "=A60*2" }]],
+      });
+      await boot.executeCommand("sheet.command.set-style", {
+        unitId: book.unitId,
+        subUnitId: "s0",
+        range: { startRow: 59, endRow: 59, startColumn: 0, endColumn: 1 },
+        style: { type: "n", value: { pattern: "#,##0" } },
+      });
+      await boot.waitCalc(3000);
+      const authored = seen.filter((m) => !isDerivedWorkbookMutation(m));
+      expect(
+        authored.some(
+          (m) =>
+            m.id === "sheet.mutation.set-range-values" &&
+            (m.params as { trigger?: string }).trigger === "sheet.command.set-range-values",
+        ),
+      ).toBe(true);
+      expect(
+        authored.some(
+          (m) =>
+            m.id === "sheet.mutation.set-range-values" &&
+            (m.params as { trigger?: string }).trigger === "sheet.command.set-style",
+        ),
+      ).toBe(true);
+      expect(
+        seen.some(
+          (m) => m.id === "sheet.mutation.set-range-values" && isDerivedWorkbookMutation(m),
+        ),
+      ).toBe(true);
+      expect(authored.some((m) => m.id.startsWith("formula.mutation."))).toBe(false);
+      const renderer = workbookRenderTool(svc, async () => "rendered");
+      const ctx = ctxOf(db, root, "main");
+      const rendered = await renderer.execute({ docId, range: "销售!A1:F4" }, ctx);
+      expect(ctx.reads.get(docId)?.ranges).toEqual([
+        { sheetId: "s0", r0: 0, c0: 0, r1: 3, c1: 5, rev: 0 },
+      ]);
+      db.prepare(
+        "INSERT INTO agent_context (agent_id, session_id, idx, item, from_seq) VALUES ('main', 'ses1', 0, ?, 1)",
+      ).run(
+        JSON.stringify({
+          kind: "toolResult",
+          toolCallId: "render",
+          toolName: "workbook_render",
+          output: rendered,
+        }),
+      );
+      const restored = createReadTable(() => persistedReads(db, "ses1", "main"));
+      expect(restored.get(docId)?.ranges).toEqual([
+        { sheetId: "*", sheetName: "销售", r0: 0, c0: 0, r1: 3, c1: 5, rev: 0 },
+      ]);
+    } finally {
+      await boot.dispose();
+      await svc.close();
+      db.close();
+    }
+  });
+
+  test("稀疏写集不扩大到未改格；分块重读后可继续写，未读空洞仍冲突", async () => {
+    const { db, root, svc, docId } = await setup();
+    const read = tool(svc, "workbook_read");
+    const edit = tool(svc, "workbook_edit");
+    const ctx = ctxOf(db, root, "main");
+    await read.execute({ docId, mode: "range", range: "销售!A1:C4" }, ctx);
+    const mutation = {
+      id: "sheet.mutation.set-range-values",
+      params: {
+        unitId: (await svc.snapshot(docId, root)).snapshot.id,
+        subUnitId: "s0",
+        trigger: "sheet.command.set-range-values",
+        cellValue: { 0: { 0: { v: "a" }, 2: { v: "c" } }, 3: { 0: { v: "d" }, 1: { v: "e" } } },
+      },
+    };
+    expect(deriveWriteSet(mutation).ranges).toEqual([
+      { sheetId: "s0", r0: 0, c0: 0, r1: 0, c1: 0 },
+      { sheetId: "s0", r0: 0, c0: 2, r1: 0, c1: 2 },
+      { sheetId: "s0", r0: 3, c0: 0, r1: 3, c1: 1 },
+    ]);
+    expect(
+      await svc.submit(docId, root, { baseRev: 0, source: user, mutations: [mutation] }),
+    ).toMatchObject({ ok: true, rev: 1 });
+    await read.execute({ docId, mode: "range", range: "销售!A1" }, ctx);
+    await read.execute({ docId, mode: "range", range: "销售!A4" }, ctx);
+    expect(
+      (
+        await edit.execute(
+          { docId, baseRev: 1, ops: [{ op: "style.set", range: "销售!H17", bold: true }] },
+          ctx,
+        )
+      ).error?.code,
+    ).toBe("VERSION_CONFLICT");
+    await read.execute({ docId, mode: "range", range: "销售!C1" }, ctx);
+    await read.execute({ docId, mode: "range", range: "销售!B4" }, ctx);
+    expect(
+      await edit.execute({ docId, ops: [{ op: "style.set", range: "销售!H17", bold: true }] }, ctx),
+    ).toMatchObject({ status: "ok" });
+    // 单一连续写集由相邻两次重读的并集覆盖，也须放行。
+    await svc.submit(docId, root, {
+      baseRev: svc.headRev(docId),
+      source: user,
+      ops: [{ op: "cells.set", range: "销售!A2:C2", values: [[1, 2, 3]] }],
+    });
+    await read.execute({ docId, mode: "range", range: "销售!A2:B2" }, ctx);
+    await read.execute({ docId, mode: "range", range: "销售!C2" }, ctx);
+    expect(
+      await edit.execute({ docId, ops: [{ op: "style.set", range: "销售!H18", bold: true }] }, ctx),
+    ).toMatchObject({ status: "ok" });
+    await svc.close();
+    db.close();
+  });
+
   test("用户改了读过的格 → 冲突；重读该格后可写，旧读集不再造成永久冲突", async () => {
     const { db, root, svc, docId } = await setup();
     const read = tool(svc, "workbook_read");

@@ -5,7 +5,7 @@
 ## 修复与证据
 
 - **P0-12 凭据脱敏**：`packages/server/src/crypto.ts` 的 `maskSecret` 对长度 ≤8 的凭据全掩；`packages/server/src/app.ts` 的统一 REST `fail` 对 message、details 递归调用 `redactSecrets`；`packages/server/src/index.ts` 的结构化 `emit` 对字符串字段及最终 JSON 脱敏；账号错误写入/读出在 `accounts.ts` 脱敏。证据：源码静态检查；运行时测试未执行（依赖未安装）。
-- **MCP env 登记收窄**：`index.ts` 的 MCP cipher.open 仅以 `apiKey` 语义登记当前解密值，不再伪造 `extraHeaders` 整体登记。证据：源码静态检查。
+- **MCP env 登记收窄**：`index.ts` 的 MCP cipher.open 仅登记当前解密值及 Bearer 令牌子串，不再伪造 `extraHeaders` 整体登记。证据：源码静态检查。
 - **P1-40 契约入口**：新增鉴权保护的 `GET /api/docs`，返回 OpenAPI 3.1 版本、Bearer 认证与主要资源索引；`unsupported_media_type` 纳入 protocol REST 错误词表。附录 C 对 `/api/docs` 状态更新，新增 ADR 0012 记录决定、后果与未完成完整 schema 生成。证据：路由与契约源码静态检查。
 
 ## 验证
@@ -17,3 +17,7 @@
 
 - 未在 Windows/NTFS 或生产反向代理下验证路径、Host/Origin 与一次性 WS ticket；已有审计证据记录 macOS 本机真实边界通过。
 - `/api/docs` 当前为资源索引，完整 DTO schema 仍由 protocol Zod 契约维护，后续需接入生成器与开发态响应校验。
+
+## 集成复验补充
+
+- `pnpm typecheck`、`pnpm check:deps`、`pnpm check:licenses` 与 `pnpm test` 已在依赖安装并允许本机监听后通过；全套为 46 个文件、312 个测试。

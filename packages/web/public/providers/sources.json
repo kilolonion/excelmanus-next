@@ -1,0 +1,149 @@
+{
+  "importedAt": "2026-10-02",
+  "assets": [
+    {
+      "file": "alibabacloud.svg",
+      "source": "excelmanus/web/public/providers/alibabacloud.svg",
+      "sha256": "cb21fc53f968aa327c69a21965684e3d82f87a183683611d20743ff233e3930d",
+      "changes": "None"
+    },
+    {
+      "file": "anthropic.svg",
+      "source": "excelmanus/web/public/providers/anthropic.svg",
+      "sha256": "920920a6a7374137df5cb63d9263f1a85712eff1b4e4f7358acdce81919dbe2d",
+      "changes": "Add accessible SVG title when absent; paths unchanged"
+    },
+    {
+      "file": "baidu.svg",
+      "source": "excelmanus/web/public/providers/baidu.svg",
+      "sha256": "e2eeaca4c5273ecff775ee4b357091678a7587b2d606190f8e5b7dce4d93a781",
+      "changes": "None"
+    },
+    {
+      "file": "bytedance.svg",
+      "source": "excelmanus/web/public/providers/bytedance.svg",
+      "sha256": "09e1b96b8565257e80903215cc01d8ce201a4c570fe8e0094ca8af096a5bb2ad",
+      "changes": "None"
+    },
+    {
+      "file": "deepseek.svg",
+      "source": "excelmanus/web/public/providers/deepseek.svg",
+      "sha256": "7a55a0a7391d116eba7d32807d6838478f9209f6034612941e74fbb14934e2ef",
+      "changes": "None"
+    },
+    {
+      "file": "default.svg",
+      "source": "excelmanus/web/public/providers/default.svg",
+      "sha256": "2ec34c3bf8739cc540d01366abe1865f9b01817e313704207489b7d0e5557f46",
+      "changes": "Add accessible SVG title when absent; paths unchanged"
+    },
+    {
+      "file": "gemini.svg",
+      "source": "excelmanus/web/public/providers/gemini.svg",
+      "sha256": "69c9da3012bc428f139bafb695a39255072ed41413df163cc016b7cd62ed38b5",
+      "changes": "Add accessible SVG title when absent; paths unchanged"
+    },
+    {
+      "file": "huawei.svg",
+      "source": "excelmanus/web/public/providers/huawei.svg",
+      "sha256": "eb43e0a9450cef22ce70d624a60622a0aa542142102e402a293578b388b876f5",
+      "changes": "None"
+    },
+    {
+      "file": "huggingface.svg",
+      "source": "excelmanus/web/public/providers/huggingface.svg",
+      "sha256": "aa81744034eecf4ac6b3fb7108dd71223965c7af3c534932391314563b150109",
+      "changes": "None"
+    },
+    {
+      "file": "meta.svg",
+      "source": "excelmanus/web/public/providers/meta.svg",
+      "sha256": "e3e9db62f59dc477e5917687349b8aa9685b841d40300c1afad60ad85075cd2e",
+      "changes": "None"
+    },
+    {
+      "file": "minimax.svg",
+      "source": "excelmanus/web/public/providers/minimax.svg",
+      "sha256": "ef95e28b290e5954a5c0be338925d81f13b3d06a0a32af29a4bc64583fbcc368",
+      "changes": "None"
+    },
+    {
+      "file": "mistral.svg",
+      "source": "excelmanus/web/public/providers/mistral.svg",
+      "sha256": "5d6abe5c18446f7971139b2f472b1b1d8cf29db04af332091023d018800cfbd1",
+      "changes": "None"
+    },
+    {
+      "file": "moonshot.svg",
+      "source": "excelmanus/web/public/providers/moonshot.svg",
+      "sha256": "01fb4be70032974e2c9a4f2af9688ea505ad7d996de8866cea0844c4b0581091",
+      "changes": "None"
+    },
+    {
+      "file": "nvidia.svg",
+      "source": "excelmanus/web/public/providers/nvidia.svg",
+      "sha256": "db04aa87719392f22aa280fa0c9086d70d9e805024749747676fea820f7b00b4",
+      "changes": "None"
+    },
+    {
+      "file": "ollama.svg",
+      "source": "https://raw.githubusercontent.com/lobehub/lobe-icons/master/packages/static-svg/icons/ollama.svg",
+      "sha256": "3a268218fb2e6e81fa31df70f70b51331625047794db81db21d35359428fae7a",
+      "changes": "Add accessible SVG title when absent; paths unchanged"
+    },
+    {
+      "file": "openai.svg",
+      "source": "excelmanus/web/public/providers/openai.svg",
+      "sha256": "2b4a04ddc2395b20d168694d3850ce2050a702c4a0cdeb4d8b31b9a970481a8c",
+      "changes": "None"
+    },
+    {
+      "file": "openrouter.svg",
+      "source": "excelmanus/web/public/providers/openrouter.svg",
+      "sha256": "ecb32a23ef1d742a7bbfe1f02306cb32d6b5a22c8568b244d116e17ab61d27ce",
+      "changes": "Add accessible SVG title when absent; paths unchanged"
+    },
+    {
+      "file": "perplexity.svg",
+      "source": "excelmanus/web/public/providers/perplexity.svg",
+      "sha256": "407ad1254700503eb124ef5650cc267d83c79dc6dea9e9332fbdc92bb2bdf262",
+      "changes": "None"
+    },
+    {
+      "file": "qq.svg",
+      "source": "excelmanus/web/public/providers/qq.svg",
+      "sha256": "17372d117ab2c56d3aeb9cd18cdac8b9bcec875872e89222aec8f90e31e31636",
+      "changes": "None"
+    },
+    {
+      "file": "qwen.svg",
+      "source": "excelmanus/web/public/providers/qwen.svg",
+      "sha256": "36854c60b26bfa5a0cc0d4123727c0ef559efba6f129c0dfa623f3c443fe3e5b",
+      "changes": "None"
+    },
+    {
+      "file": "siliconcloud.svg",
+      "source": "excelmanus/web/public/providers/siliconcloud.svg",
+      "sha256": "db432ace9fa4030396361ad4c8ce43fdda83d7a4900bf1ea01fbef2558d1da3c",
+      "changes": "Add accessible SVG title when absent; paths unchanged"
+    },
+    {
+      "file": "xai.svg",
+      "source": "https://raw.githubusercontent.com/lobehub/lobe-icons/master/packages/static-svg/icons/xai.svg",
+      "sha256": "89eb7de9f0d02a41cfecd9109e253d7fd3529e27467dee4254faa67f3ac21451",
+      "changes": "None"
+    },
+    {
+      "file": "xiaomi.svg",
+      "source": "excelmanus/web/public/providers/xiaomi.svg",
+      "sha256": "8866d12a70d85ab43acd3b9c80f1b37792d91160d8273efffdf817af5fd608cb",
+      "changes": "None"
+    },
+    {
+      "file": "zhipu.svg",
+      "source": "excelmanus/web/public/providers/zhipu.svg",
+      "sha256": "625a305f5656b3b2906c6a99e3f2fe6f468a05b6e3ede4f8dd063f58d968fdc6",
+      "changes": "Add accessible SVG title when absent; paths unchanged"
+    }
+  ]
+}

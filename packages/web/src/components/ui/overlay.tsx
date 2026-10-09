@@ -22,11 +22,12 @@ export const PopoverContent = forwardRef<
     <P.Portal>
       <P.Content
         ref={ref}
+        data-slot="popover"
         sideOffset={sideOffset}
         collisionPadding={8}
         className={cn(
-          "z-[10100] rounded-lg border border-border bg-popover p-3 text-foreground shadow-popover outline-none",
-          "animate-in fade-in-0 zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0",
+          "z-[10100] max-w-[calc(100vw-16px)] rounded-lg border border-border bg-popover p-4 text-foreground shadow-popover outline-none",
+          "origin-[var(--radix-popover-content-transform-origin)] animate-in fade-in-0 zoom-in-98 duration-150 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 motion-reduce:animate-none",
           className,
         )}
         {...props}
@@ -79,7 +80,7 @@ export const CollapsibleContent = forwardRef<
     <C.Content
       ref={ref}
       className={cn(
-        "overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down",
+        "overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down motion-reduce:animate-none",
         className,
       )}
       {...props}
@@ -118,13 +119,20 @@ export function Disclosure({
     onOpenChange?.(o);
   };
   return (
-    <C.Root open={isOpen} onOpenChange={set} className={cn("min-w-0", className)}>
+    <C.Root
+      data-slot="disclosure"
+      open={isOpen}
+      onOpenChange={set}
+      className={cn("min-w-0", className)}
+    >
       <C.Trigger
+        data-slot="disclosure-trigger"
+        data-variant={variant}
         className={cn(
-          "group/disc inline-flex max-w-full min-w-0 items-center gap-1.5 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
+          "group/disc inline-flex max-w-full min-w-0 items-center gap-2 text-left transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
           variant === "plain" && "rounded-sm text-xs text-muted-foreground hover:text-foreground",
           variant === "chip" &&
-            "h-7 rounded-full bg-muted px-3 text-xs text-muted-foreground hover:text-foreground",
+            "h-7 rounded-md bg-muted/70 px-2.5 text-xs text-muted-foreground hover:bg-accent/60 hover:text-foreground",
           variant === "section" && "rounded-sm text-sm font-medium text-foreground",
           triggerClassName,
         )}
@@ -134,7 +142,7 @@ export function Disclosure({
         <Icon
           name="chevronRight"
           size="xs"
-          className="transition-transform group-data-[state=open]/disc:rotate-90"
+          className="transition-transform duration-150 group-data-[state=open]/disc:rotate-90 motion-reduce:transition-none"
         />
       </C.Trigger>
       <CollapsibleContent>
@@ -152,7 +160,8 @@ export const TabsList = forwardRef<HTMLDivElement, ComponentPropsWithoutRef<type
     return (
       <TB.List
         ref={ref}
-        className={cn("inline-flex items-center gap-0.5 rounded-lg bg-muted p-0.5", className)}
+        data-slot="tabs-list"
+        className={cn("inline-flex items-center gap-0.5 rounded-md bg-muted p-0.5", className)}
         {...props}
       />
     );
@@ -166,8 +175,9 @@ export const TabsTrigger = forwardRef<
   return (
     <TB.Trigger
       ref={ref}
+      data-slot="tabs-trigger"
       className={cn(
-        "inline-flex h-7 items-center justify-center gap-1.5 rounded-md px-3 text-xs font-medium whitespace-nowrap text-muted-foreground transition-colors hover:text-foreground data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-xs focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
+        "inline-flex h-8 items-center justify-center gap-1.5 rounded-sm px-3 text-xs font-medium whitespace-nowrap text-muted-foreground transition-colors duration-150 hover:text-foreground data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-xs focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
         className,
       )}
       {...props}
@@ -214,23 +224,24 @@ export function Toaster() {
       {items.map((t) => (
         <TS.Root
           key={t.id}
+          data-slot="toast"
           duration={t.duration}
           type={t.tone === "err" ? "foreground" : "background"}
           onOpenChange={(o) => !o && remove(t.id)}
-          className="flex items-start gap-2.5 rounded-lg border border-border bg-popover p-3 text-sm text-foreground shadow-popover data-[state=open]:animate-in data-[state=open]:slide-in-from-right-4 data-[state=closed]:animate-out data-[state=closed]:fade-out-0"
+          className="flex items-start gap-3 rounded-lg border border-border bg-popover p-4 text-sm leading-relaxed text-foreground shadow-popover duration-200 data-[state=open]:animate-in data-[state=open]:slide-in-from-right-4 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 motion-reduce:animate-none"
         >
           <Icon name={TOAST_ICON[t.tone]} size="md" className={cn("mt-0.5", TOAST_TONE[t.tone])} />
-          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
             <TS.Title className="font-medium">{t.title}</TS.Title>
             {t.description && (
-              <TS.Description className="text-xs text-muted-foreground">
+              <TS.Description className="text-xs leading-relaxed text-muted-foreground">
                 {t.description}
               </TS.Description>
             )}
           </div>
           <TS.Close
             aria-label={S.close}
-            className="rounded-sm p-0.5 text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+            className="-mt-0.5 -mr-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-xs text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
           >
             <Icon name="x" size="sm" />
           </TS.Close>

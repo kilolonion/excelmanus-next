@@ -5,12 +5,20 @@ import type {
   AttachmentRef,
   FileEntry,
   ModelProfile,
+  PresenceParticipant,
   ProviderPreset,
   ServerMessage,
   SessionSummary,
 } from "@excelmanus/protocol";
 import { create } from "zustand";
-import { apiClient, bootstrapToken } from "./api.ts";
+import {
+  apiClient,
+  bootstrapToken,
+  browserSessionPaused,
+  clearToken,
+  pauseBrowserSession,
+  resumeBrowserSession,
+} from "./api.ts";
 import {
   type DocSyncState,
   initialDocSync,
@@ -28,6 +36,7 @@ import { SyncClient } from "./ws.ts";
 export interface OpenDoc {
   docId: string;
   rev: number;
+  snapshotRev: number;
   path: string;
   checkpointRev?: number;
   checkpointError?: string;
@@ -60,6 +69,9 @@ interface AppState {
   doc: OpenDoc | null;
   docSync: DocSyncState;
   selection: { docId: string; rev: number; range: string } | null;
+  /** 当前文档上的瞬时协作者状态（不写入会话日志）。 */
+  presence: PresenceParticipant[];
+  presenceConnectionId: string | null;
   settingsOpen: boolean;
   providers: ProviderPreset[];
   profiles: ModelProfile[];
@@ -83,11 +95,11 @@ interface AppState {
   /** 布局（02 §2）：分栏比例、折叠与窄屏标签页，比例与折叠记在本地。 */
   layout: LayoutPrefs;
   narrowTab: "sheet" | "chat";
-  /** 用户点「已查看」时的会话游标；"已修改"高亮只显示其后的变更（02 §4.2）。 */
+  /** 用户清除高亮时的会话游标；之后的新变更继续提供短时反馈（02 §4.2）。 */
   changesSeenSeq: number;
   /** 跟随代理（02 §4.8，默认开，记在本地）。 */
   followAgent: boolean;
-  /** 输入框里的图片附件（02 §3.3）：上传完成后才有 ref。 */
+  /** 输入框里的图片附件与文件引用（02 §3.3）：上传完成后才有 ref/path。 */
   composerAttachments: ComposerAttachment[];
   /** 需要追加到输入框的文本（拖入表格文件后的 @路径），nonce 递增触发。 */
   composerAppend: { text: string; nonce: number } | null;
@@ -98,7 +110,8 @@ interface AppState {
 export interface ComposerAttachment {
   id: string;
   name: string;
-  previewUrl: string;
+  previewUrl?: string;
+  path?: string;
   status: "uploading" | "ready" | "error";
   ref?: AttachmentRef;
   error?: string;
@@ -136,7 +149,12 @@ let api: Api | null = null;
 let sync: SyncClient | null = null;
 let seq = 0;
 let docRequest = 0;
+let navigationRequest = 0;
+let navigationPending = false;
+let sessionsRequest = 0;
+let filesRequest = 0;
 let syncConnectionId: string | null = null;
+let presenceTimer: ReturnType<typeof setTimeout> | null = null;
 let editorBridge: DocumentEditorBridge | null = null;
 let editorApplyQueue: Promise<void> = Promise.resolve();
 
@@ -154,6 +172,8 @@ export const useApp = create<AppState>(() => ({
   doc: null,
   docSync: initialDocSync(),
   selection: null,
+  presence: [],
+  presenceConnectionId: null,
   settingsOpen: false,
   providers: [],
   profiles: [],
@@ -262,7 +282,7 @@ function followAgentActivity(record: {
     .catch(() => undefined);
 }
 
-/** 「已查看」：清除当前已修改高亮，之后的新变更继续高亮。 */
+/** 清除当前改动反馈，之后的新变更继续高亮；历史记录保持完整。 */
 export function markChangesSeen(): void {
   set({ changesSeenSeq: get().session.cursor });
 }
@@ -300,8 +320,48 @@ function requireApi(): Api {
   return api;
 }
 
+/** 将当前选区以瞬时 presence 广播给同一文档的其他参与者。 */
+function schedulePresence(docId: string): void {
+  if (presenceTimer) clearTimeout(presenceTimer);
+  presenceTimer = setTimeout(() => {
+    presenceTimer = null;
+    const st = get();
+    const doc = st.doc;
+    if (!doc || doc.docId !== docId) return;
+    const selection = st.selection?.docId === doc.docId ? st.selection.range : "";
+    let sheet = "";
+    if (selection !== "") {
+      try {
+        sheet = parseRange(selection).sheet ?? "";
+      } catch {
+        // 选区由 Univer 产生；无法解析时仍发送空工作表，避免阻塞协作状态。
+      }
+    }
+    sync?.send({ type: "presence", docId: doc.docId, sheet, selection });
+  }, 80);
+}
+
+function clearPresenceTimer(): void {
+  if (!presenceTimer) return;
+  clearTimeout(presenceTimer);
+  presenceTimer = null;
+}
+
 /** 设置中心等自管状态的组件直接经契约客户端访问 REST。 */
 export const apiClientOf = requireApi;
+
+/** 清除浏览器会话并回到自动登录页；桌面端令牌由预加载桥接管理，不在这里清除。 */
+export async function signOut(): Promise<void> {
+  await api?.logoutBrowserSession().catch(() => undefined);
+  clearToken();
+  pauseBrowserSession();
+  window.location.reload();
+}
+
+export function resumeAuth(): void {
+  resumeBrowserSession();
+  window.location.reload();
+}
 
 type AppEventListener = (data: { type: string } & Record<string, unknown>) => void;
 const appListeners = new Set<AppEventListener>();
@@ -314,39 +374,103 @@ export function onAppEvent(fn: AppEventListener): () => void {
 }
 
 async function refreshSessions(): Promise<void> {
-  const { items } = await requireApi().listSessions();
-  set({ sessions: items });
+  const request = ++sessionsRequest;
+  const sessions = new Map<string, SessionSummary>();
+  let cursor: string | undefined;
+  do {
+    const page = await requireApi().listSessions({ limit: 200, cursor });
+    if (request !== sessionsRequest) return;
+    for (const session of page.items) sessions.set(session.id, session);
+    cursor = page.nextCursor;
+  } while (cursor !== undefined);
+  set({ sessions: [...sessions.values()] });
 }
 
 async function refreshFiles(): Promise<void> {
   const st = get();
   if (st.workspaceId === "") return;
+  const request = ++filesRequest;
   try {
     const res = await requireApi().listFiles(st.workspaceId, "");
-    set({ files: res.items });
+    if (request === filesRequest && get().workspaceId === st.workspaceId) set({ files: res.items });
   } catch {
     // 文件列表失败不阻塞
   }
 }
 
 export async function selectSession(sessionId: string): Promise<void> {
-  const workspaceId = get().sessions.find((session) => session.id === sessionId)?.workspaceId;
-  if (workspaceId && workspaceId !== get().workspaceId) {
+  const request = ++navigationRequest;
+  navigationPending = true;
+  try {
+    await loadSession(sessionId, request);
+  } finally {
+    if (request === navigationRequest) navigationPending = false;
+  }
+}
+
+const NAVIGATION_KEY = "excelmanus.navigation";
+function readNavigation(): { workspaceId?: string; sessions: Record<string, string> } {
+  try {
+    const value = JSON.parse(localStorage.getItem(NAVIGATION_KEY) ?? "null") as {
+      workspaceId?: unknown;
+      sessions?: unknown;
+    } | null;
+    return {
+      workspaceId: typeof value?.workspaceId === "string" ? value.workspaceId : undefined,
+      sessions: Object.fromEntries(
+        Object.entries(
+          value?.sessions && typeof value.sessions === "object" ? value.sessions : {},
+        ).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+      ),
+    };
+  } catch {
+    return { sessions: {} };
+  }
+}
+
+function rememberSession(workspaceId: string, sessionId: string): void {
+  const saved = readNavigation();
+  localStorage.setItem(
+    NAVIGATION_KEY,
+    JSON.stringify({
+      workspaceId,
+      sessions: { ...saved.sessions, [workspaceId]: sessionId },
+    }),
+  );
+}
+
+async function loadSession(sessionId: string, request: number): Promise<void> {
+  const detail = await requireApi().getSession(sessionId);
+  if (request !== navigationRequest) return;
+  const workspaceId = detail.session.workspaceId;
+  if (!get().workspaces.some((workspace) => workspace.id === workspaceId)) {
+    await refreshWorkspaces();
+    if (request !== navigationRequest) return;
+  }
+  if (workspaceId !== get().workspaceId) {
     const previous = get().doc;
+    clearPresenceTimer();
     if (previous) sync?.unsubscribe(`doc:${previous.docId}`);
     docRequest += 1;
     set({
       workspaceId,
       doc: null,
       selection: null,
+      pinnedSelection: null,
+      selectionDismissed: false,
+      presence: [],
       files: [],
       rangeFocus: null,
       rangePreview: null,
       docSync: initialDocSync(0),
     });
-    await refreshFiles();
   }
-  const detail = await requireApi().getSession(sessionId);
+  if (get().sessionId !== sessionId) {
+    for (const attachment of get().composerAttachments) {
+      if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+    }
+    set({ composerAttachments: [], composerAppend: null, commandNotice: null });
+  }
   // 名册以 reduce 的 roster 为准（05 §8）；会话详情只用于预填名字/角色。
   set({
     sessionId: sessionId,
@@ -356,25 +480,32 @@ export async function selectSession(sessionId: string): Promise<void> {
     },
     agentId: "main",
     changesSeenSeq: 0,
+    sessions: [
+      detail.session,
+      ...get().sessions.filter((session) => session.id !== sessionId),
+    ].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id)),
   });
+  rememberSession(workspaceId, sessionId);
   sync?.subscribe(`session:${sessionId}`);
+  await refreshFiles();
 }
 
 let initPromise: Promise<void> | null = null;
 export function init(): Promise<void> {
-  initPromise ??= initialize();
+  initPromise ??= initialize().catch(() => set({ ready: true, fatal: "auth-failed" }));
   return initPromise;
 }
 
 async function initialize(): Promise<void> {
   const token = bootstrapToken();
-  if (!token) {
-    set({ ready: true, fatal: "no-token" });
+  if (!token && browserSessionPaused()) {
+    set({ ready: true, fatal: "signed-out" });
     return;
   }
   api = apiClient(token);
-  set({ token });
+  set({ token: desktopToken(token) });
   try {
+    if (!token) await api.createBrowserSession();
     const boot = await api.bootstrap();
     set({
       hasModelProfile: boot.hasModelProfile,
@@ -384,8 +515,8 @@ async function initialize(): Promise<void> {
       // 02 §8：首次使用（未配置模型且未跳过引导）时显示引导
       onboardingOpen: !boot.hasModelProfile && localStorage.getItem(ONBOARDING_KEY) !== "done",
     });
-  } catch (e) {
-    set({ ready: true, fatal: e instanceof Error ? e.message : "bootstrap failed" });
+  } catch {
+    set({ ready: true, fatal: "auth-failed" });
     return;
   }
   sync = new SyncClient({
@@ -402,7 +533,14 @@ async function initialize(): Promise<void> {
       }
       if (msg.type === "rec" || msg.type === "delta" || msg.type === "snapshot") {
         set({ session: reduceSession(get().session, msg) });
-        if (msg.type === "rec") followAgentActivity(msg.record);
+        if (msg.type === "rec") {
+          followAgentActivity(msg.record);
+          if (msg.record.type === "user.message" || msg.record.type === "session.updated")
+            void refreshSessions().catch(() => undefined);
+        }
+      } else if (msg.type === "presence") {
+        // 只保留当前打开文档的状态；切换文档时旧主题的迟到消息不能污染新视图。
+        if (msg.docId === get().doc?.docId) set({ presence: msg.participants });
       } else if (msg.type === "doc.op" && msg.docId === get().doc?.docId) {
         set({ docSync: reduceDoc(get().docSync, msg) });
         const doc = get().doc;
@@ -422,6 +560,7 @@ async function initialize(): Promise<void> {
             .then(async () => {
               const bridge = editorBridge;
               if (bridge?.docId === msg.docId) await bridge.applyRemote(mutations);
+              else if (get().doc?.docId === msg.docId) scheduleDocRefresh(msg.docId);
             })
             .catch(() => {
               // 无法在当前版本逐条回放时回退到权威快照。
@@ -467,32 +606,34 @@ async function initialize(): Promise<void> {
           );
       } else if (msg.type === "app.event") {
         for (const fn of appListeners) fn(msg.data);
-        if (msg.data.type === "files.changed") void refreshFiles();
+        if (
+          msg.data.type === "files.changed" &&
+          (!msg.data.workspaceId || msg.data.workspaceId === get().workspaceId)
+        )
+          void refreshFiles();
+        if (msg.data.type.startsWith("session.")) void reconcileSessions().catch(() => undefined);
+        if (msg.data.type === "workspaces.changed") void refreshWorkspaces().catch(() => undefined);
       } else if (msg.type === "hello") {
         syncConnectionId = msg.connectionId;
-        set({ connected: true });
+        set({ connected: true, presenceConnectionId: msg.connectionId });
+        const docId = get().doc?.docId;
+        if (docId) schedulePresence(docId);
       }
     },
-    onState: (connected) => set({ connected }),
+    onState: (connected) => set(connected ? { connected } : { connected, presence: [] }),
   });
   sync.start();
   sync.subscribe("app");
   // 对话头部的模型选择需要档案列表；失败不阻断启动
   void refreshProfiles().catch(() => undefined);
-  void refreshWorkspaces().catch(() => undefined);
+  await refreshWorkspaces();
   await refreshSessions();
-  const first = get().sessions[0];
-  if (first) {
-    set({ workspaceId: first.workspaceId });
-    await selectSession(first.id);
-  } else {
-    const { session } = await requireApi().createSession({});
-    await refreshSessions();
-    set({ workspaceId: session.workspaceId });
-    await selectSession(session.id);
-  }
-  await refreshFiles();
+  await openWorkspaceLanding(preferredWorkspaceId(), ++navigationRequest);
   set({ ready: true });
+}
+
+function desktopToken(token: string | null): string | null {
+  return typeof window !== "undefined" && window.location.protocol === "app:" ? token : null;
 }
 
 function asClientMutations(raw: unknown): ClientDocMutation[] {
@@ -545,44 +686,88 @@ export function submitDocumentMutation(
 export async function refreshWorkspaces(): Promise<void> {
   const { items } = await requireApi().listWorkspaces();
   set({ workspaces: items });
+  if (get().ready && !items.some((workspace) => workspace.id === get().workspaceId))
+    await switchWorkspace(preferredWorkspaceId());
 }
 
-/** 切换工作区（02 §6）：打开该工作区最近的会话，没有则新建一个。 */
-export async function switchWorkspace(workspaceId: string): Promise<void> {
-  if (workspaceId === get().workspaceId) return;
-  await refreshSessions();
-  const recent = get().sessions.find((x) => x.workspaceId === workspaceId);
+function preferredWorkspaceId(): string {
+  const state = get();
+  const saved = readNavigation().workspaceId;
+  return (
+    state.workspaces.find((workspace) => workspace.id === saved)?.id ??
+    state.workspaces.find((workspace) => workspace.isDefault)?.id ??
+    state.workspaces[0]?.id ??
+    ""
+  );
+}
+
+async function openWorkspaceLanding(workspaceId: string, request: number): Promise<void> {
+  if (!get().workspaces.some((workspace) => workspace.id === workspaceId))
+    throw new Error(S.workspaceSwitchFailed);
+  const saved = readNavigation().sessions[workspaceId];
+  const recent =
+    get().sessions.find((session) => session.workspaceId === workspaceId && session.id === saved) ??
+    get().sessions.find((session) => session.workspaceId === workspaceId);
   if (recent) {
-    await selectSession(recent.id);
+    await loadSession(recent.id, request);
     return;
   }
-  const { session } = await requireApi().createSession({ workspaceId });
-  await refreshSessions();
-  await selectSession(session.id);
+  const { session } = await requireApi().createSession({ workspaceId, reuseBlank: true });
+  if (request !== navigationRequest) return;
+  await loadSession(session.id, request);
 }
 
-export async function createSession(): Promise<void> {
-  const ws = get().workspaceId;
-  const { session } = await requireApi().createSession(ws !== "" ? { workspaceId: ws } : {});
+async function reconcileSessions(): Promise<void> {
+  const request = navigationRequest;
   await refreshSessions();
-  set({ workspaceId: session.workspaceId });
-  await selectSession(session.id);
+  if (!get().ready || navigationPending || request !== navigationRequest) return;
+  if (get().sessionId && !get().sessions.some((session) => session.id === get().sessionId))
+    await openWorkspaceLanding(get().workspaceId, ++navigationRequest);
+}
+
+/** 切换工作区：恢复该区上次会话，空区使用真实的可复用空白会话。 */
+export async function switchWorkspace(workspaceId: string): Promise<void> {
+  const request = ++navigationRequest;
+  navigationPending = false;
+  if (workspaceId === get().workspaceId) return;
+  navigationPending = true;
+  try {
+    await refreshSessions();
+    if (request !== navigationRequest) return;
+    await openWorkspaceLanding(workspaceId, request);
+  } finally {
+    if (request === navigationRequest) navigationPending = false;
+  }
+}
+
+export async function createSession(targetWorkspaceId?: string): Promise<void> {
+  const request = ++navigationRequest;
+  navigationPending = true;
+  try {
+    if (
+      targetWorkspaceId !== undefined &&
+      !get().workspaces.some((workspace) => workspace.id === targetWorkspaceId)
+    )
+      throw new Error(S.workspaceSwitchFailed);
+    const workspaceId =
+      targetWorkspaceId ??
+      (get().workspaces.some((workspace) => workspace.id === get().workspaceId)
+        ? get().workspaceId
+        : preferredWorkspaceId());
+    const { session } = await requireApi().createSession(workspaceId ? { workspaceId } : {});
+    if (request !== navigationRequest) return;
+    await loadSession(session.id, request);
+  } finally {
+    if (request === navigationRequest) navigationPending = false;
+  }
 }
 
 export async function removeSession(id: string): Promise<void> {
   await requireApi().deleteSession(id);
-  await refreshSessions();
-  if (get().sessionId === id) {
-    const first = get().sessions[0];
-    if (first) await selectSession(first.id);
-    else set({ sessionId: null, session: initialSessionState() });
-  }
+  await reconcileSessions();
 }
 
-export async function send(
-  text: string,
-  mode: "steer" | "interrupt" | "queue" = "steer",
-): Promise<void> {
+export async function send(text: string, mode?: "steer" | "interrupt" | "queue"): Promise<void> {
   const st = get();
   if (!st.sessionId) return;
   const cmd = text.trim();
@@ -621,21 +806,27 @@ export async function send(
     return;
   }
   set({ commandNotice: null });
+  if (st.composerAttachments.some((a) => a.status !== "ready")) {
+    throw new Error(S.attachNotReady);
+  }
   const ctx = composerContext(st);
   const context = ctx ? [{ docId: ctx.docId, rev: ctx.rev, range: ctx.range }] : undefined;
-  const sending = st.composerAttachments.filter((a) => a.status === "ready" && a.ref);
-  const attachments = sending.map((a) => a.ref as AttachmentRef);
+  const sending = st.composerAttachments.filter((a) => a.status === "ready");
+  const attachments = sending.flatMap((a) => (a.ref ? [a.ref] : []));
+  const references = sending.flatMap((a) => (a.path ? [`@${a.path}`] : []));
   seq += 1;
   await requireApi().sendMessage(st.sessionId, st.agentId, {
     clientMessageId: `web-${Date.now()}-${seq}`,
-    text,
-    mode,
+    text: [text, ...references].filter(Boolean).join("\n"),
+    ...(mode ? { mode } : {}),
     ...(context !== undefined ? { context } : {}),
     ...(attachments.length > 0 ? { attachments } : {}),
   });
   // 发送成功才清掉已发出的附件（失败时保留，便于重试）
   const sentIds = new Set(sending.map((a) => a.id));
-  for (const a of sending) URL.revokeObjectURL(a.previewUrl);
+  for (const a of sending) {
+    if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+  }
   set({ composerAttachments: get().composerAttachments.filter((a) => !sentIds.has(a.id)) });
 }
 
@@ -644,44 +835,60 @@ let attachSeq = 0;
 
 /** 粘贴/拖入/选择的文件：图片进附件，其余上传到工作区并以 @路径 引用（02 §3.3）。 */
 export async function addComposerFiles(files: File[]): Promise<void> {
+  const { workspaceId, sessionId } = get();
+  const pending: { file: File; item: ComposerAttachment; image: boolean }[] = [];
+  let imageCount = get().composerAttachments.filter((a) => a.previewUrl).length;
   for (const file of files) {
-    if (!IMAGE_TYPES.test(file.type)) {
-      const existing = get().files.find((f) => f.kind !== "dir" && f.name === file.name);
-      const path = existing ? existing.path : await uploadWorkspaceFileReturningPath(file);
-      set({ composerAppend: { text: `@${path} `, nonce: (get().composerAppend?.nonce ?? 0) + 1 } });
+    const image =
+      IMAGE_TYPES.test(file.type) ||
+      (file.type === "" && /\.(png|jpe?g|gif|webp)$/i.test(file.name));
+    if (image && imageCount >= 8) {
+      set({ commandNotice: S.attachLimit });
       continue;
     }
-    if (get().composerAttachments.length >= 8) {
-      set({ commandNotice: S.attachLimit });
-      return;
-    }
     attachSeq += 1;
-    const id = `att-${attachSeq}`;
     const item: ComposerAttachment = {
-      id,
-      name: file.name || "image",
-      previewUrl: URL.createObjectURL(file),
+      id: `att-${attachSeq}`,
+      name: file.name || "unnamed",
+      ...(image ? { previewUrl: URL.createObjectURL(file) } : {}),
       status: "uploading",
     };
-    set({ composerAttachments: [...get().composerAttachments, item] });
+    if (image) imageCount += 1;
+    pending.push({ file, item, image });
+  }
+  set({ composerAttachments: [...get().composerAttachments, ...pending.map((p) => p.item)] });
+  for (const { file, item, image } of pending) {
+    if (get().workspaceId !== workspaceId || get().sessionId !== sessionId) return;
+    if (!get().composerAttachments.some((a) => a.id === item.id)) continue;
     const patch = (p: Partial<ComposerAttachment>) =>
       set({
         composerAttachments: get().composerAttachments.map((a) =>
-          a.id === id ? { ...a, ...p } : a,
+          a.id === item.id ? { ...a, ...p } : a,
         ),
       });
     try {
-      const ref = await requireApi().uploadAttachment({ name: item.name, data: file });
-      patch({ status: "ready", ref });
+      if (image) {
+        const ref = await requireApi().uploadAttachment({ name: item.name, data: file });
+        patch({ status: "ready", ref });
+      } else {
+        const { path } = await requireApi().uploadFile(workspaceId, {
+          name: item.name,
+          data: file,
+        });
+        patch({ status: "ready", path });
+      }
     } catch (e) {
       patch({ status: "error", error: e instanceof Error ? e.message : S.uploadFailed });
     }
+  }
+  if (pending.some((p) => !p.image) && get().workspaceId === workspaceId) {
+    await refreshFiles().catch(() => undefined);
   }
 }
 
 export function removeComposerAttachment(id: string): void {
   const a = get().composerAttachments.find((x) => x.id === id);
-  if (a) URL.revokeObjectURL(a.previewUrl);
+  if (a?.previewUrl) URL.revokeObjectURL(a.previewUrl);
   set({ composerAttachments: get().composerAttachments.filter((x) => x.id !== id) });
 }
 
@@ -705,6 +912,26 @@ export async function renameSession(title: string): Promise<void> {
   if (!st.sessionId || title.trim() === "") return;
   await requireApi().updateSession(st.sessionId, { title: title.trim() });
   await refreshSessions();
+}
+
+/** 从会话列表直接改名；列表操作不必先切换当前会话。 */
+export async function renameSessionById(id: string, title: string): Promise<void> {
+  const next = title.trim();
+  if (next === "") return;
+  await requireApi().updateSession(id, { title: next });
+  await refreshSessions();
+}
+
+/** 导出会话 Markdown，并交给浏览器下载。 */
+export async function exportSession(id: string, title: string | null): Promise<void> {
+  const blob = await requireApi().exportSession(id);
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  const safeTitle = (title?.trim() || "未命名会话").replace(/[\\/:*?"<>|]+/g, "_");
+  anchor.href = url;
+  anchor.download = `${safeTitle}.md`;
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 /** 本会话权限模式覆盖（04 §5：全局默认之上的会话级覆盖）。 */
@@ -851,6 +1078,7 @@ export async function answerQuestion(
 export async function openWorkspaceFile(path: string): Promise<void> {
   const request = ++docRequest;
   const st = get();
+  clearPresenceTimer();
   const { document: opened } = await requireApi().openDoc(st.workspaceId, { path });
   const { document, snapshot } = await requireApi().getDocSnapshot(st.workspaceId, opened.id);
   if (request !== docRequest || get().workspaceId !== st.workspaceId) return;
@@ -858,6 +1086,7 @@ export async function openWorkspaceFile(path: string): Promise<void> {
     doc: {
       docId: document.id,
       rev: document.rev,
+      snapshotRev: document.rev,
       checkpointRev: document.checkpointRev,
       checkpointError: document.checkpointError,
       path: document.path,
@@ -865,11 +1094,13 @@ export async function openWorkspaceFile(path: string): Promise<void> {
     },
     docSync: initialDocSync(document.rev),
     selection: null,
+    presence: [],
     rangeFocus: null,
     rangePreview: null,
     referenceError: null,
   });
   sync?.subscribe(`doc:${document.id}`);
+  schedulePresence(document.id);
 }
 
 const docRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -881,47 +1112,75 @@ function scheduleDocRefresh(docId: string): void {
     docId,
     setTimeout(() => {
       docRefreshTimers.delete(docId);
+      if (get().doc?.docId !== docId) return;
       void reloadDocument(docId).catch(() => set({ referenceError: "invalid-range" }));
     }, 150),
   );
 }
 
-async function reloadDocument(docId: string): Promise<void> {
+/** 重新读取服务端权威快照；不会自动清除冲突提示，交由用户确认。 */
+export async function reloadDocument(docId: string): Promise<void> {
   const request = ++docRequest;
   const workspaceId = get().workspaceId;
+  clearPresenceTimer();
   const { document, snapshot } = await requireApi().getDocSnapshot(workspaceId, docId);
   if (request !== docRequest || get().doc?.docId !== docId || get().workspaceId !== workspaceId)
     return;
+  if (document.rev < (get().doc?.rev ?? 0)) {
+    scheduleDocRefresh(docId);
+    return;
+  }
   set({
     doc: {
       docId,
       rev: document.rev,
+      snapshotRev: document.rev,
+      ...(document.checkpointRev !== undefined ? { checkpointRev: document.checkpointRev } : {}),
+      ...(document.checkpointError !== undefined
+        ? { checkpointError: document.checkpointError }
+        : {}),
       path: document.path,
       snapshot: snapshot as Record<string, unknown>,
     },
     docSync: { ...get().docSync, rev: Math.max(get().docSync.rev, document.rev) },
     selection: null,
+    presence: [],
   });
+  schedulePresence(docId);
+}
+
+/** 关闭一条已处理的提交冲突提示，不会重发原 mutation。 */
+export function dismissDocConflict(clientOpId: string): void {
+  const state = get().docSync;
+  const item = state.pending[clientOpId];
+  if (!item || item.status !== "rejected") return;
+  const pending = { ...state.pending };
+  delete pending[clientOpId];
+  set({ docSync: { ...state, pending } });
 }
 
 export async function openDocument(docId: string): Promise<void> {
   const request = ++docRequest;
   const workspaceId = get().workspaceId;
+  clearPresenceTimer();
   const { document, snapshot } = await requireApi().getDocSnapshot(workspaceId, docId);
   if (request !== docRequest || get().workspaceId !== workspaceId) return;
   set({
     doc: {
       docId,
       rev: document.rev,
+      snapshotRev: document.rev,
       path: document.path,
       snapshot: snapshot as Record<string, unknown>,
     },
     docSync: initialDocSync(document.rev),
     selection: null,
+    presence: [],
     rangeFocus: null,
     rangePreview: null,
   });
   sync?.subscribe(`doc:${docId}`);
+  schedulePresence(docId);
 }
 
 export async function focusRange(range: string, docId?: string): Promise<void> {
@@ -953,11 +1212,13 @@ export async function focusRange(range: string, docId?: string): Promise<void> {
 export function closeDocument(): void {
   const doc = get().doc;
   if (!doc) return;
+  clearPresenceTimer();
   sync?.unsubscribe(`doc:${doc.docId}`);
   docRequest += 1;
   set({
     doc: null,
     selection: null,
+    presence: [],
     pinnedSelection: null,
     rangeFocus: null,
     rangePreview: null,
@@ -986,9 +1247,11 @@ export function setSelection(range: string | null): void {
   const d = get().doc;
   if (!d || range === null) {
     set({ selection: null });
+    if (d) schedulePresence(d.docId);
     return;
   }
   set({ selection: { docId: d.docId, rev: d.rev, range }, selectionDismissed: false });
+  schedulePresence(d.docId);
 }
 
 export async function refreshProfiles(): Promise<void> {

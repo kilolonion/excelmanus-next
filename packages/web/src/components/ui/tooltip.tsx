@@ -17,25 +17,28 @@ export function Tip({
   shortcut,
   children,
   className,
+  disabled = false,
 }: {
   content: ReactNode;
   side?: "top" | "bottom" | "left" | "right";
   shortcut?: string;
   children: ReactNode;
   className?: string;
+  disabled?: boolean;
 }) {
   if (content === null || content === undefined || content === "") return <>{children}</>;
   return (
-    <T.Root>
+    <T.Root open={disabled ? false : undefined}>
       <T.Trigger asChild>{children}</T.Trigger>
       <T.Portal>
         <T.Content
           side={side}
+          data-slot="tooltip"
           sideOffset={6}
           collisionPadding={8}
           className={cn(
-            "z-[10100] flex max-w-80 items-center gap-2 rounded-sm bg-primary px-2 py-1 text-xs text-primary-foreground shadow-popover",
-            "animate-in fade-in-0 zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0",
+            "z-[10100] flex max-w-80 items-center gap-2.5 rounded-md bg-primary px-2.5 py-1.5 text-xs leading-relaxed text-primary-foreground shadow-popover",
+            "origin-[var(--radix-tooltip-content-transform-origin)] animate-in fade-in-0 zoom-in-98 duration-150 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 motion-reduce:animate-none",
             className,
           )}
         >

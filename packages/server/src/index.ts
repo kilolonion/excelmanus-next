@@ -37,7 +37,7 @@ import {
   ModelCatalog,
   redactKnownSecrets,
   redactSecrets,
-  registerModelSecrets,
+  registerSecret,
 } from "@excelmanus/models";
 import type { ResolvedModel, ToolSpec } from "@excelmanus/protocol";
 import { RULES_MIGRATION, rulesModule } from "@excelmanus/rules";
@@ -229,7 +229,9 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
           );
           // 仅登记该 MCP 值本身；不要把 env/headers 整体伪装成模型 headers，
           // 否则字段名/内容可能污染模型凭据集合（10 §4）。
-          registerModelSecrets({ apiKey: plain });
+          registerSecret(plain);
+          const bearer = /^\s*\S+\s+(\S+)\s*$/.exec(plain)?.[1];
+          if (bearer) registerSecret(bearer);
           return plain;
         },
       },
@@ -390,6 +392,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       resolveDeps,
       tickets,
       ticketTtlMs: opts.ticketTtlMs ?? 30_000,
+      token,
       defaultWorkspaceId: ws.id,
       moduleIds: modules.map((m) => m.id),
       docService: workbook?.service,
@@ -427,6 +430,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
           },
           fail,
         ),
+      defaultDispatchMode: () => settings.get().defaultDispatchMode,
       sessionEnv: (root) => ({
         ...sessionEnv({ rules: rules.service, skills: skills.service }, root),
         defaultPermissionMode: settings.get().defaultPermissionMode,
@@ -524,10 +528,10 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
         })
       : () => {};
     emit("server.listening", { port });
-    // 带令牌的访问链接只直接写给交互终端，不进入日志流（01 §5.3、03 §9）
+    // 浏览器会话在页面打开后自动建立；启动输出只给出普通地址，不再把令牌放进链接。
     if (opts.log === undefined && process.stdout.isTTY)
-      process.stdout.write(`http://127.0.0.1:${port}/#token=${token}\n`);
-    else log(`http://127.0.0.1:${port}/#token=<已隐藏，请在交互终端启动以获取访问链接>`);
+      process.stdout.write(`http://127.0.0.1:${port}/\n`);
+    else log(`http://127.0.0.1:${port}/`);
 
     return {
       url: `http://127.0.0.1:${port}`,
@@ -616,7 +620,10 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
         });
         await check("内置技能", () => {
           const n = skills.service.list(ws.path).length;
-          if (n < 9) throw new Error(`只加载到 ${n} 个技能`);
+          if (n === 0) throw new Error("未加载到任务技能");
+          const unavailable = skills.service.list(ws.path).filter((s) => !s.available);
+          if (unavailable.length > 0)
+            throw new Error(`技能依赖不可用：${unavailable.map((s) => s.name).join("、")}`);
           return `${n} 个`;
         });
         await check("模型目录", () => {

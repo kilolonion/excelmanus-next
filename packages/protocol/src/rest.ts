@@ -49,6 +49,12 @@ export const HealthResponse = z.object({
   version: z.string(),
 });
 
+/** 浏览器本机登录：服务端以 HttpOnly 会话 Cookie 绑定当前设备令牌。 */
+export const AuthSessionResponse = z.object({
+  authenticated: z.literal(true),
+  expiresAt: z.iso.datetime().optional(),
+});
+
 export const BootstrapResponse = z.object({
   protocolVersion: z.int(),
   appVersion: z.string(),
@@ -76,6 +82,7 @@ export const ReasoningLevel = z.enum([
   "medium",
   "high",
   "xhigh",
+  "max",
 ]);
 export type ReasoningLevel = z.infer<typeof ReasoningLevel>;
 
@@ -205,10 +212,12 @@ export const AgentInfo = z.object({
 export type AgentInfo = z.infer<typeof AgentInfo>;
 
 export const CreateSessionBody = z.strictObject({
-  workspaceId: z.string().optional(),
+  workspaceId: z.string().min(1).optional(),
   title: z.string().optional(),
   permissionMode: PermissionMode.optional(),
   modelProfileId: z.string().optional(),
+  /** 自动落点复用纯空白会话；显式新建默认不复用。 */
+  reuseBlank: z.boolean().optional(),
 });
 export type CreateSessionBody = z.infer<typeof CreateSessionBody>;
 
@@ -220,6 +229,13 @@ export const UpdateSessionBody = z.strictObject({
 export const SessionListResponse = z.object({
   items: z.array(SessionSummary),
   nextCursor: z.string().optional(),
+});
+
+export const SessionListQuery = z.object({
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  q: z.string().optional(),
+  workspaceId: z.string().min(1).optional(),
 });
 
 /** 待处理交互（11 §4 `GET /sessions/{id}`）：未决的审批与提问。 */
@@ -260,6 +276,7 @@ export type Dispatch = z.infer<typeof Dispatch>;
 
 export const SendMessageBody = z.strictObject({
   clientMessageId: z.string().min(1).max(128),
+  replacesDispatchId: z.string().min(1).optional(),
   text: z.string().min(1),
   mode: DispatchMode.optional(),
   /** 随消息携带的选区引用（04 §7.3），渲染进该轮用户消息前的 <context> 块。 */

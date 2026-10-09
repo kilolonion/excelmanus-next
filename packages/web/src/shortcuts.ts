@@ -1,6 +1,7 @@
 // 快捷键集中定义（02 §10）：本机 Web 与桌面共用；桌面菜单的加速键触发同一动作。
 
 import { desktop } from "./api.ts";
+import { toast } from "./components/ui/overlay.tsx";
 import { COMPOSER_INPUT_ID } from "./dom-ids.ts";
 import {
   createSession,
@@ -10,6 +11,7 @@ import {
   stopAgent,
   useApp,
 } from "./store.ts";
+import { S } from "./strings.ts";
 
 /** 先让目标面板可见（窄屏切标签、宽屏展开折叠），下一帧再聚焦。 */
 function reveal(pane: "sheet" | "chat", selector: string): void {
@@ -42,7 +44,9 @@ export const SHORTCUTS: { key: string; label: string; action: ShortcutAction }[]
 export function runShortcut(action: ShortcutAction): void {
   switch (action) {
     case "new-session":
-      void createSession();
+      void createSession().catch((error: unknown) =>
+        toast({ tone: "err", title: error instanceof Error ? error.message : S.newSessionFailed }),
+      );
       break;
     case "focus-composer":
       // 附带当前选区：撤销之前的"不附带"

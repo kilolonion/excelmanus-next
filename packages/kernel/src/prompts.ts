@@ -24,7 +24,7 @@ export function buildSystemPrompt(opts: {
   if (opts.skills && opts.skills.length > 0) {
     lines.push(
       "",
-      "可用技能（处理对应类型的任务前先加载技能正文）：",
+      "可用任务技能（在相关任务需要额外方法指导时按需加载；简单操作可直接使用工具）：",
       ...opts.skills.map((s) => `- ${s.name}：${s.description}`),
     );
   }

@@ -377,14 +377,20 @@ export function extensionRoutes(deps: ExtensionDeps, fail: Fail): Hono {
         imported: !b.preview,
         skills: skills.map((s) => {
           const listed = deps.skills.detail(s.name, defaultRoot());
+          const missing = deps.skills.missingTools(
+            s,
+            [...s.files.entries()]
+              .filter(([name]) => name !== "SKILL.md" && name.endsWith(".md"))
+              .map(([, bytes]) => new TextDecoder().decode(bytes)),
+          );
           return (
             (!b.preview && listed) || {
               name: s.name,
               description: s.description,
               source: "user" as const,
               enabled: true,
-              available: true,
-              missingTools: [],
+              available: missing.length === 0,
+              missingTools: missing,
               userInvocable: s.userInvocable,
               modelInvocable: s.modelInvocable,
               version: s.version,

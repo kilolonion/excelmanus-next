@@ -8,14 +8,16 @@ import { Icon } from "../Icon.tsx";
 import { Button } from "../ui/button.tsx";
 import { cn } from "../ui/cn.ts";
 import { Switch } from "../ui/controls.tsx";
-import { Alert, Badge, Card } from "../ui/display.tsx";
+import { Alert, Badge } from "../ui/display.tsx";
 import { Label } from "../ui/field.tsx";
 import { Input } from "../ui/input.tsx";
 import { Disclosure } from "../ui/overlay.tsx";
 import {
+  Empty,
   Feedback,
   ItemCard,
   Loading,
+  LoadStatus,
   Section,
   useAction,
   useConfirmDelete,
@@ -68,12 +70,14 @@ export function SkillsTab() {
   const confirmDelete = useConfirmDelete();
   return (
     <>
-      <Section title={ST.tabs.skills}>
+      <Section className="settings-library">
+        <LoadStatus data={list.data} error={list.error} />
         <Feedback msg={act.msg} />
-        <div className="flex flex-col gap-2">
+        <div className="settings-list flex flex-col gap-3">
+          {list.data?.items.length === 0 && <Empty />}
           {list.data?.items.map((s) => (
             <ItemCard key={s.name}>
-              <div className="flex items-start justify-between gap-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="flex min-w-0 flex-wrap items-center gap-1.5">
                   <Icon name="book" size="sm" className="text-muted-foreground" />
                   <strong
@@ -99,7 +103,9 @@ export function SkillsTab() {
                   }
                 />
               </div>
-              <p className="text-sm text-foreground-secondary">{s.description}</p>
+              <p className="max-w-[600px] text-sm leading-6 text-foreground-secondary">
+                {s.description}
+              </p>
               {!s.available && (
                 <Alert tone="err" layout="inline">
                   {ST.skillUnavailable(s.missingTools)}
@@ -138,10 +144,11 @@ export function SkillsTab() {
         </div>
       </Section>
       <Section title={ST.skillImport} hint={ST.skillImportHint}>
-        <Card className="flex flex-col gap-3 p-4">
-          <div className="flex items-center gap-2">
+        <div className="settings-form flex flex-col gap-4">
+          <div className="flex flex-wrap items-center gap-2">
             <Input
               mono
+              className="min-w-[200px] flex-1"
               aria-label={ST.skillImport}
               value={source}
               placeholder="https://github.com/owner/repo"
@@ -195,7 +202,7 @@ export function SkillsTab() {
               </Button>
             </div>
           )}
-        </Card>
+        </div>
       </Section>
     </>
   );

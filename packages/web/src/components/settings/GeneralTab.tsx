@@ -3,10 +3,11 @@
 import type { AppSettings } from "@excelmanus/protocol";
 import { useEffect, useState } from "react";
 import { apiClientOf, useApp } from "../../store.ts";
-import { ST } from "../../strings.ts";
+import { S, ST } from "../../strings.ts";
+import { ProviderLabel } from "../Icon.tsx";
 import { Button } from "../ui/button.tsx";
-import { Checkbox, RadioCard, RadioGroup } from "../ui/controls.tsx";
-import { Alert, Badge, Card, SectionLabel } from "../ui/display.tsx";
+import { RadioCard, RadioGroup, Switch } from "../ui/controls.tsx";
+import { Alert, Badge } from "../ui/display.tsx";
 import { Field as UiField } from "../ui/field.tsx";
 import { Input } from "../ui/input.tsx";
 import { NONE, SimpleSelect } from "../ui/select.tsx";
@@ -42,13 +43,16 @@ export function GeneralTab() {
       onChange={(v) => setF({ ...f, [key]: v === NONE ? null : v })}
       options={[
         { value: NONE, label: ST.sameAsMain },
-        ...profiles.map((p) => ({ value: p.id, label: p.name })),
+        ...profiles.map((p) => ({
+          value: p.id,
+          label: <ProviderLabel provider={p.provider}>{p.name}</ProviderLabel>,
+        })),
       ]}
     />
   );
   return (
     <form
-      className="flex flex-col gap-8"
+      className="settings-form flex flex-col gap-9"
       onSubmit={(e) => {
         e.preventDefault();
         void act.run(async () => {
@@ -68,7 +72,7 @@ export function GeneralTab() {
           aria-label={ST.permTitle}
           value={f.defaultPermissionMode}
           onValueChange={(v) => setF({ ...f, defaultPermissionMode: v as Mode })}
-          className="grid-cols-1 min-[1100px]:grid-cols-3"
+          className="settings-permissions grid-cols-1 gap-3 @min-[700px]:grid-cols-3"
         >
           {ST.permCards.map((c) => (
             <RadioCard key={c.value} value={c.value} icon={MODE_ICON[c.value as Mode]}>
@@ -78,48 +82,84 @@ export function GeneralTab() {
                   <Badge tone="ok">{ST.permCurrent}</Badge>
                 )}
               </span>
-              <span className="text-xs text-muted-foreground">{c.body}</span>
+              <span className="text-xs leading-5 text-muted-foreground">{c.body}</span>
             </RadioCard>
           ))}
         </RadioGroup>
       </Section>
       <Section title={ST.roleTitle} hint={ST.roleHint}>
-        <div className="grid grid-cols-1 gap-3 min-[1100px]:grid-cols-3">
-          <Card className="flex min-w-0 flex-col gap-2 p-3.5">
-            <SectionLabel>{ST.roleMain}</SectionLabel>
-            <strong className="truncate text-sm font-semibold">
-              {mainProfile?.name ?? ST.empty}
-            </strong>
-            <span className="truncate font-mono text-xs text-muted-foreground">
-              {mainProfile ? `${mainProfile.provider} / ${mainProfile.model}` : ""}
-            </span>
-            <span className="text-xs text-muted-foreground">{ST.roleMainBody}</span>
-          </Card>
-          <Card className="flex min-w-0 flex-col gap-2 p-3.5">
-            <SectionLabel>{ST.roleSub}</SectionLabel>
+        <div className="settings-rows divide-y divide-border/65">
+          <div className="settings-row grid grid-cols-1 gap-3 py-4 first:pt-0 @min-[580px]:grid-cols-[minmax(0,1fr)_minmax(200px,.9fr)] @min-[580px]:gap-8">
+            <div className="flex min-w-0 flex-col gap-1.5">
+              <strong className="text-sm font-medium">{ST.roleMain}</strong>
+              <span className="text-xs leading-5 text-muted-foreground">{ST.roleMainBody}</span>
+            </div>
+            <div className="flex min-w-0 flex-col gap-1.5 @min-[580px]:items-end">
+              <strong className="max-w-full truncate text-sm font-medium">
+                {mainProfile ? (
+                  <ProviderLabel provider={mainProfile.provider}>{mainProfile.name}</ProviderLabel>
+                ) : (
+                  ST.empty
+                )}
+              </strong>
+              <span className="max-w-full truncate font-mono text-2xs text-muted-foreground">
+                {mainProfile ? `${mainProfile.provider} / ${mainProfile.model}` : ""}
+              </span>
+            </div>
+          </div>
+          <div className="settings-row grid grid-cols-1 items-center gap-3 py-4 @min-[580px]:grid-cols-[minmax(0,1fr)_minmax(200px,.9fr)] @min-[580px]:gap-8">
+            <div className="flex min-w-0 flex-col gap-1.5">
+              <strong className="text-sm font-medium">{ST.roleSub}</strong>
+              <span className="text-xs leading-5 text-muted-foreground">{ST.roleSubBody}</span>
+            </div>
             {profileSelect("subAgentProfileId", ST.roleSub)}
-            <span className="text-xs text-muted-foreground">{ST.roleSubBody}</span>
-          </Card>
-          <Card className="flex min-w-0 flex-col gap-2 p-3.5">
-            <SectionLabel>{ST.roleCompact}</SectionLabel>
+          </div>
+          <div className="settings-row grid grid-cols-1 items-center gap-3 py-4 pb-0 @min-[580px]:grid-cols-[minmax(0,1fr)_minmax(200px,.9fr)] @min-[580px]:gap-8">
+            <div className="flex min-w-0 flex-col gap-1.5">
+              <strong className="text-sm font-medium">{ST.roleCompact}</strong>
+              <span className="text-xs leading-5 text-muted-foreground">{ST.roleCompactBody}</span>
+            </div>
             {profileSelect("compactionProfileId", ST.roleCompact)}
-            <span className="text-xs text-muted-foreground">{ST.roleCompactBody}</span>
-          </Card>
+          </div>
         </div>
       </Section>
+      <Section title={S.dispatchDefaultTitle} hint={S.dispatchDefaultHint}>
+        <SimpleSelect
+          ariaLabel={S.dispatchDefaultTitle}
+          value={f.defaultDispatchMode}
+          onChange={(v) =>
+            setF({ ...f, defaultDispatchMode: v as AppSettings["defaultDispatchMode"] })
+          }
+          options={[
+            { value: "steer", label: S.modeSteer },
+            { value: "queue", label: S.modeQueue },
+            { value: "interrupt", label: S.modeInterrupt },
+          ]}
+        />
+      </Section>
       <Section title={ST.runtimeTitle}>
-        <UiField orientation="horizontal" label={ST.autoCompact}>
-          <Checkbox
-            checked={f.autoCompact}
-            onCheckedChange={(v) => setF({ ...f, autoCompact: v === true })}
-          />
-        </UiField>
-        <UiField orientation="horizontal" label={ST.memoryInjection}>
-          <Checkbox
-            checked={f.memoryInjection}
-            onCheckedChange={(v) => setF({ ...f, memoryInjection: v === true })}
-          />
-        </UiField>
+        <div className="settings-rows divide-y divide-border/65">
+          <UiField
+            orientation="horizontal"
+            label={ST.autoCompact}
+            className="flex-row-reverse items-center justify-between pb-4"
+          >
+            <Switch
+              checked={f.autoCompact}
+              onCheckedChange={(v) => setF({ ...f, autoCompact: v })}
+            />
+          </UiField>
+          <UiField
+            orientation="horizontal"
+            label={ST.memoryInjection}
+            className="flex-row-reverse items-center justify-between pt-4"
+          >
+            <Switch
+              checked={f.memoryInjection}
+              onCheckedChange={(v) => setF({ ...f, memoryInjection: v })}
+            />
+          </UiField>
+        </div>
         <Field label={ST.maxSubAgents} hint={ST.maxSubAgentsRange} className="max-w-48">
           <Input
             type="number"
@@ -148,7 +188,7 @@ export function GeneralTab() {
         </Field>
       </Section>
       {restart.length > 0 && <Alert tone="warn">{ST.restartRequired(restart)}</Alert>}
-      <div className="sticky bottom-0 -mx-8 -mb-6 flex items-center gap-3 border-t border-border bg-card/95 px-8 py-3 backdrop-blur">
+      <div className="settings-savebar sticky bottom-0 z-10 -mx-10 -mb-8 flex flex-wrap items-center gap-3 border-t border-border/80 bg-card/95 px-10 py-4 backdrop-blur @max-[600px]:-mx-6 @max-[600px]:-mb-6 @max-[600px]:px-6">
         <Button type="submit" loading={act.busy}>
           {ST.save}
         </Button>

@@ -71,6 +71,8 @@ export function Combobox({
   mono,
   id,
   ariaLabel,
+  startAdornment,
+  renderOption,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -80,6 +82,8 @@ export function Combobox({
   mono?: boolean;
   id?: string;
   ariaLabel?: string;
+  startAdornment?: ReactNode;
+  renderOption?: (value: string) => ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
@@ -94,8 +98,14 @@ export function Combobox({
   return (
     <Popover open={show} onOpenChange={setOpen}>
       <PopoverAnchor asChild>
-        <div>
+        <div className="relative">
+          {startAdornment && (
+            <span className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2">
+              {startAdornment}
+            </span>
+          )}
           <Input
+            className={startAdornment ? "pl-9" : undefined}
             id={id}
             value={value}
             mono={mono}
@@ -154,7 +164,7 @@ export function Combobox({
               onHover={() => setActive(i)}
               className={mono ? "font-mono text-xs" : undefined}
             >
-              <span className="min-w-0 flex-1 truncate">{o}</span>
+              <span className="min-w-0 flex-1 truncate">{renderOption ? renderOption(o) : o}</span>
               {o === value && <Icon name="check" size="xs" />}
             </CommandItem>
           ))}

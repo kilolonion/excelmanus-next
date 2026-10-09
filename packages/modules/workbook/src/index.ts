@@ -30,6 +30,7 @@ export {
   decodeCsv,
   importCsv,
 } from "./csv.ts";
+export { WorkbookEditInput } from "./edit-input.ts";
 export type { DocMutation } from "./engine.ts";
 export {
   ChangeOp,
@@ -52,5 +53,17 @@ export {
   type SubmitResult,
   UnsupportedDocError,
 } from "./service.ts";
+export {
+  boundedWriteRanges,
+  sheetNamesOf,
+  summarizeWriteSet,
+  unionArea,
+  type WorkbookChanges,
+  workbookSheets,
+} from "./summary.ts";
+export {
+  WORKBOOK_ANALYZE_SQL_SHEET_PLACEHOLDER,
+  WORKBOOK_ANALYZE_SQL_TABLE,
+} from "./tools.ts";
 export { type DerivedWriteSet, deriveWriteSet, deriveWriteSetAll } from "./writeset.ts";
 export { type ImportedWorkbook, importXlsx, XlsxImportError } from "./xlsx.ts";

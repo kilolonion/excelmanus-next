@@ -89,6 +89,16 @@ export const ClassifiedError = z.object({
 });
 export type ClassifiedError = z.infer<typeof ClassifiedError>;
 
+/** 持久化给客户端的错误指引（与 turn.failed 的分类错误分开）。 */
+export const ErrorGuidance = z.object({
+  kind: z.string(),
+  message: z.string(),
+  actions: z.array(z.string()),
+  /** 服务端已确认可由用户重新发起请求；缺失表示未知。 */
+  retryable: z.boolean().optional(),
+});
+export type ErrorGuidance = z.infer<typeof ErrorGuidance>;
+
 export const Usage = z.object({
   inputTokens: z.number().optional(),
   outputTokens: z.number().optional(),

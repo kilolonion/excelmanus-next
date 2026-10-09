@@ -123,6 +123,434 @@ afterAll(async () => {
 });
 
 describe("e2e：活文档写入 + doc: 同步", () => {
+  test("公式派生回传被拒绝；渲染→真实用户冲突→局部重读→格式修复贯通真实边界", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "excelmanus-observed-write-"));
+    dirs.push(dataDir);
+    const path = "报表.xlsx";
+    const deferred = () => {
+      let resolve: (() => void) | undefined;
+      const promise = new Promise<void>((done) => {
+        resolve = done;
+      });
+      return { promise, resolve: () => resolve?.() };
+    };
+    const beforeRender = deferred();
+    const beforeFix = deferred();
+    let userRev = 0;
+    let step = 0;
+    const fix = [
+      { op: "style.set", range: "C17:E17", numFmt: "#,##0" },
+      { op: "style.set", range: "F17", numFmt: "0.0%" },
+      { op: "style.set", range: "H17:I17", fill: "#FFE699" },
+    ];
+    const model = new MockLanguageModelV4({
+      provider: "mock",
+      modelId: "mock-observation",
+      doStream: async () => {
+        step++;
+        if (step === 3) await beforeRender.promise;
+        if (step === 4) await beforeFix.promise;
+        const calls = [
+          { name: "workbook_edit", args: { path, create: true, ops: [] } },
+          {
+            name: "workbook_edit",
+            args: {
+              path,
+              ops: [
+                { op: "sheet.rename", sheet: "Sheet1", name: "销售报表" },
+                {
+                  op: "cells.set",
+                  range: "C5:F17",
+                  values: Array.from({ length: 13 }, (_, i) => [
+                    10000 + i,
+                    20000 + i,
+                    `=C${i + 5}+D${i + 5}`,
+                    `=C${i + 5}/D${i + 5}`,
+                  ]),
+                },
+                {
+                  op: "cells.set",
+                  range: "H4:I10",
+                  values: Array.from({ length: 7 }, (_, i) => [`指标${i}`, "=SUM(C5:C17)"]),
+                },
+                { op: "cells.set", range: "A19", values: [["说明"]] },
+                { op: "style.set", range: "C5:E16", numFmt: "#,##0" },
+                { op: "style.set", range: "F5:F16", numFmt: "0.0%" },
+              ],
+            },
+          },
+          { name: "workbook_render", args: { path, sheet: "销售报表", range: "A1:I19" } },
+          { name: "workbook_edit", args: { path, ops: fix } },
+          {
+            name: "workbook_read",
+            args: {
+              path,
+              sheet: "销售报表",
+              range: "A15:I19",
+              mode: "range",
+              facets: ["values", "formulas", "layout"],
+            },
+          },
+          { name: "workbook_edit", args: { path, baseRev: userRev, ops: fix } },
+          { name: "workbook_render", args: { path, sheet: "销售报表", range: "A16:I17" } },
+        ];
+        const call = calls[step - 1];
+        return {
+          stream: streamOf(
+            call
+              ? toolCall(`observed-${step}`, call.name, JSON.stringify(call.args))
+              : [
+                  { type: "stream-start", warnings: [] },
+                  { type: "text-start", id: "end" },
+                  { type: "text-delta", id: "end", delta: "完成" },
+                  { type: "text-end", id: "end" },
+                  { type: "finish", usage: USAGE, finishReason: { unified: "stop", raw: "stop" } },
+                ],
+          ),
+        };
+      },
+    });
+    const srv = await startServer({ dataDir, resolveLanguageModel: () => model, log: () => {} });
+    servers.push(srv);
+    const api = createApiClient(srv.url, srv.token);
+    await api.createModelProfile({
+      name: "mock",
+      provider: "custom-openai-compatible",
+      model: "mock-observation",
+      baseUrl: "https://mock.invalid/v1",
+      apiKey: "test",
+    });
+    const { session } = await api.createSession({});
+    const { ticket } = await api.createTicket();
+    const ws = await TestWs.connect(`ws://127.0.0.1:${srv.port}/api/v1/sync?ticket=${ticket}`);
+    try {
+      await ws.waitFor((m) => m.type === "hello", "hello");
+      ws.send({ type: "sub", topic: "app" });
+      ws.send({ type: "sub", topic: `session:${session.id}`, cursor: 0 });
+      await ws.waitFor((m) => m.type === "sub.ok" && m.topic === "app", "renderer");
+      await ws.waitFor(
+        (m) => m.type === "sub.ok" && m.topic === `session:${session.id}`,
+        "session",
+      );
+      await api.sendMessage(session.id, "main", {
+        clientMessageId: "observed",
+        text: "填充内容并核对合计行格式",
+      });
+      await ws.waitFor(
+        (m) =>
+          m.type === "rec" &&
+          m.record.type === "tool.result" &&
+          m.record.data.toolCallId === "observed-2",
+        "populate",
+      );
+      const { document } = await api.openDoc(session.workspaceId, { path });
+      const { snapshot } = await api.getDocSnapshot(session.workspaceId, document.id);
+      const sheets = snapshot.sheets as Record<string, { id: string }>;
+      const sid = Object.keys(sheets)[0] as string;
+      const params = { unitId: snapshot.id, subUnitId: sid };
+      ws.send({ type: "sub", topic: `doc:${document.id}`, cursor: document.rev });
+      await ws.waitFor((m) => m.type === "sub.ok" && m.topic === `doc:${document.id}`, "doc");
+      for (const [i, mutation] of [
+        {
+          id: "formula.mutation.set-formula-data",
+          params: { formulaData: { [String(snapshot.id)]: { [sid]: {} } } },
+        },
+        {
+          id: "formula.mutation.set-array-formula-data",
+          params: { arrayFormulaRange: {}, arrayFormulaCellData: {} },
+        },
+        {
+          id: "sheet.mutation.set-range-values",
+          params: { ...params, cellValue: { 16: { 2: { v: 999999, t: 2, s: null } } } },
+        },
+        {
+          id: "sheet.mutation.set-range-values",
+          params: { ...params, cellValue: { 16: { 4: { f: "=C17+D17", si: null } } } },
+        },
+      ].entries()) {
+        ws.send({
+          type: "doc.submit",
+          docId: document.id,
+          clientOpId: `derived-${i}`,
+          baseRev: document.rev,
+          mutations: [mutation],
+        });
+        const reject = await ws.waitFor(
+          (m) => m.type === "doc.reject" && m.clientOpId === `derived-${i}`,
+          "derived reject",
+        );
+        expect(reject).toMatchObject({ conflict: { code: "UNSUPPORTED_FEATURE" } });
+      }
+      const db = new DatabaseSync(join(dataDir, "excelmanus.db"));
+      try {
+        expect(
+          db
+            .prepare("SELECT COUNT(*) AS n FROM doc_ops WHERE doc_id=? AND source_kind='user'")
+            .get(document.id),
+        ).toMatchObject({ n: 0 });
+      } finally {
+        db.close();
+      }
+      beforeRender.resolve();
+      const firstImage = await ws.waitFor((m) => m.type === "render.request", "first render");
+      if (firstImage.type !== "render.request") throw new Error("missing render");
+      const png =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+      ws.send({ type: "render.result", requestId: firstImage.requestId, png });
+      await ws.waitFor(
+        (m) =>
+          m.type === "rec" &&
+          m.record.type === "tool.result" &&
+          m.record.data.toolCallId === "observed-3",
+        "render result",
+      );
+      const current = await api.getDocSnapshot(session.workspaceId, document.id);
+      ws.send({
+        type: "doc.submit",
+        docId: document.id,
+        clientOpId: "actual-user",
+        baseRev: current.document.rev,
+        mutations: [
+          {
+            id: "sheet.mutation.set-range-values",
+            params: {
+              ...params,
+              trigger: "sheet.command.set-range-values",
+              cellValue: { 16: { 2: { v: 123456, t: 2 } } },
+            },
+          },
+        ],
+      });
+      const ack = await ws.waitFor(
+        (m) => m.type === "doc.ack" && m.clientOpId === "actual-user",
+        "true user edit",
+      );
+      if (ack.type !== "doc.ack") throw new Error("missing ack");
+      userRev = ack.rev;
+      beforeFix.resolve();
+      const secondImage = await ws.waitFor(
+        (m) => m.type === "render.request" && m.requestId !== firstImage.requestId,
+        "format render",
+      );
+      if (secondImage.type !== "render.request") throw new Error("missing final render");
+      expect(secondImage.layout.cells.map((c) => c.text)).toContain("123,456");
+      expect(secondImage.layout.cells.map((c) => c.text)).toContain("20,012");
+      expect(secondImage.layout.cells.map((c) => c.text)).toContain("616.9%");
+      expect(secondImage.layout.cells.filter((c) => c.fill === "#FFE699")).toHaveLength(2);
+      ws.send({ type: "render.result", requestId: secondImage.requestId, png });
+      await ws.waitFor((m) => m.type === "rec" && m.record.type === "turn.completed", "done");
+      const records = ws.msgs.flatMap((m) => (m.type === "rec" ? [m.record] : []));
+      const result = (n: number) =>
+        records.find((r) => r.type === "tool.result" && r.data.toolCallId === `observed-${n}`)?.data
+          .result;
+      expect(result(4)).toMatchObject({ status: "error", error: { code: "VERSION_CONFLICT" } });
+      expect(result(5)).toMatchObject({ status: "ok" });
+      expect(result(6)).toMatchObject({ status: "ok" });
+      const meta = (await api.getDocSnapshot(session.workspaceId, document.id)).document;
+      await ws.waitFor(
+        (m) => m.type === "doc.checkpoint" && m.checkpointRev === meta.rev,
+        "checkpoint",
+      );
+      const disk = importXlsx(readFileSync(join(srv.workspaceRoot, path)), path).snapshot;
+      const cell = disk.sheets.s0?.cellData?.[16]?.[2];
+      expect(cell?.v).toBe(123456);
+      const style = typeof cell?.s === "string" ? disk.styles?.[cell.s] : cell?.s;
+      expect(style).toMatchObject({ n: { pattern: "#,##0" } });
+      const percent = disk.sheets.s0?.cellData?.[16]?.[5];
+      expect(percent?.f).toBe("=C17/D17");
+      expect(percent?.v).toBeCloseTo(123456 / 20012, 6);
+      const percentStyle = typeof percent?.s === "string" ? disk.styles?.[percent.s] : percent?.s;
+      expect(percentStyle).toMatchObject({ n: { pattern: "0.0%" } });
+    } finally {
+      beforeRender.resolve();
+      beforeFix.resolve();
+      ws.close();
+    }
+  }, 60_000);
+
+  test("空工作簿创建、错误纠正、结构修改与即时回读贯通 HTTP/WS/SQLite，重启仍一致", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "excelmanus-empty-workbook-"));
+    dirs.push(dataDir);
+    const path = "空工作簿.xlsx";
+    const calls = [
+      {
+        name: "workbook_edit",
+        args: { path, create: true, ops: [{ op: "sheet.add", name: "Sheet1" }] },
+      },
+      { name: "workbook_edit", args: { path, create: true, ops: [] } },
+      { name: "workbook_read", args: { path, mode: "overview" } },
+      {
+        name: "workbook_edit",
+        args: {
+          path,
+          ops: [
+            { op: "sheet.rename", sheet: "Sheet1", name: "空白" },
+            { op: "sheet.add", name: "临时1" },
+            { op: "sheet.add", name: "临时2" },
+            { op: "cells.set", range: "空白!A1:B1", values: [[1, "=A1+1"]] },
+            { op: "cells.set", range: "空白!A1", values: [[2]] },
+          ],
+        },
+      },
+      { name: "workbook_read", args: { path, mode: "overview" } },
+      {
+        name: "workbook_edit",
+        args: {
+          path,
+          ops: [
+            { op: "cells.clear", range: "空白!A1:B1", what: "contents" },
+            { op: "sheet.delete", sheet: "临时1" },
+            { op: "sheet.delete", sheet: "临时2" },
+          ],
+        },
+      },
+      { name: "workbook_read", args: { path, mode: "overview" } },
+      { name: "workbook_edit", args: { path, ops: [{ op: "sheet.delete", sheet: "空白" }] } },
+      { name: "workbook_edit", args: { path, ops: [] } },
+      { name: "workbook_edit", args: { path: "预览.xlsx", create: true, dryRun: true, ops: [] } },
+    ];
+    let step = 0;
+    const model = new MockLanguageModelV4({
+      provider: "mock",
+      modelId: "mock-empty",
+      doStream: async () => {
+        const call = calls[step++];
+        return {
+          stream: streamOf(
+            call
+              ? toolCall(`empty-${step}`, call.name, JSON.stringify(call.args))
+              : [
+                  { type: "stream-start", warnings: [] },
+                  { type: "text-start", id: "done" },
+                  { type: "text-delta", id: "done", delta: "已完成空工作簿操作。" },
+                  { type: "text-end", id: "done" },
+                  { type: "finish", usage: USAGE, finishReason: { unified: "stop", raw: "stop" } },
+                ],
+          ),
+        };
+      },
+    });
+    const srv = await startServer({ dataDir, resolveLanguageModel: () => model, log: () => {} });
+    servers.push(srv);
+    const api = createApiClient(srv.url, srv.token);
+    await api.createModelProfile({
+      name: "mock",
+      provider: "custom-openai-compatible",
+      model: "mock-empty",
+      baseUrl: "https://mock.invalid/v1",
+      apiKey: "test",
+    });
+    const { session } = await api.createSession({});
+    const { ticket } = await api.createTicket();
+    const ws = await TestWs.connect(`ws://127.0.0.1:${srv.port}/api/v1/sync?ticket=${ticket}`);
+    await ws.waitFor((m) => m.type === "hello", "hello");
+    ws.send({ type: "sub", topic: `session:${session.id}`, cursor: 0 });
+    await ws.waitFor((m) => m.type === "sub.ok", "sub.ok");
+    await api.sendMessage(session.id, "main", { clientMessageId: "empty", text: "生成空工作簿" });
+    await ws.waitFor(
+      (m) => m.type === "rec" && m.record.type === "change.summary",
+      "change.summary",
+    );
+    const records = ws.msgs.flatMap((m) => (m.type === "rec" ? [m.record] : []));
+    const result = (n: number) =>
+      records.find((r) => r.type === "tool.result" && r.data.toolCallId === `empty-${n}`)?.data
+        .result as {
+        status: string;
+        error?: { code: string; hint?: string };
+        data: Record<string, unknown>;
+      };
+    expect(result(1).status).toBe("error");
+    expect(result(1).error?.hint).toContain("ops=[]");
+    expect(result(2)).toMatchObject({
+      status: "ok",
+      data: {
+        created: true,
+        sheets: [{ name: "Sheet1", cells: 0, formulas: 0 }],
+        changes: { cellsBySheet: {}, ranges: [], structural: ["新增工作表（Sheet1）"] },
+      },
+    });
+    const docId = result(2).data.docId as string;
+    expect(result(2).data.docRevs).toEqual({ [docId]: 1 });
+    expect(result(3)).toMatchObject({
+      status: "ok",
+      data: { sheets: [{ name: "Sheet1", cells: 0, formulas: 0 }] },
+    });
+    expect(result(4).data.changes).toMatchObject({ cellsBySheet: { 空白: 2 } });
+    expect(result(5).data.sheets).toEqual([
+      expect.objectContaining({ name: "空白", cells: 2, formulas: 1 }),
+      expect.objectContaining({ name: "临时1", cells: 0 }),
+      expect.objectContaining({ name: "临时2", cells: 0 }),
+    ]);
+    expect(result(6).data.changes).toEqual({
+      cellsBySheet: { 空白: 2 },
+      ranges: ["'空白'!A1:B1"],
+      structural: ["删除工作表（临时1）", "删除工作表（临时2）"],
+      added: [],
+    });
+    expect(result(7)).toMatchObject({
+      status: "ok",
+      data: { sheets: [{ name: "空白", cells: 0, formulas: 0 }], docRevs: { [docId]: 3 } },
+    });
+    expect(result(8).status).toBe("error");
+    expect(result(9).error?.code).toBe("INVALID_ARGUMENT");
+    expect(result(10)).toMatchObject({
+      status: "ok",
+      data: { dryRun: true, created: true, sheets: [{ name: "Sheet1", cells: 0 }] },
+    });
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(join(srv.workspaceRoot, "预览.xlsx"))).toBe(false);
+    const summary = records.find((r) => r.type === "change.summary")?.data.changes as {
+      docs: { cellsBySheet: unknown; structural: string[]; revs: number[] }[];
+    };
+    expect(summary.docs[0]).toMatchObject({ cellsBySheet: { 空白: 2 }, revs: [1, 2, 3] });
+    expect(summary.docs[0]?.structural).toContain("删除工作表（临时1）");
+    ws.send({ type: "sub", topic: `doc:${docId}`, cursor: 0 });
+    await ws.waitFor(
+      (m) =>
+        m.type === "doc.op" && m.rev === 3 && (!m.chunk || m.chunk.index === m.chunk.total - 1),
+      "replay rev3",
+    );
+    expect([...new Set(ws.msgs.filter((m) => m.type === "doc.op").map((m) => m.rev))]).toEqual([
+      1, 2, 3,
+    ]);
+    const verifyDb = new DatabaseSync(join(dataDir, "excelmanus.db"));
+    expect(
+      verifyDb.prepare("SELECT COUNT(*) AS n FROM doc_ops WHERE doc_id=?").get(docId),
+    ).toMatchObject({ n: 3 });
+    expect(
+      verifyDb.prepare("SELECT COUNT(*) AS n FROM documents WHERE path='预览.xlsx'").get(),
+    ).toMatchObject({ n: 0 });
+    expect(
+      verifyDb
+        .prepare("SELECT COUNT(*) AS n FROM backups WHERE kind='backup' AND original_path=?")
+        .get(path),
+    ).toMatchObject({ n: 0 });
+    verifyDb.close();
+    ws.close();
+    await srv.close();
+    servers.splice(servers.indexOf(srv), 1);
+    const disk = importXlsx(readFileSync(join(srv.workspaceRoot, path)), path);
+    expect(disk.snapshot.sheetOrder.length).toBe(1);
+    expect(disk.snapshot.sheets.s0?.name).toBe("空白");
+    expect(disk.cellCounts["空白"]).toBe(0);
+    const restarted = await startServer({
+      dataDir,
+      resolveLanguageModel: () => model,
+      log: () => {},
+    });
+    servers.push(restarted);
+    const api2 = createApiClient(restarted.url, restarted.token);
+    const { snapshot, document } = await api2.getDocSnapshot(session.workspaceId, docId);
+    expect(document.rev).toBe(3);
+    const restored = snapshot as {
+      sheetOrder: string[];
+      sheets: Record<string, { name: string; cellData: unknown }>;
+    };
+    expect(restored.sheetOrder.length).toBe(1);
+    expect(restored.sheets[restored.sheetOrder[0] ?? ""]?.name).toBe("空白");
+    expect(restored.sheets[restored.sheetOrder[0] ?? ""]?.cellData).toEqual({});
+  }, 60_000);
+
   test("代理写文档 → doc.op 广播 → doc.submit 冲突/续传", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "excelmanus-e2e-doc-"));
     dirs.push(dataDir);
@@ -269,7 +697,12 @@ describe("e2e：活文档写入 + doc: 同步", () => {
       mutations: [
         {
           id: "sheet.mutation.set-range-values",
-          params: { unitId, subUnitId, cellValue: { 1: { 3: { v: "冲突写" } } } },
+          params: {
+            unitId,
+            subUnitId,
+            trigger: "sheet.command.set-range-values",
+            cellValue: { 1: { 3: { v: "冲突写" } } },
+          },
         },
       ],
     });
@@ -289,7 +722,12 @@ describe("e2e：活文档写入 + doc: 同步", () => {
       mutations: [
         {
           id: "sheet.mutation.set-range-values",
-          params: { unitId, subUnitId, cellValue: { 10: { 0: { v: "另一处" } } } },
+          params: {
+            unitId,
+            subUnitId,
+            trigger: "sheet.command.set-range-values",
+            cellValue: { 10: { 0: { v: "另一处" } } },
+          },
         },
       ],
     });

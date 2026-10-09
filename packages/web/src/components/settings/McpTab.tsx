@@ -7,9 +7,10 @@ import { ST } from "../../strings.ts";
 import { Icon } from "../Icon.tsx";
 import { Button } from "../ui/button.tsx";
 import { Switch } from "../ui/controls.tsx";
-import { Alert, Badge, Card, Separator, statusTone } from "../ui/display.tsx";
+import { Alert, Badge, Separator, statusTone } from "../ui/display.tsx";
 import { Label } from "../ui/field.tsx";
 import { Input, Textarea } from "../ui/input.tsx";
+import { Disclosure } from "../ui/overlay.tsx";
 import { SimpleSelect } from "../ui/select.tsx";
 import {
   Empty,
@@ -17,6 +18,7 @@ import {
   Field,
   formatPairs,
   ItemCard,
+  LoadStatus,
   parsePairs,
   Section,
   useAction,
@@ -91,7 +93,7 @@ function ServerForm({
   const act = useAction();
   return (
     <form
-      className="flex flex-col gap-4"
+      className="settings-form flex flex-col gap-5"
       onSubmit={(e) => {
         e.preventDefault();
         void act
@@ -99,7 +101,7 @@ function ServerForm({
           .then((ok) => ok && initial === emptyDraft && setD(emptyDraft));
       }}
     >
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 gap-4 @min-[500px]:grid-cols-2">
         <Field label={ST.mcpName}>
           <Input
             mono
@@ -206,16 +208,15 @@ function ServerItem({ s, onChanged }: { s: McpServer; onChanged(): void }) {
   const confirmDelete = useConfirmDelete();
   const enabledId = useId();
   return (
-    <ItemCard className="gap-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-          <Icon name="plug" size="sm" className="text-muted-foreground" />
+    <ItemCard className="settings-mcp-server gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <span className="flex size-8 items-center justify-center rounded-md bg-muted text-foreground-secondary">
+            <Icon name="plug" size="sm" />
+          </span>
           <strong className="font-mono text-sm font-semibold">{s.name}</strong>
           <span className="font-mono text-2xs text-muted-foreground">{s.transport}</span>
           <Badge tone={statusTone(s.status)}>{ST.mcpStatus[s.status] ?? s.status}</Badge>
-          {s.status === "connected" && (
-            <span className="text-xs text-muted-foreground">{ST.mcpTools(s.tools.length)}</span>
-          )}
         </div>
         <span className="flex shrink-0 items-center gap-1.5">
           <Switch
@@ -238,10 +239,10 @@ function ServerItem({ s, onChanged }: { s: McpServer; onChanged(): void }) {
         </Alert>
       )}
       {s.tools.length > 0 && (
-        <Card asChild className="divide-y divide-border">
-          <ul>
+        <Disclosure summary={ST.mcpTools(s.tools.length)} contentClassName="pt-4">
+          <ul className="divide-y divide-border/60 border-t border-border/60">
             {s.tools.map((t) => (
-              <li key={t.name} className="flex items-start gap-3 px-3 py-2">
+              <li key={t.name} className="flex flex-wrap items-start gap-3 py-3">
                 <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                   <span className="flex flex-wrap items-center gap-1.5">
                     <code className="font-mono text-xs">{t.qualifiedName}</code>
@@ -266,12 +267,12 @@ function ServerItem({ s, onChanged }: { s: McpServer; onChanged(): void }) {
               </li>
             ))}
           </ul>
-        </Card>
+        </Disclosure>
       )}
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="-mx-1.5 flex flex-wrap items-center gap-1">
         <Button
           size="sm"
-          variant="outline"
+          variant="ghost"
           disabled={act.busy}
           onClick={() =>
             void act.run(async () => {
@@ -283,7 +284,7 @@ function ServerItem({ s, onChanged }: { s: McpServer; onChanged(): void }) {
         >
           {ST.mcpTest}
         </Button>
-        <Button size="sm" variant="outline" onClick={() => setEditing(!editing)}>
+        <Button size="sm" variant="ghost" onClick={() => setEditing(!editing)}>
           {editing ? ST.cancel : ST.edit}
         </Button>
         <span className="flex-1" />
@@ -332,13 +333,12 @@ export function McpTab() {
   useEffect(() => onAppEvent((e) => e.type === "mcp.status" && list.reload()), [list.reload]);
   return (
     <>
-      <p className="-mt-2 text-xs text-muted-foreground">{ST.mcpHint}</p>
       <Section
-        title={ST.tabs.mcp}
+        hint={ST.mcpHint}
         actions={
           <Button
             size="sm"
-            variant="outline"
+            variant="ghost"
             loading={act.busy}
             onClick={() =>
               void act.run(async () => {
@@ -352,30 +352,35 @@ export function McpTab() {
           </Button>
         }
       >
+        <LoadStatus data={list.data} error={list.error} />
         <Feedback msg={act.msg} />
-        <div className="flex flex-col gap-2">
+        <div className="settings-list flex flex-col gap-3">
           {list.data?.items.length === 0 && <Empty />}
           {list.data?.items.map((s) => (
             <ServerItem key={s.id} s={s} onChanged={list.reload} />
           ))}
         </div>
       </Section>
-      <Section title={ST.add}>
-        <Card className="p-4">
-          <ServerForm
-            initial={emptyDraft}
-            submitLabel={ST.add}
-            onSubmit={async (d) => {
-              await api.createMcpServer({
-                name: d.name,
-                transport: d.transport,
-                config: toConfig(d),
-              });
-              list.reload();
-            }}
-          />
-        </Card>
-      </Section>
+      <Disclosure
+        className="settings-create border-t border-border/70 pt-6"
+        summary={ST.addMcpServer}
+        variant="section"
+        icon={<Icon name="plus" size="sm" />}
+        contentClassName="pt-5"
+      >
+        <ServerForm
+          initial={emptyDraft}
+          submitLabel={ST.addMcpServer}
+          onSubmit={async (d) => {
+            await api.createMcpServer({
+              name: d.name,
+              transport: d.transport,
+              config: toConfig(d),
+            });
+            list.reload();
+          }}
+        />
+      </Disclosure>
     </>
   );
 }

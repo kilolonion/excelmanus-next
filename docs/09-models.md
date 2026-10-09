@@ -23,6 +23,8 @@
 
 **提供商预设**是产品自有的一张小表：显示名、图标、默认 Base URL、使用的适配包、兼容参数、获取密钥的帮助链接、中国大陆是否可直连。新增提供商只改这张表（及必要的兼容参数），不改运行时。
 
+2026-10-02 按用户要求导入一代项目的提供商品牌 SVG 素材，统一经前端 `Icon.tsx` 渲染。对话模型选择器（当前值及选项）、空白会话模型状态、设置档案、提供商/模型候选、用途分配、订阅账号和团队档案标识使用实际档案的 `provider` 对应 Logo；ChatGPT 使用 OpenAI Logo。自定义兼容接口与未知提供商使用中性备用素材，不根据模型名猜测提供商。素材本地打包、离线加载；单色图标适配深色主题，彩色素材保留原色。接入来源与验收见 [提供商 Logo 验收](acceptance/provider-logos-2026-10-02.md)。
+
 **多轮思考内容回传**因提供商与路由而异（2026-09 核实：DeepSeek 官方包对新模型回传 `reasoning_content`；经 openai-compatible 路由曾出现回传缺陷）。因此每个预设都必须有录制回放的回归测试，覆盖"带思考的多轮 + 工具调用"（[14 §3](14-quality.md#3-测试分层)）。
 
 ## 3. 模型档案
@@ -35,12 +37,16 @@
 | `baseUrl` | 可覆盖预设 |
 | `credentialRef` | 指向加密存储的 API Key 或订阅账号 |
 | `contextWindow` / `maxOutputTokens` | 默认来自模型目录，可覆盖 |
-| `reasoning` | 默认思考强度：`provider-default` / `none` / `minimal` / `low` / `medium` / `high` / `xhigh`（AI SDK 7 统一取值） |
+| `reasoning` | 默认思考强度：`provider-default`（默认）/ `none`（无）/ `minimal` / `low` / `medium` / `high` / `xhigh` / `max`（最高）；前七项使用 AI SDK 7 统一取值，`max` 见下述适配 |
 | `capabilities` | 工具调用、视觉、思考：每项记录 `value` 与 `source`（`catalog` / `probe` / `manual`）及时间 |
 | `extraHeaders` / `providerOptions` | 高级选项，折叠显示 |
 | `maxConcurrency` | 该档案同时进行的请求数上限（默认 4，防止多个子代理同时触发限流） |
 
 用途分配（设置 → 模型）：主对话（必填）、子代理默认（默认同主对话）、上下文压缩摘要（默认同主对话；建议选便宜的模型）、标题生成（可选）。
+
+2026-10-02 用户要求将入口文案缩短为「默认」「无」，并新增独立的「最高」等级。`max` 超出当前锁定 SDK 的统一 reasoning 枚举，由 models 适配层通过官方 providerOptions 传递：OpenAI/ChatGPT 为 `openai.reasoningEffort=max`，Anthropic 为 `anthropic.effort=max` + adaptive thinking，OpenAI 兼容接口为对应提供商 camelCase 命名空间的 `reasoningEffort=max`（自定义接口为 `customOpenaiCompatible`），覆盖原有低等级选项。其余适配器显式返回 invalid_request，不静默降级。具体模型是否接受 max 由提供商决定。
+
+同日用户追加要求移除 minimal 的默认展示。聊天和设置中心统一提供「默认、无、低、中、高、极高、最高」七个选择；协议保留 minimal 以读取已有配置，已有值只显示为「最少（已保存）」，不加入可选列表，不自动改写已有档案。
 
 用户可在对话中用 `/model <名称>` 或模型选择器切换当前会话的主模型。
 
