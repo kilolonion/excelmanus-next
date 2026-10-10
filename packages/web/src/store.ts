@@ -10,6 +10,7 @@ import type {
   ServerMessage,
   SessionSummary,
 } from "@excelmanus/protocol";
+import { protocolCompatible } from "@excelmanus/protocol";
 import { create } from "zustand";
 import {
   apiClient,
@@ -82,6 +83,7 @@ interface AppState {
   /** /compact 等斜杠命令的短提示（下一次发送时清除）。 */
   commandNotice: string | null;
   sidebarCollapsed: boolean;
+  workspaceView: "workbench" | "files" | "team";
   /** 设置中心打开时的初始分页。 */
   settingsTab: string;
   appVersion: string;
@@ -183,6 +185,7 @@ export const useApp = create<AppState>(() => ({
   referenceError: null,
   commandNotice: null,
   sidebarCollapsed: false,
+  workspaceView: "workbench",
   settingsTab: "models",
   appVersion: "",
   dataDir: null,
@@ -507,6 +510,10 @@ async function initialize(): Promise<void> {
   try {
     if (!token) await api.createBrowserSession();
     const boot = await api.bootstrap();
+    if (!protocolCompatible(boot.protocolVersion)) {
+      set({ ready: true, fatal: "protocol-mismatch" });
+      return;
+    }
     set({
       hasModelProfile: boot.hasModelProfile,
       appVersion: boot.appVersion,
@@ -614,6 +621,11 @@ async function initialize(): Promise<void> {
         if (msg.data.type.startsWith("session.")) void reconcileSessions().catch(() => undefined);
         if (msg.data.type === "workspaces.changed") void refreshWorkspaces().catch(() => undefined);
       } else if (msg.type === "hello") {
+        if (!protocolCompatible(msg.protocolVersion)) {
+          sync?.stop();
+          set({ ready: true, connected: false, fatal: "protocol-mismatch" });
+          return;
+        }
         syncConnectionId = msg.connectionId;
         set({ connected: true, presenceConnectionId: msg.connectionId });
         const docId = get().doc?.docId;
@@ -1230,14 +1242,15 @@ export function previewRange(range: string | null): void {
   set({ rangePreview: range });
 }
 
-export async function uploadWorkspaceFile(file: File): Promise<void> {
-  await uploadWorkspaceFileReturningPath(file);
+export async function uploadWorkspaceFile(file: File, path?: string): Promise<void> {
+  await uploadWorkspaceFileReturningPath(file, path);
 }
 
-async function uploadWorkspaceFileReturningPath(file: File): Promise<string> {
+async function uploadWorkspaceFileReturningPath(file: File, directory?: string): Promise<string> {
   const { path } = await requireApi().uploadFile(get().workspaceId, {
     name: file.name,
     data: file,
+    path: directory,
   });
   await refreshFiles();
   return path;

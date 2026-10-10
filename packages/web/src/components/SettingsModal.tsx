@@ -16,9 +16,11 @@ import { SkillsTab } from "./settings/SkillsTab.tsx";
 import { IconButton } from "./ui/button.tsx";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "./ui/dialog.tsx";
 import { Badge, EmptyState, NavItem, SectionLabel } from "./ui/display.tsx";
+import { FormGuard, useFormGuard } from "./ui/form-guard.tsx";
 import { SearchInput } from "./ui/input.tsx";
 import { Kbd } from "./ui/kbd.tsx";
 import { ScrollArea } from "./ui/overlay.tsx";
+import { PageHeader } from "./ui/page-layout.tsx";
 
 type Tab = keyof typeof ST.tabs;
 
@@ -35,6 +37,18 @@ const TAB_ICONS: Record<Tab, IconName> = {
 };
 
 export function SettingsModal() {
+  return (
+    <FormGuard>
+      <SettingsContent />
+    </FormGuard>
+  );
+}
+
+function SettingsContent() {
+  const guard = useFormGuard();
+  const close = async () => {
+    if (await guard.confirmLeave()) setSettingsOpen(false);
+  };
   const open = useApp((s) => s.settingsOpen);
   const initial = useApp((s) => s.settingsTab) as Tab;
   const [tab, setTab] = useState<Tab>(initial in ST.tabs ? initial : "models");
@@ -53,12 +67,16 @@ export function SettingsModal() {
   const matches = (t: Tab, needle: string) =>
     needle === "" || `${ST.tabs[t]} ${ST.tabKeywords[t]}`.toLowerCase().includes(needle);
   const tabs = (Object.keys(ST.tabs) as Tab[]).filter((t) => matches(t, q.trim().toLowerCase()));
-  const groupTitle = ST.groups.find((group) => group.tabs.includes(tab))?.title;
   return (
-    <Dialog open={open} onOpenChange={(o) => !o && setSettingsOpen(false)}>
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) void close();
+      }}
+    >
       <DialogContent
         aria-describedby="settings-intro"
-        className="settings-shell grid h-[min(820px,calc(100dvh-48px))] w-[min(1120px,calc(100vw-48px))] grid-cols-[228px_minmax(0,1fr)] overflow-hidden p-0 max-[900px]:grid-cols-[196px_minmax(0,1fr)] max-[700px]:h-[calc(100dvh-24px)] max-[700px]:w-[calc(100vw-24px)] max-[700px]:grid-cols-1 max-[700px]:grid-rows-[auto_minmax(0,1fr)]"
+        className="settings-shell grid h-[min(920px,calc(100dvh-40px))] w-[min(1360px,calc(100vw-40px))] grid-cols-[228px_minmax(0,1fr)] overflow-hidden p-0 max-[900px]:grid-cols-[196px_minmax(0,1fr)] max-[700px]:h-[calc(100dvh-24px)] max-[700px]:w-[calc(100vw-24px)] max-[700px]:grid-cols-1 max-[700px]:grid-rows-[auto_minmax(0,1fr)]"
       >
         <nav
           className="settings-nav flex min-h-0 flex-col gap-7 border-r border-border/70 bg-muted/60 max-[700px]:gap-3 max-[700px]:border-r-0 max-[700px]:border-b"
@@ -76,10 +94,6 @@ export function SettingsModal() {
               value={q}
               onChange={(e) => {
                 setQ(e.target.value);
-                const first = (Object.keys(ST.tabs) as Tab[]).find((t) =>
-                  matches(t, e.target.value.trim().toLowerCase()),
-                );
-                if (first) setTab(first);
               }}
             />
           </div>
@@ -112,7 +126,12 @@ export function SettingsModal() {
                           />
                         }
                         meta={status[t] ? <Badge tone="neutral">{status[t]}</Badge> : undefined}
-                        onClick={() => setTab(t)}
+                        onClick={() => {
+                          if (t === tab) return;
+                          void guard.confirmLeave().then((ok) => {
+                            if (ok) setTab(t);
+                          });
+                        }}
                       >
                         {ST.tabs[t]}
                       </NavItem>
@@ -125,32 +144,26 @@ export function SettingsModal() {
           </ScrollArea>
         </nav>
         <div className="settings-page @container flex min-h-0 min-w-0 flex-col">
-          <div className="settings-page-header flex min-h-[140px] shrink-0 items-start gap-4 border-b border-border/70 px-10 py-6 @max-[600px]:min-h-0 @max-[600px]:px-6 @max-[600px]:py-5">
-            <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-              <SectionLabel className="settings-eyebrow">{groupTitle}</SectionLabel>
-              <h2 className="text-[28px] leading-tight font-semibold tracking-[-0.04em] @max-[600px]:text-2xl">
-                {ST.tabs[tab]}
-              </h2>
-              <DialogDescription
-                id="settings-intro"
-                className="max-w-[620px] text-sm leading-6 text-muted-foreground"
-              >
-                {ST.tabIntro[tab]}
-              </DialogDescription>
-            </div>
-            <IconButton
-              icon="x"
-              size="icon"
-              label={S.close}
-              tooltip={
-                <span className="flex items-center gap-1.5">
-                  {S.close}
-                  <Kbd inverted>Esc</Kbd>
-                </span>
-              }
-              onClick={() => setSettingsOpen(false)}
-            />
-          </div>
+          <PageHeader
+            className="settings-page-header"
+            title={ST.tabs[tab]}
+            description={
+              <DialogDescription id="settings-intro">{ST.tabIntro[tab]}</DialogDescription>
+            }
+            actions={
+              <IconButton
+                icon="x"
+                size="icon"
+                label={S.close}
+                tooltip={
+                  <span>
+                    {S.close} <Kbd inverted>Esc</Kbd>
+                  </span>
+                }
+                onClick={() => void close()}
+              />
+            }
+          />
           <ScrollArea key={tab} className="flex-1">
             <div className="settings-body flex w-full scroll-pb-20 flex-col gap-9 px-10 py-7 @max-[600px]:gap-7 @max-[600px]:px-6 @max-[600px]:py-6">
               {tab === "models" && <ModelsTab />}

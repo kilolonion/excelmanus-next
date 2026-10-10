@@ -1,7 +1,7 @@
 // 只读活文档真实边界测试（07 §3、06 §4.1–4.2）：
 // 真实 samples/sales.xlsx 与 GBK CSV 落盘工作区，经 DocumentService + 工具实参直跑。
 
-import { cpSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -203,4 +203,129 @@ describe("workbook 工具", () => {
     const r = await read.execute({ path: "../escape.xlsx", mode: "overview" }, ctx);
     expect(r.status).toBe("error");
   });
+});
+
+test("SQL 跨文件 JOIN 记录全部读集，样式与规则可观察", async () => {
+  const { read, analyze, ctx, service } = setup();
+  try {
+    cpSync(join(ctx.workspaceRoot, "sales.xlsx"), join(ctx.workspaceRoot, "other.xlsx"));
+    const result = await analyze.execute(
+      {
+        path: "sales.xlsx",
+        sheet: "销售",
+        range: "A2:F52",
+        mode: "sql",
+        sources: [{ name: "other", path: "other.xlsx", sheet: "销售", range: "A2:F52" }],
+        sql: "SELECT SUM(a.金额) AS total FROM data a JOIN other b ON a.地区=b.地区 WHERE a.产品=b.产品",
+      },
+      ctx,
+    );
+    expect(result.status, JSON.stringify(result)).toBe("ok");
+    const data = result.data as Record<string, unknown>;
+    expect(Object.keys(data.docRevs as object)).toHaveLength(2);
+    const styles = await read.execute(
+      {
+        path: "sales.xlsx",
+        mode: "range",
+        range: "销售!A2:F4",
+        facets: ["styles", "rules", "layout"],
+      },
+      ctx,
+    );
+    expect(styles.status).toBe("ok");
+    expect((styles.data as { styles: unknown[][] }).styles).toHaveLength(3);
+    expect((styles.data as { coverage: Record<string, string> }).coverage.values).toBe(
+      "not_requested",
+    );
+  } finally {
+    await service.close();
+  }
+});
+
+test("真实工作簿工具：结构化行、公式依赖、跨文件差异和九类校验", async () => {
+  const { read, analyze, ctx, service } = setup();
+  try {
+    writeFileSync(
+      join(ctx.workspaceRoot, "left.csv"),
+      "id,label,amount,error\n1,A,10,\n2,A,20,\n3,,-1,#REF!\n",
+    );
+    writeFileSync(
+      join(ctx.workspaceRoot, "right.csv"),
+      "id,label,amount,error\n1,A,11,\n2,A,20,\n4,C,30,\n",
+    );
+    writeFileSync(join(ctx.workspaceRoot, "keys.csv"), "id\n1\n2\n");
+    const table = await read.execute({ path: "left.csv", mode: "table", range: "A1:D4" }, ctx);
+    expect(table.status).toBe("ok");
+    expect((table.data as { rows: unknown[] }).rows).toHaveLength(3);
+    const graph = await read.execute(
+      { path: "sales.xlsx", mode: "formula_graph", range: "销售!F3", depth: 2 },
+      ctx,
+    );
+    expect(graph.status, JSON.stringify(graph)).toBe("ok");
+    expect(
+      (graph.data as { precedents: { items: { references: unknown[] }[] } }).precedents.items[0]
+        ?.references,
+    ).toHaveLength(2);
+    const diff = await analyze.execute(
+      { path: "left.csv", mode: "diff", keys: ["id"], right: { path: "right.csv" } },
+      ctx,
+    );
+    expect(diff.status, JSON.stringify(diff)).toBe("ok");
+    expect(diff.data).toMatchObject({ added: 1, deleted: 1, modified: 1 });
+    const checks = await analyze.execute(
+      {
+        path: "left.csv",
+        mode: "check",
+        sources: [{ name: "keys", path: "keys.csv" }],
+        checks: [
+          { kind: "required", column: "label" },
+          { kind: "unique", column: "label" },
+          { kind: "range", column: "amount", min: 0, max: 30 },
+          { kind: "pattern", column: "label", pattern: "^B$" },
+          { kind: "foreign_key", column: "id", source: "keys", referenceColumn: "id" },
+          { kind: "row_expression", expression: "amount>=0" },
+          { kind: "cell", column: "amount", row: 1, expected: 10 },
+          { kind: "total", column: "amount", expected: 29 },
+          { kind: "formula_errors" },
+        ],
+      },
+      ctx,
+    );
+    expect(checks.status, JSON.stringify(checks)).toBe("ok");
+    const rules = (checks.data as { rules: { passed: boolean; failedCount: number }[] }).rules;
+    expect(rules.map((r) => r.failedCount)).toEqual([1, 2, 1, 2, 1, 1, 0, 0, 1]);
+  } finally {
+    await service.close();
+  }
+});
+
+test("图片对象通过实际工具新增、查询和视觉提取", async () => {
+  const { read, ctx, service } = setup();
+  try {
+    const bytes = readFileSync(
+      new URL("../../../../fixtures/skill-evals/image-source.png", import.meta.url),
+    );
+    writeFileSync(join(ctx.workspaceRoot, "source.png"), bytes);
+    const edit = workbookTools(service).find((t) => t.name === "workbook_edit")!;
+    const result = await edit.execute(
+      {
+        path: "sales.xlsx",
+        ops: [{ op: "image.add", sheet: "销售", path: "source.png", anchor: "H2" }],
+      },
+      ctx,
+    );
+    expect(result.status, JSON.stringify(result)).toBe("ok");
+    const listed = await read.execute({ path: "sales.xlsx", mode: "objects" }, ctx);
+    const objects = (listed.data as { objects: { images: { id: string; data?: string }[] }[] })
+      .objects;
+    const image = objects.flatMap((o) => o.images)[0]!;
+    expect(image.data).toBeUndefined();
+    const extracted = await read.execute(
+      { path: "sales.xlsx", mode: "objects", imageId: image.id },
+      ctx,
+    );
+    expect(Buffer.from(extracted.images![0]!.data, "base64")).toEqual(bytes);
+  } finally {
+    await service.close();
+  }
 });

@@ -16,9 +16,20 @@ const portArg = argValue("--port");
 const port = portArg !== undefined ? Number(portArg) : undefined;
 const dev = process.argv.includes("--dev") || process.env.EXCELMANUS_DEV === "1";
 
+const splitEnv = (name: string): string[] =>
+  (process.env[name] ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+const extraHosts = splitEnv("EXCELMANUS_EXTRA_HOSTS");
+const extraOrigins = splitEnv("EXCELMANUS_EXTRA_ORIGINS");
+
 const srv = await startServer({
   dataDir,
   ...(port !== undefined ? { port } : {}),
+  ...(extraHosts.length > 0 ? { extraHosts } : {}),
+  ...(extraOrigins.length > 0 ? { extraOrigins } : {}),
   ...(dev ? { dev: true } : {}),
 });
 

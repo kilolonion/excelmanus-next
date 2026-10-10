@@ -90,6 +90,7 @@ export const SkillDetail = Skill.extend({
   resources: z.array(z.string()),
 });
 export type SkillDetail = z.infer<typeof SkillDetail>;
+export const SkillResponse = z.object({ skill: Skill });
 export const SkillListResponse = z.object({ items: z.array(Skill) });
 export const SkillDetailResponse = z.object({ skill: SkillDetail });
 export const UpdateSkillBody = z.strictObject({ enabled: z.boolean() });
@@ -291,3 +292,53 @@ export const BackupEntry = z.object({
   sessionId: z.string(),
 });
 export const BackupListResponse = z.object({ items: z.array(BackupEntry) });
+
+// Remaining REST DTOs share one schema between clients, OpenAPI and dev validation.
+export const WorkspaceResponse = z.object({ workspace: Workspace });
+export const CreateWorkspaceBody = z.strictObject({
+  path: z.string().min(1),
+  name: z.string().optional(),
+});
+export const UpdateWorkspaceBody = z.strictObject({
+  name: z.string().optional(),
+  isDefault: z.boolean().optional(),
+});
+export const RestoreBackupResponse = z.object({
+  ok: z.literal(true),
+  path: z.string(),
+  backupOfCurrent: z.string().optional(),
+});
+export const SampleListResponse = z.object({ items: z.array(z.string()) });
+export const SampleResponse = z.object({ path: z.string() });
+export const SwitchAgentModelBody = z.union([
+  z.object({ modelProfileId: z.string().min(1) }),
+  z.object({ modelName: z.string().min(1) }),
+]);
+export const SwitchAgentModelResponse = z.object({
+  ok: z.literal(true),
+  modelProfileId: z.string(),
+  name: z.string(),
+});
+export const AccountResponse = z.object({ account: Account });
+export const ProviderModelsBody = z.strictObject({
+  apiKey: z.string().optional(),
+  baseUrl: z.string().optional(),
+  accountId: z.string().optional(),
+});
+export const DeviceListResponse = z.object({
+  items: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      kind: z.string(),
+      createdAt: z.string(),
+      lastSeenAt: z.string().nullable(),
+      revokedAt: z.string().nullable(),
+    }),
+  ),
+});
+export const BinaryResponse = z.string().meta({ format: "binary" });
+export const UploadFileBody = z.object({
+  file: z.string().meta({ format: "binary" }),
+  path: z.string().optional(),
+});

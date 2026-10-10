@@ -450,6 +450,15 @@ importers:
       '@univerjs/sheets':
         specifier: 1.0.2
         version: 1.0.2(react@19.3.0)(rxjs@7.8.2)
+      '@univerjs/sheets-conditional-formatting':
+        specifier: 1.0.2
+        version: 1.0.2(react@19.3.0)(rxjs@7.8.2)
+      '@univerjs/sheets-data-validation':
+        specifier: 1.0.2
+        version: 1.0.2(react@19.3.0)(rxjs@7.8.2)
+      '@univerjs/sheets-filter':
+        specifier: 1.0.2
+        version: 1.0.2(react@19.3.0)(rxjs@7.8.2)
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1

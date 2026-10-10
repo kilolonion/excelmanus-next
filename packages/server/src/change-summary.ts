@@ -49,17 +49,20 @@ export function workbookChangeSummary(db: DatabaseSync, svc: DocumentService): C
             names.set(id, (s as { name?: string }).name ?? id);
           }
         } catch {}
-        const writeSet: { ranges: RangeRef[]; structural: StructuralOp[] } = {
+        const writeSet: { ranges: RangeRef[]; structural: StructuralOp[]; objects: string[] } = {
           ranges: [],
           structural: [],
+          objects: [],
         };
         for (const op of ops) {
           const ws = JSON.parse(op.write_set) as {
             ranges?: RangeRef[];
             structural?: StructuralOp[];
+            objects?: string[];
           };
           writeSet.ranges.push(...(ws.ranges ?? []));
           writeSet.structural.push(...(ws.structural ?? []));
+          writeSet.objects.push(...(ws.objects ?? []));
         }
         const backup = db
           .prepare(

@@ -9,6 +9,7 @@ import { Button } from "../ui/button.tsx";
 import { Checkbox } from "../ui/controls.tsx";
 import { Badge } from "../ui/display.tsx";
 import { Field as UiField } from "../ui/field.tsx";
+import { useFormGuard, useUnsavedChanges } from "../ui/form-guard.tsx";
 import { SearchInput, Textarea } from "../ui/input.tsx";
 import { Disclosure } from "../ui/overlay.tsx";
 import { SimpleSelect } from "../ui/select.tsx";
@@ -41,6 +42,7 @@ function CategorySelect({ value, onChange }: { value: Category; onChange(v: Cate
 function MemoryItem({ m, onChanged }: { m: Memory; onChanged(): void }) {
   const api = apiClientOf();
   const [edit, setEdit] = useState<{ content: string; category: Category } | null>(null);
+  useUnsavedChanges(!!edit && (edit.content !== m.content || edit.category !== m.category));
   const act = useAction();
   const confirmDelete = useConfirmDelete();
   return (
@@ -118,6 +120,7 @@ function MemoryItem({ m, onChanged }: { m: Memory; onChanged(): void }) {
 }
 
 export function MemoriesTab() {
+  const guard = useFormGuard();
   const api = apiClientOf();
   const workspaceId = useApp((s) => s.workspaceId);
   const [q, setQ] = useState("");
@@ -139,7 +142,12 @@ export function MemoriesTab() {
           className="max-w-[420px]"
           aria-label={ST.memorySearch}
           value={q}
-          onChange={(e) => setQ(e.target.value)}
+          onChange={(e) => {
+            const next = e.target.value;
+            void guard.confirmLeave().then((ok) => {
+              if (ok) setQ(next);
+            });
+          }}
         />
         <LoadStatus data={list.data} error={list.error} />
         <div className="settings-list flex flex-col gap-3">

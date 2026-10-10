@@ -453,3 +453,30 @@ export const UploadResponse = z.object({
   path: z.string(),
   size: z.number().nonnegative(),
 });
+
+export const RenderDocBody = z.strictObject({
+  sheet: z.string().optional(),
+  range: z.string().optional(),
+  rev: z.int().nonnegative().optional(),
+});
+export const RenderDocResponse = z.object({
+  docId: z.string(),
+  rev: z.int(),
+  range: z.string(),
+  png: z.string(),
+  limitations: z.array(z.string()),
+  size: z.object({ width: z.number(), height: z.number() }),
+});
+
+export const SessionLogQuery = z.strictObject({
+  before: z.coerce.number().int().positive().optional(),
+  limit: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(200)
+    .transform((value) => Math.min(value, 500)),
+});
+
+export const ApprovalListResponse = z.object({ items: z.array(ApprovalResponse.shape.approval) });
+export const AttachmentUploadResponse = z.object({ attachment: AttachmentRef });

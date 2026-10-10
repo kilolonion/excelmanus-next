@@ -1,5 +1,5 @@
 import { parseRange } from "@excelmanus/core";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
   type ApprovalCard,
   type PendingWriteOperation,
@@ -8,11 +8,12 @@ import {
   type TodoItem,
 } from "../reduce.ts";
 import { answerQuestion, decideApproval, focusRange, openWorkspaceFile, useApp } from "../store.ts";
-import { S, toolTitle } from "../strings.ts";
+import { S, toolTitle, UI } from "../strings.ts";
 import { Icon } from "./Icon.tsx";
 import { Button } from "./ui/button.tsx";
 import { cn } from "./ui/cn.ts";
 import { Checkbox, RadioGroup, RadioGroupItem } from "./ui/controls.tsx";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "./ui/dialog.tsx";
 import { Alert, Badge, Card, RangeChip, statusTone } from "./ui/display.tsx";
 import {
   DropdownMenu,
@@ -430,6 +431,8 @@ function CardHead({
 
 /** 待审批条（02 §4.4、对齐清单 A6）：一行写明改哪里；理由框只在拒绝时展开；自动批准是一个独立决定。 */
 function ApprovalBar({ cards }: { cards: ApprovalCard[] }) {
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const submitting = useRef(false);
   const doc = useApp((state) => state.doc);
   const [busy, setBusy] = useState<string | null>(null);
   const [denying, setDenying] = useState<string | null>(null);
@@ -437,6 +440,8 @@ function ApprovalBar({ cards }: { cards: ApprovalCard[] }) {
   const [error, setError] = useState<string | null>(null);
 
   const decide = async (card: ApprovalCard, decision: "approve" | "deny", remember = false) => {
+    if (submitting.current) return;
+    submitting.current = true;
     setBusy(card.approvalId);
     setError(null);
     try {
@@ -447,9 +452,11 @@ function ApprovalBar({ cards }: { cards: ApprovalCard[] }) {
         remember,
       );
       setDenying(null);
+      setExpanded(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : S.interactionFailed);
     } finally {
+      submitting.current = false;
       setBusy(null);
     }
   };
@@ -467,7 +474,7 @@ function ApprovalBar({ cards }: { cards: ApprovalCard[] }) {
                 .catch(() => undefined)
             : undefined;
         const isDenying = denying === card.approvalId;
-        return (
+        const content = (
           <Card
             className="approval-card flex min-w-0 flex-col border-warn/25"
             key={card.approvalId}
@@ -642,6 +649,51 @@ function ApprovalBar({ cards }: { cards: ApprovalCard[] }) {
               )}
             </div>
           </Card>
+        );
+        return (
+          <div key={card.approvalId} className="approval-summary">
+            <Icon name="shield" size="sm" className="text-warn" />
+            <div className="min-w-0 flex-1">
+              <strong>{S.approvalRequest(toolTitle(card.toolName))}</strong>
+              <p className="truncate text-xs text-muted-foreground">
+                {plan?.path ?? card.targets.join(" · ")}
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setExpanded(card.approvalId);
+                preview();
+              }}
+            >
+              {UI.reviewChanges}
+            </Button>
+            <Dialog
+              open={expanded === card.approvalId}
+              onOpenChange={(open) => {
+                if (!open && busy === null) setExpanded(null);
+              }}
+            >
+              <DialogContent className="change-review-dialog">
+                <div className="change-review-heading">
+                  <div className="flex items-center justify-between gap-3">
+                    <DialogTitle>{UI.confirmChanges}</DialogTitle>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={busy !== null}
+                      onClick={() => setExpanded(null)}
+                    >
+                      {S.close}
+                    </Button>
+                  </div>
+                  <DialogDescription>{UI.reviewChangesHint}</DialogDescription>
+                </div>
+                {content}
+              </DialogContent>
+            </Dialog>
+          </div>
         );
       })}
     </div>

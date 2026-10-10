@@ -2,6 +2,7 @@
 // 结构操作用成对逆 mutation（insert↔remove / move 交换源目标 / remove-sheet→insert-sheet
 // 携带被删表 JSON 与其样式子集）；数据差异由 pre/post 快照逐格恢复。
 
+import { AXIS_GROUP_MUTATION, OBJECT_LAYER_MUTATION } from "@excelmanus/protocol";
 import { changedCellsBetween } from "./compare.ts";
 import type { DocMutation } from "./engine.ts";
 
@@ -296,6 +297,14 @@ function dataRestores(preSnap: Snap, postSnap: Snap, unitId: string): DocMutatio
         );
     } else if (key === "freeze") {
       out.push(mut(M.setFrozen, { unitId, subUnitId: sid, ...(preS.freeze as P) }));
+    } else if (key === "hidden") {
+      out.push(
+        mut("sheet.mutation.set-worksheet-hidden", {
+          unitId,
+          subUnitId: sid,
+          hidden: preS.hidden ?? 0,
+        }),
+      );
     } else if (key === "name") {
       out.push(mut(M.setName, { unitId, subUnitId: sid, name: preS.name }));
     }
@@ -354,6 +363,7 @@ function resourceRestores(preSnap: Snap, postSnap: Snap, unitId: string): DocMut
     if (JSON.stringify(a) === JSON.stringify(b)) continue;
     const ref = (a as P).ref;
     if (ref) {
+      out.push(mut(M.removeFilter, { unitId, subUnitId: sid }));
       out.push(
         mut(M.setFilterRange, {
           unitId,
@@ -362,6 +372,16 @@ function resourceRestores(preSnap: Snap, postSnap: Snap, unitId: string): DocMut
           filteredOutRows: (a as P).cachedFilteredOut ?? [],
         }),
       );
+      for (const column of ((a as P).filterColumns ?? []) as P[])
+        out.push(
+          mut("sheet.mutation.set-filter-criteria", {
+            unitId,
+            subUnitId: sid,
+            col: column.colId,
+            criteria: column,
+            reCalc: false,
+          }),
+        );
     }
   }
   for (const sid of Object.keys(postF)) {
@@ -400,14 +420,37 @@ function resourceRestores(preSnap: Snap, postSnap: Snap, unitId: string): DocMut
       const a = preRules.get(id);
       if (JSON.stringify(a) !== JSON.stringify(rule)) {
         out.push(mut(M.cfDelete, { unitId, subUnitId: sid, cfId: id }));
-        if (a !== undefined)
-          out.push(mut(M.cfAdd, { unitId, subUnitId: sid, rule: (a as P).rule ?? a }));
+        if (a !== undefined) out.push(mut(M.cfAdd, { unitId, subUnitId: sid, rule: a }));
       }
     }
     for (const [id, rule] of preRules) {
-      if (!postRules.has(id))
-        out.push(mut(M.cfAdd, { unitId, subUnitId: sid, rule: (rule as P).rule ?? rule }));
+      if (!postRules.has(id)) out.push(mut(M.cfAdd, { unitId, subUnitId: sid, rule }));
     }
+  }
+  for (const sid of Object.keys(preSnap.sheets ?? {})) {
+    for (const axis of ["rows", "cols"] as const) {
+      const key = axis === "rows" ? "rowData" : "columnData";
+      const before = (preSnap.sheets?.[sid]?.[key] ?? {}) as Record<string, P>;
+      const after = (postSnap.sheets?.[sid]?.[key] ?? {}) as Record<string, P>;
+      const levels: Record<string, number> = {};
+      for (const index of new Set([...Object.keys(before), ...Object.keys(after)])) {
+        const a = Number((before[index]?.custom as P | undefined)?.excelmanusOutlineLevel ?? 0);
+        const b = Number((after[index]?.custom as P | undefined)?.excelmanusOutlineLevel ?? 0);
+        if (a !== b) levels[index] = a;
+      }
+      if (Object.keys(levels).length)
+        out.push(mut(AXIS_GROUP_MUTATION, { unitId, subUnitId: sid, axis, levels }));
+    }
+  }
+  for (const sid of Object.keys(preSnap.sheets ?? {})) {
+    const before = (preSnap.sheets?.[sid]?.custom as P | undefined)?.excelmanusObjects ?? {
+      charts: [],
+    };
+    const after = (postSnap.sheets?.[sid]?.custom as P | undefined)?.excelmanusObjects ?? {
+      charts: [],
+    };
+    if (JSON.stringify(before) !== JSON.stringify(after))
+      out.push(mut(OBJECT_LAYER_MUTATION, { unitId, subUnitId: sid, objects: before }));
   }
   return out;
 }

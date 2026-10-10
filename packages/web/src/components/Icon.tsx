@@ -209,14 +209,30 @@ export function BrandMark({
   decorative?: boolean;
 }) {
   return (
-    <img
-      src="/brand-icon.png"
-      alt={decorative ? "" : S.appName}
-      aria-hidden={decorative ? true : undefined}
-      width={256}
-      height={256}
-      className={cn("shrink-0 object-contain", className)}
-    />
+    <svg
+      viewBox="0 0 32 32"
+      width="32"
+      height="32"
+      role={decorative ? undefined : "img"}
+      aria-label={decorative ? undefined : S.appName}
+      aria-hidden={decorative || undefined}
+      className={cn("brand-mark shrink-0 text-primary", className)}
+      fill="currentColor"
+    >
+      {[0, 1, 2].flatMap((row) =>
+        [0, 1, 2].map((col) => (
+          <rect
+            key={`${row}-${col}`}
+            x={2 + col * 10}
+            y={2 + row * 10}
+            width="8"
+            height="8"
+            rx="1.8"
+            opacity={row === 2 && col === 2 ? 0.55 : 1}
+          />
+        )),
+      )}
+    </svg>
   );
 }
 

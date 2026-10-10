@@ -13,7 +13,9 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { unzipSync } from "fflate";
 import { skillEvalCases } from "../fixtures/skill-evals/cases.ts";
+import { v1EvalCases } from "../fixtures/v1-evals/cases.ts";
 import { parseRange } from "../packages/core/src/index.ts";
 import {
   CreateModelProfileBody,
@@ -50,10 +52,13 @@ function skillHash(dir: string): string {
   );
 }
 
-const [profileFile, caseId, variant, outputDir] = process.argv.slice(2);
+const args = process.argv.slice(2);
+const suite = args.includes("--v1") ? "v1" : "skills";
+const cases = suite === "v1" ? v1EvalCases : skillEvalCases;
+const [profileFile, caseId, variant, outputDir] = args.filter((arg) => arg !== "--v1");
 if (profileFile === "--validate") {
   const ids = new Set<string>();
-  for (const c of skillEvalCases) {
+  for (const c of cases) {
     if (ids.has(c.id)) throw new Error("评测 ID 重复");
     ids.add(c.id);
     skillHash(join(repo, "assets/skills", c.skill));
@@ -71,7 +76,7 @@ if (profileFile === "--validate") {
   }
   console.log(`评测资源检查通过：${ids.size} 个场景；真实模型效果未验证。`);
 } else {
-  const scenario = skillEvalCases.find((c) => c.id === caseId);
+  const scenario = cases.find((c) => c.id === caseId);
   if (
     !profileFile ||
     !scenario ||
@@ -104,6 +109,7 @@ if (profileFile === "--validate") {
     const report = {
       createdAt: new Date().toISOString(),
       caseId: scenario.id,
+      suite,
       skill: scenario.skill,
       variant,
       provider: profile.provider,
@@ -140,7 +146,7 @@ if (profileFile === "--validate") {
         // enabled 只启用目标技能，避免其他技能影响归因；disabled 全部禁用。
         await api.setSkillEnabled(
           skill.name,
-          variant === "enabled" && skill.name === scenario.skill,
+          variant === "enabled" && (suite === "v1" || skill.name === scenario.skill),
         );
       }
       const original = new Map<string, string>();
@@ -194,7 +200,7 @@ if (profileFile === "--validate") {
         ...(attachments ? { attachments } : {}),
       });
       const records = new Map<number, LogRecord>();
-      const timeout = Date.now() + 180_000;
+      const timeout = Date.now() + (suite === "v1" ? 600_000 : 180_000);
       report.status = "running";
       while (Date.now() < timeout) {
         for (const e of events.splice(0))
@@ -264,6 +270,17 @@ if (profileFile === "--validate") {
                 }
               >,
             );
+            if (output.nativeCharts !== undefined) {
+              const parts = unzipSync(readFileSync(safePath(server.workspaceRoot, output.path)));
+              const charts = Object.keys(parts).filter((path) =>
+                /^xl\/charts\/chart[^/]*\.xml$/.test(path),
+              );
+              report.checks.push({
+                output: output.path,
+                ref: "nativeCharts",
+                passed: charts.length === output.nativeCharts,
+              });
+            }
             for (const check of output.cells) {
               const ref = parseRange(check.ref);
               const sheet = sheets.find((s) => s.name === ref.sheet);

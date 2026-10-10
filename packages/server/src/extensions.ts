@@ -39,6 +39,8 @@ import { importSkills, SkillImportError, type SkillService } from "@excelmanus/s
 import { type Context, Hono } from "hono";
 import type { z } from "zod";
 import type { AccountService } from "./accounts.ts";
+import { diagnosticRoutes } from "./diagnostics.ts";
+import { fileManagementRoutes } from "./files-manage.ts";
 import type { SettingsStore } from "./settings.ts";
 import {
   type CapabilityRecord,
@@ -54,6 +56,7 @@ import {
 } from "./store.ts";
 
 export interface ExtensionDeps {
+  dataDir: string;
   db: DatabaseSync;
   masterKey: Buffer;
   bus: SyncBus;
@@ -219,6 +222,8 @@ export function effectiveCapabilities(
 
 export function extensionRoutes(deps: ExtensionDeps, fail: Fail): Hono {
   const app = new Hono();
+  app.route("/", diagnosticRoutes(deps.db, fail, deps.dataDir));
+  app.route("/", fileManagementRoutes(deps.db, deps.backups, deps.bus, fail));
   const { db } = deps;
   const parse = <S extends z.ZodType<unknown>>(
     schema: S,

@@ -2,6 +2,7 @@
 // 网关走真实 AI SDK 适配器，fetch 换成本地假响应（只替代模型服务输出）。
 import type { ContextItem, ResolvedModel } from "@excelmanus/protocol";
 import { StreamProviderError } from "ai";
+import { MockLanguageModelV4 } from "ai/test";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   classifyError,
@@ -299,3 +300,32 @@ describe("能力探测（09 §1）", () => {
     expect(r.tools.value).toBe(false);
   });
 });
+
+test("取消不合作且尚未返回流的模型，不等待提供商放行", async () => {
+  const ctrl = new AbortController();
+  let started!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const gateway = createGateway({
+    resolveLanguageModel: () =>
+      new MockLanguageModelV4({
+        doStream: async () => {
+          started();
+          return new Promise<never>(() => {});
+        },
+      }),
+  });
+  const pending = drain(
+    gateway.step({
+      model: model({}),
+      history: [{ kind: "user", text: "hi" }],
+      signal: ctrl.signal,
+    }),
+  );
+  await entered;
+  ctrl.abort();
+  expect(await pending).toContainEqual(
+    expect.objectContaining({ kind: "error", error: expect.objectContaining({ kind: "aborted" }) }),
+  );
+}, 3000);

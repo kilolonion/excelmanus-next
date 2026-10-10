@@ -22,6 +22,8 @@ export interface RunRequest {
 }
 
 export interface RunDone {
+  /** 宿主/wasm 异常后不再复用运行时，必须销毁 worker 回收线性内存。 */
+  retire?: boolean;
   type: "done";
   runId: number;
   outcome: WireOutcome;

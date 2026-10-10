@@ -2,11 +2,15 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { desktop } from "./api.ts";
 import { ChatPanel } from "./components/ChatPanel.tsx";
 import { BrandMark, Icon } from "./components/Icon.tsx";
+import { useWorkspaceNavigation } from "./components/layout/WorkspaceNavigation.tsx";
+import { FilesPage, TeamPage } from "./components/layout/WorkspacePages.tsx";
 import { SessionList } from "./components/SessionList.tsx";
 import { Button } from "./components/ui/button.tsx";
 import { ConfirmProvider } from "./components/ui/confirm.tsx";
+import { Dialog, DialogContent, DialogTitle } from "./components/ui/dialog.tsx";
 import { Alert } from "./components/ui/display.tsx";
 import { Tabs, TabsList, TabsTrigger, Toaster, toast } from "./components/ui/overlay.tsx";
+import { ApplicationFrame } from "./components/ui/page-layout.tsx";
 import { Spinner } from "./components/ui/spinner.tsx";
 import { TooltipProvider } from "./components/ui/tooltip.tsx";
 import { installShortcuts } from "./shortcuts.ts";
@@ -31,14 +35,14 @@ const SettingsModal = lazy(() =>
 /** 02 §2.2：< 1280px 时表格与对话改为标签页切换。 */
 const NARROW_QUERY = "(max-width: 1279px)";
 
-function useNarrow(): boolean {
-  const [narrow, setNarrow] = useState(() => window.matchMedia(NARROW_QUERY).matches);
+function useNarrow(query = NARROW_QUERY): boolean {
+  const [narrow, setNarrow] = useState(() => window.matchMedia(query).matches);
   useEffect(() => {
-    const m = window.matchMedia(NARROW_QUERY);
+    const m = window.matchMedia(query);
     const on = () => setNarrow(m.matches);
     m.addEventListener("change", on);
     return () => m.removeEventListener("change", on);
-  }, []);
+  }, [query]);
   return narrow;
 }
 
@@ -103,6 +107,10 @@ export function App() {
 }
 
 function AppBody() {
+  const { view, setView } = useWorkspaceNavigation();
+  const workspaceId = useApp((s) => s.workspaceId);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: changing workspace resets the current feature page
+  useEffect(() => setView("workbench"), [workspaceId, setView]);
   const ready = useApp((s) => s.ready);
   const fatal = useApp((s) => s.fatal);
   const connected = useApp((s) => s.connected);
@@ -112,6 +120,12 @@ function AppBody() {
   const layout = useApp((s) => s.layout);
   const narrowTab = useApp((s) => s.narrowTab);
   const narrow = useNarrow();
+  const mobile = useNarrow("(max-width: 767px)");
+  const sessionId = useApp((s) => s.sessionId);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: navigation closes the mobile drawer but keeps desktop preference
+  useEffect(() => {
+    if (mobile) useApp.setState({ sidebarCollapsed: true });
+  }, [mobile, view, sessionId]);
   const splitRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
   const [settingsMounted, setSettingsMounted] = useState(false);
@@ -138,7 +152,8 @@ function AppBody() {
     setNarrowTab(hasDoc ? "sheet" : "chat");
   }, [hasDoc]);
 
-  if (fatal === "auth-failed" || fatal === "signed-out") {
+  if (fatal === "auth-failed" || fatal === "signed-out" || fatal === "protocol-mismatch") {
+    const mismatch = fatal === "protocol-mismatch";
     const signedOut = fatal === "signed-out";
     return (
       <main className="grid min-h-dvh place-items-center bg-background px-6">
@@ -146,9 +161,11 @@ function AppBody() {
           <div className="mx-auto mb-5 flex size-14 items-center justify-center">
             <BrandMark className="size-10" decorative={false} />
           </div>
-          <h1 className="text-xl font-semibold">{signedOut ? S.authSignedOut : S.authFailed}</h1>
+          <h1 className="text-xl font-semibold">
+            {mismatch ? S.protocolMismatch : signedOut ? S.authSignedOut : S.authFailed}
+          </h1>
           <p className="mt-2 text-sm leading-6 text-muted-foreground">
-            {signedOut ? S.authSignedOutHint : S.authFailedHint}
+            {mismatch ? S.protocolMismatchHint : signedOut ? S.authSignedOutHint : S.authFailedHint}
           </p>
           <Button
             className="mt-6 w-full"
@@ -198,9 +215,11 @@ function AppBody() {
     : "minmax(0, 1fr)";
 
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: 拖放上传是鼠标便利；键盘用侧栏「上传」按钮
-    <div
-      className={`app-shell grid h-dvh overflow-hidden bg-background text-foreground ${collapsed ? "grid-cols-1" : "grid-cols-[244px_minmax(0,1fr)] max-[1100px]:grid-cols-[224px_minmax(0,1fr)]"}`}
+    <ApplicationFrame
+      collapsed={collapsed || mobile}
+      sidebar={<SessionList />}
+      sidebarLabel={S.sessions}
+      label={S.appName}
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes("Files")) {
           e.preventDefault();
@@ -212,74 +231,82 @@ function AppBody() {
       }}
       onDrop={onDrop}
     >
-      {!collapsed && (
-        <aside
-          className="app-sidebar flex min-h-0 min-w-0 flex-col bg-muted/65"
-          aria-label={S.sessions}
-        >
-          <SessionList />
-        </aside>
+      {!connected && (
+        <Alert layout="bar" tone="muted" role="status" icon={false}>
+          <span className="flex items-center gap-2">
+            <Spinner size="xs" /> {S.reconnecting}
+          </span>
+        </Alert>
       )}
-      <main
-        className="app-stage flex min-h-0 min-w-0 flex-col overflow-hidden border-l border-border/80 bg-card"
-        aria-label={S.appName}
-      >
-        {!connected && (
-          <Alert layout="bar" tone="muted" role="status" icon={false}>
-            <span className="flex items-center gap-2">
-              <Spinner size="xs" /> {S.reconnecting}
-            </span>
-          </Alert>
-        )}
-        {hasDoc && narrow && (
-          <Tabs
-            value={narrowTab}
-            onValueChange={(v) => setNarrowTab(v as "sheet" | "chat")}
-            className="flex h-12 shrink-0 items-center border-b border-border/70 bg-muted/30 px-4"
+      {view === "files" ? (
+        <FilesPage />
+      ) : view === "team" ? (
+        <TeamPage />
+      ) : (
+        <>
+          {hasDoc && narrow && (
+            <Tabs
+              value={narrowTab}
+              onValueChange={(v) => setNarrowTab(v as "sheet" | "chat")}
+              className="flex h-12 shrink-0 items-center border-b border-border/70 bg-muted/30 px-4"
+            >
+              <TabsList aria-label={S.workbench}>
+                {(["sheet", "chat"] as const).map((t) => (
+                  <TabsTrigger key={t} value={t}>
+                    <Icon name={t === "sheet" ? "sheet" : "chat"} size="sm" />
+                    {t === "sheet" ? S.tabSheet : S.tabChat}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
+          )}
+          <div
+            className="grid min-h-0 flex-1"
+            ref={splitRef}
+            style={{ gridTemplateColumns: gridColumns }}
           >
-            <TabsList aria-label={S.workbench}>
-              {(["sheet", "chat"] as const).map((t) => (
-                <TabsTrigger key={t} value={t}>
-                  <Icon name={t === "sheet" ? "sheet" : "chat"} size="sm" />
-                  {t === "sheet" ? S.tabSheet : S.tabChat}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </Tabs>
-        )}
-        <div
-          className="grid min-h-0 flex-1"
-          ref={splitRef}
-          style={{ gridTemplateColumns: gridColumns }}
+            {showTable && (
+              <section className="flex min-h-0 min-w-0 flex-col bg-card" aria-label={S.workbench}>
+                <Suspense
+                  fallback={
+                    <div
+                      className="grid min-h-0 flex-1 place-items-center text-muted-foreground"
+                      role="status"
+                      aria-label={S.workbenchLoading}
+                    >
+                      <span className="flex items-center gap-2 text-sm">
+                        <Spinner size="sm" />
+                        {S.workbenchLoading}
+                      </span>
+                    </div>
+                  }
+                >
+                  <Workbench narrow={narrow} sidebarToggle={collapsed} />
+                </Suspense>
+              </section>
+            )}
+            {split && <Splitter container={splitRef} />}
+            {showChat && (
+              <section className="flex min-h-0 min-w-0 flex-col bg-card" aria-label={S.tabChat}>
+                <ChatPanel sidebarToggle={collapsed && !showTable} />
+              </section>
+            )}
+          </div>
+        </>
+      )}
+      {mobile && (
+        <Dialog
+          open={!collapsed}
+          onOpenChange={(open) => useApp.setState({ sidebarCollapsed: !open })}
         >
-          {showTable && (
-            <section className="flex min-h-0 min-w-0 flex-col bg-card" aria-label={S.workbench}>
-              <Suspense
-                fallback={
-                  <div
-                    className="grid min-h-0 flex-1 place-items-center text-muted-foreground"
-                    role="status"
-                    aria-label={S.workbenchLoading}
-                  >
-                    <span className="flex items-center gap-2 text-sm">
-                      <Spinner size="sm" />
-                      {S.workbenchLoading}
-                    </span>
-                  </div>
-                }
-              >
-                <Workbench narrow={narrow} sidebarToggle={collapsed} />
-              </Suspense>
-            </section>
-          )}
-          {split && <Splitter container={splitRef} />}
-          {showChat && (
-            <section className="flex min-h-0 min-w-0 flex-col bg-card" aria-label={S.tabChat}>
-              <ChatPanel sidebarToggle={collapsed && !showTable} />
-            </section>
-          )}
-        </div>
-      </main>
+          <DialogContent className="mobile-navigation-drawer" aria-describedby={undefined}>
+            <DialogTitle className="sr-only">{S.sessions}</DialogTitle>
+            <div className="app-sidebar flex h-full min-h-0 flex-col">
+              <SessionList />
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
       {dragging && (
         <div className="pointer-events-none fixed inset-3 z-40 grid place-items-center rounded-xl border-2 border-dashed border-read bg-read-soft/85 text-read-ink backdrop-blur-sm">
           <div className="flex flex-col items-center gap-3 text-md font-medium">
@@ -293,6 +320,6 @@ function AppBody() {
           <SettingsModal />
         </Suspense>
       )}
-    </div>
+    </ApplicationFrame>
   );
 }

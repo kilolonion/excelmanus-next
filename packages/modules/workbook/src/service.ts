@@ -1,3 +1,5 @@
+import { describeObjectChanges, sniffWorkbookImage } from "./objects.ts";
+import { CF_RESOURCE, DV_RESOURCE, rulesResource } from "./rule-codec.ts";
 // DocumentService（07 §3）：活文档 actor——每个打开的文档持有一个 Univer 无头
 // 实例（主线程，ADR 0003），提交串行处理，修订号严格递增，doc_ops 追加写日志。
 // 快照定影：createWorkbook 前深拷贝；对外 snapshot() 一律返回 getSnapshot 深拷贝。
@@ -169,6 +171,7 @@ CREATE TABLE doc_checkpoints (
 };
 
 export interface DocWriteSet {
+  objects?: string[];
   ranges: RangeRef[];
   structural: StructuralOp[];
 }
@@ -871,7 +874,14 @@ export class DocumentService {
     try {
       if (opsIn !== undefined) {
         const snap = live.save();
-        compiled = compileOps({ unitId: live.unitId, snapshot: snap }, opsIn);
+        compiled = compileOps(
+          {
+            unitId: live.unitId,
+            snapshot: snap,
+            images: loadImageFiles(opsIn, entry.workspaceRoot),
+          },
+          opsIn,
+        );
         mutations = [];
       } else {
         const raw = normalizeMutations(mutIn ?? []);
@@ -1023,6 +1033,8 @@ export class DocumentService {
 
     const postSnap = live.save();
     try {
+      if (!postSnap.sheetOrder.some((id) => !postSnap.sheets[id]?.hidden))
+        throw new FileOperationError("UNSUPPORTED_FEATURE", "工作簿必须保留至少一个可见工作表");
       if (entry.imported.csv) {
         for (const [id, sheet] of Object.entries(postSnap.sheets)) {
           const before = preSnap.sheets[id];
@@ -1096,7 +1108,20 @@ export class DocumentService {
       batch.ops !== undefined ? writeSet.structural : [],
       emittedDerived.structural,
     );
+    const objectChanges = describeObjectChanges(preSnap, postSnap);
+    for (const [resource, label] of [
+      [CF_RESOURCE, "条件格式"],
+      [DV_RESOURCE, "数据验证"],
+      ["SHEET_FILTER_PLUGIN", "筛选"],
+    ] as const) {
+      const before = rulesResource(preSnap, resource),
+        after = rulesResource(postSnap, resource);
+      for (const sid of new Set([...Object.keys(before), ...Object.keys(after)]))
+        if (JSON.stringify(before[sid] ?? []) !== JSON.stringify(after[sid] ?? []))
+          objectChanges.push(`更新${label}（${postSnap.sheets[sid]?.name ?? sid}）`);
+    }
     const finalWriteSet: DocWriteSet = {
+      ...(objectChanges.length ? { objects: objectChanges } : {}),
       ranges: batch.ops !== undefined ? writeSet.ranges : emittedDerived.ranges,
       structural,
     };
@@ -1905,7 +1930,7 @@ export class DocumentService {
     };
   }
 
-  async previewCreate(ops: ChangeOp[]): Promise<ToolResult> {
+  async previewCreate(ops: ChangeOp[], workspaceRoot?: string): Promise<ToolResult> {
     const boot = bootUniver();
     try {
       const snapshot = importXlsx(
@@ -1913,7 +1938,15 @@ export class DocumentService {
         "preview.xlsx",
       ).snapshot;
       const book = createBook(boot, snapshot);
-      const compiled = compileOps({ unitId: book.unitId, snapshot: book.workbook.save() }, ops);
+      const before = structuredClone(book.workbook.save());
+      const compiled = compileOps(
+        {
+          unitId: book.unitId,
+          snapshot: book.workbook.save(),
+          images: loadImageFiles(ops, workspaceRoot),
+        },
+        ops,
+      );
       const boundedCells = boundedWriteRanges(compiled.ranges).reduce(
         (sum, r) => sum + (r.r1 - r.r0 + 1) * (r.c1 - r.c0 + 1),
         0,
@@ -1938,6 +1971,7 @@ export class DocumentService {
           changes: summarizeWriteSet(
             {
               ranges: compiled.ranges,
+              objects: describeObjectChanges(before, after),
               structural: [
                 { sheetId: "s0", kind: "insertSheet", index: 0, count: 0 },
                 ...compiled.structural,
@@ -2226,4 +2260,24 @@ function rekeyLike(ext: IWorkbookData, app: IWorkbookData): IWorkbookData {
 export interface OpenedDoc {
   meta: DocumentMeta;
   imported: ImportedWorkbook;
+}
+
+function loadImageFiles(ops: ChangeOp[], root: string | undefined) {
+  const images: Record<
+    string,
+    { data: string; mediaType: "image/png" | "image/jpeg" | "image/gif" }
+  > = {};
+  for (const op of ops) {
+    if (op.op !== "image.add") continue;
+    if (!root) throw new FileOperationError("INVALID_ARGUMENT", "图片预览需要工作区");
+    const { abs } = resolveWorkspacePath(root, op.path);
+    const stat = statSync(abs);
+    if (!stat.isFile() || stat.size > 10_000_000)
+      throw new FileOperationError("LIMIT_EXCEEDED", "图片必须是10MB以内的文件");
+    const bytes = readFileSync(abs),
+      mediaType = sniffWorkbookImage(bytes);
+    if (!mediaType) throw new FileOperationError("INVALID_ARGUMENT", "仅支持 PNG、JPEG、GIF 图片");
+    images[op.path] = { data: bytes.toString("base64"), mediaType };
+  }
+  return images;
 }

@@ -63,6 +63,30 @@ export function replaceElement(
   const e = elements(xml, name)[0];
   if (e) return xml.slice(0, e.start) + replacement + xml.slice(e.end);
   const order: Record<string, string[]> = {
+    autoFilter: [
+      "sortState",
+      "dataConsolidate",
+      "customSheetViews",
+      "mergeCells",
+      "phoneticPr",
+      "conditionalFormatting",
+      "dataValidations",
+      "hyperlinks",
+      "printOptions",
+      "pageMargins",
+      "drawing",
+      "extLst",
+    ],
+    hyperlinks: [
+      "printOptions",
+      "pageMargins",
+      "pageSetup",
+      "headerFooter",
+      "drawing",
+      "legacyDrawing",
+      "tableParts",
+      "extLst",
+    ],
     dimension: ["sheetViews", "sheetFormatPr", "cols", "sheetData"],
     sheetViews: ["sheetFormatPr", "cols", "sheetData"],
     mergeCells: [

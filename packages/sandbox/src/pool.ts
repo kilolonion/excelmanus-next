@@ -347,8 +347,9 @@ export class SandboxPool {
       // wasm 线性内存只涨不缩：memory/output 终止意味着该 worker 的堆已到峰值，
       // 回收整个 worker 释放内存，由 ensureSpawn 补位
       const recycle =
-        m.outcome.kind === "terminated" &&
-        (m.outcome.reason === "memory" || m.outcome.reason === "output");
+        m.retire === true ||
+        (m.outcome.kind === "terminated" &&
+          (m.outcome.reason === "memory" || m.outcome.reason === "output"));
       if (recycle) {
         void w.terminate();
       } else if (w.state === "busy") {

@@ -1,5 +1,6 @@
 import { FileOperationError } from "@excelmanus/kernel";
 import type { ICellData, IStyleData, IWorkbookData } from "@univerjs/core";
+import { BORDER_STYLES } from "./style-constants.ts";
 import {
   bytesOf,
   elements,
@@ -128,7 +129,44 @@ export class StyleWriter {
       }
       open = setAttribute(setAttribute(open, "numFmtId", id), "applyNumberFormat", "1");
     }
-    if (["ht", "vt", "tb"].some((k) => a[k as keyof IStyleData] !== b[k as keyof IStyleData])) {
+    if (JSON.stringify(a.bd) !== JSON.stringify(b.bd)) {
+      const sideNames = { t: "top", b: "bottom", l: "left", r: "right" } as const;
+      for (const key of new Set([...Object.keys(a.bd ?? {}), ...Object.keys(b.bd ?? {})]))
+        if (
+          !(key in sideNames) &&
+          JSON.stringify((a.bd as Record<string, unknown> | undefined)?.[key]) !==
+            JSON.stringify((b.bd as Record<string, unknown> | undefined)?.[key])
+        )
+          throw new FileOperationError("UNSUPPORTED_FEATURE", "不支持修改对角边框");
+      let border =
+        elements(elements(this.xml, "borders")[0]?.inner ?? "", "border")[
+          Number(baseAttrs.borderId ?? 0)
+        ]?.raw ?? "<border></border>";
+      border = border.replace(/\/>$/, "></border>");
+      for (const [key, side] of Object.entries(sideNames)) {
+        const value = a.bd?.[key as keyof typeof sideNames],
+          old = b.bd?.[key as keyof typeof sideNames];
+        if (JSON.stringify(value) === JSON.stringify(old)) continue;
+        const style = value ? BORDER_STYLES[value.s] : undefined;
+        if (value && style === undefined)
+          throw new FileOperationError("UNSUPPORTED_FEATURE", "边框线型不受支持");
+        border = replaceElement(
+          border,
+          side,
+          value && style !== "none"
+            ? `<${side} style="${style}"><color rgb="${color(value.cl)}"/></${side}>`
+            : `<${side}/>`,
+        );
+      }
+      open = setAttribute(
+        setAttribute(open, "borderId", this.append("borders", "border", border)),
+        "applyBorder",
+        "1",
+      );
+    }
+    if (
+      ["ht", "vt", "tb", "pd"].some((k) => a[k as keyof IStyleData] !== b[k as keyof IStyleData])
+    ) {
       const existing = elements(xf, "alignment")[0]?.open ?? "<alignment/>";
       let align = existing;
       if (a.ht !== b.ht)
@@ -143,11 +181,34 @@ export class StyleWriter {
           "vertical",
           ["bottom", "top", "center", "bottom"][Number(a.vt)] ?? "bottom",
         );
+      if (JSON.stringify(a.pd) !== JSON.stringify(b.pd)) {
+        for (const side of ["t", "r", "b"] as const)
+          if (a.pd?.[side] !== b.pd?.[side])
+            throw new FileOperationError("UNSUPPORTED_FEATURE", "只支持通过左缩进修改单元格内边距");
+        align = setAttribute(
+          align,
+          "indent",
+          Math.max(0, Math.min(250, Math.round((a.pd?.l ?? 0) / 21))),
+        );
+      }
       if (a.tb !== b.tb) align = setAttribute(align, "wrapText", Number(a.tb) === 3 ? 1 : 0);
       xf = replaceElement(xf, "alignment", align);
       open = setAttribute(open, "applyAlignment", "1");
     }
-    const supported = new Set(["bl", "it", "cl", "ff", "fs", "bg", "n", "ht", "vt", "tb"]);
+    const supported = new Set([
+      "bl",
+      "it",
+      "cl",
+      "ff",
+      "fs",
+      "bg",
+      "n",
+      "ht",
+      "vt",
+      "tb",
+      "bd",
+      "pd",
+    ]);
     for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) {
       if (
         !supported.has(k) &&

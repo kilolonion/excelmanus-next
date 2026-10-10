@@ -12,6 +12,8 @@ const packageRoots = ["packages", "packages/modules"]
 
 export default defineConfig({
   test: {
+    // 工作簿引擎、QuickJS 与 LibreOffice 各有独立进程/堆，串行文件避免 CI 内存峰值互相杀死。
+    fileParallelism: false,
     projects: [
       ...packageRoots.map((root) => ({
         test: {

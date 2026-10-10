@@ -11,6 +11,13 @@
 - 由契约生成接口文档（OpenAPI），开发模式下可在 `/api/docs` 查看。
 - 模块（[03 §4.3](03-architecture.md#43-能力模块)）可以向契约注册自己的记录类型、主题与端点，但都在 `protocol` 包内定义，保证前端可见。
 
+### 当前实现（2026-10-10）
+
+- `protocolVersion = 2`：前后端共同支持对象层及行列分组 mutation；Web 在 bootstrap 与同步 hello 检查版本，不匹配停止进入工作台并提示刷新/升级。
+- `http-contracts.ts` 为挂载 REST 的 schema 注册表，生成 OpenAPI 3.1；开发/测试启动校验真实路由登记完整，成功 JSON 响应按 DTO 校验。文件上传为 multipart，下载/诊断附件使用真实内容类型。
+- 文件管理路径为 `POST /workspaces/{id}/files/manage`，正文 `ops` 与 `confirmed`；渲染实际路径带工作区：`POST /workspaces/{id}/docs/{docId}/render`。
+- 诊断接口已实现；无渲染端返回错误，不生成占位成功图片。鉴权、Host/Origin 与设备令牌逻辑不变。
+
 ## 2. REST 约定
 
 | 项 | 约定 |

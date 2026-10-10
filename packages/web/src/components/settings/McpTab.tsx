@@ -9,11 +9,12 @@ import { Button } from "../ui/button.tsx";
 import { Switch } from "../ui/controls.tsx";
 import { Alert, Badge, Separator, statusTone } from "../ui/display.tsx";
 import { Label } from "../ui/field.tsx";
+import { useFormGuard } from "../ui/form-guard.tsx";
 import { Input, Textarea } from "../ui/input.tsx";
 import { Disclosure } from "../ui/overlay.tsx";
+import { ResourceBrowser } from "../ui/resource-browser.tsx";
 import { SimpleSelect } from "../ui/select.tsx";
 import {
-  Empty,
   Feedback,
   Field,
   formatPairs,
@@ -202,6 +203,7 @@ function ToolAutoApprove({ checked, onChange }: { checked: boolean; onChange(v: 
 }
 
 function ServerItem({ s, onChanged }: { s: McpServer; onChanged(): void }) {
+  const guard = useFormGuard();
   const api = apiClientOf();
   const [editing, setEditing] = useState(false);
   const act = useAction();
@@ -284,7 +286,13 @@ function ServerItem({ s, onChanged }: { s: McpServer; onChanged(): void }) {
         >
           {ST.mcpTest}
         </Button>
-        <Button size="sm" variant="ghost" onClick={() => setEditing(!editing)}>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={async () => {
+            if (!editing || (await guard.confirmLeave())) setEditing(!editing);
+          }}
+        >
           {editing ? ST.cancel : ST.edit}
         </Button>
         <span className="flex-1" />
@@ -354,12 +362,18 @@ export function McpTab() {
       >
         <LoadStatus data={list.data} error={list.error} />
         <Feedback msg={act.msg} />
-        <div className="settings-list flex flex-col gap-3">
-          {list.data?.items.length === 0 && <Empty />}
-          {list.data?.items.map((s) => (
-            <ServerItem key={s.id} s={s} onChanged={list.reload} />
-          ))}
-        </div>
+        {list.data && (
+          <ResourceBrowser
+            items={list.data.items}
+            id={(server) => server.id}
+            title={(server) => server.name}
+            subtitle={(server) => server.transport}
+            icon={() => <Icon name="plug" size="sm" />}
+            label={ST.tabs.mcp}
+            emptyText={ST.empty}
+            detail={(server) => <ServerItem s={server} onChanged={list.reload} />}
+          />
+        )}
       </Section>
       <Disclosure
         className="settings-create border-t border-border/70 pt-6"

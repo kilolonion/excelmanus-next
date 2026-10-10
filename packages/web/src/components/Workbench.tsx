@@ -1,12 +1,28 @@
+import { ContextAction } from "./ui/context-action.tsx";
 // 表格工作台（02 §2、§4）：文档标题与保存状态、选区栏与「问代理」、Univer 1.0.2 编辑、变更导航。
 
 import { formatRange, isDerivedWorkbookMutation, parseRange } from "@excelmanus/core";
-import type { PresenceParticipant } from "@excelmanus/protocol";
-import { CommandType, type IWorkbookData, type Univer } from "@univerjs/core";
+import {
+  axisGroupMutation,
+  type PresenceParticipant,
+  sheetObjectsMutation,
+  WorkbookObjects,
+} from "@excelmanus/protocol";
+import {
+  CommandType,
+  ICommandService,
+  IUniverInstanceService,
+  type IWorkbookData,
+  type Univer,
+  type Workbook,
+} from "@univerjs/core";
 import { UniverSheetsCorePreset } from "@univerjs/preset-sheets-core";
 import zhCN from "@univerjs/preset-sheets-core/locales/zh-CN";
 import { createUniver, LocaleType, mergeLocales } from "@univerjs/presets";
 import type { FWorkbook } from "@univerjs/sheets/facade";
+import { UniverSheetsConditionalFormattingPlugin } from "@univerjs/sheets-conditional-formatting";
+import { UniverSheetsDataValidationPlugin } from "@univerjs/sheets-data-validation";
+import { UniverSheetsFilterPlugin } from "@univerjs/sheets-filter";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CHANGE_HIGHLIGHT_MS,
@@ -162,6 +178,11 @@ function UniverViewer({
     }
     setSnapshotLoad(null);
     const { univer, univerAPI } = createUniver({
+      plugins: [
+        UniverSheetsConditionalFormattingPlugin,
+        UniverSheetsDataValidationPlugin,
+        UniverSheetsFilterPlugin,
+      ],
       locale: LocaleType.ZH_CN,
       locales: { [LocaleType.ZH_CN]: mergeLocales(zhCN) },
       presets: [
@@ -176,11 +197,36 @@ function UniverViewer({
         }),
       ],
     });
+    univer
+      .__getInjector()
+      .get(ICommandService)
+      .registerCommand(
+        sheetObjectsMutation(CommandType.MUTATION, (unitId, sheetId) =>
+          univer
+            .__getInjector()
+            .get(IUniverInstanceService)
+            .getUnit<Workbook>(unitId)
+            ?.getSheetBySheetId(sheetId),
+        ),
+      );
+    univer
+      .__getInjector()
+      .get(ICommandService)
+      .registerCommand(
+        axisGroupMutation(CommandType.MUTATION, (unitId, sheetId) =>
+          univer
+            .__getInjector()
+            .get(IUniverInstanceService)
+            .getUnit<Workbook>(unitId)
+            ?.getSheetBySheetId(sheetId),
+        ),
+      );
     const wb = univerAPI.createWorkbook(structuredClone(snapshot) as unknown as IWorkbookData);
     // 工作台编辑与代理共用 doc.submit；服务端负责串行化与冲突判定。
     wb.setEditable(true);
     apiRef.current = { univer, wb };
     // 叠加层角标与对比浮层（对齐清单 C1、C2）；组件无状态，只读 popup.extraProps
+    const chartSub = univerAPI.registerComponent("em-chart-placeholder", ChartPlaceholder as never);
     const tagSub = univerAPI.registerComponent("em-overlay-tag", OverlayTag as never);
     const diffSub = univerAPI.registerComponent("em-overlay-diff", OverlayDiff as never);
     createdAt.current = Date.now();
@@ -246,6 +292,7 @@ function UniverViewer({
     });
     return () => {
       themeObserver.disconnect();
+      chartSub.dispose();
       tagSub.dispose();
       diffSub.dispose();
       commandSub.dispose();
@@ -257,6 +304,47 @@ function UniverViewer({
       univer.dispose();
     };
   }, [docId, snapshot]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: imperative engine snapshots change on revision, active-sheet switch and instance readiness
+  useEffect(() => {
+    const wb = apiRef.current?.wb;
+    if (!wb) return;
+    const disposers: { dispose(): void }[] = [];
+    const timer = setTimeout(
+      () => {
+        const sheet = wb.getActiveSheet();
+        if (!sheet) return;
+        const data = wb.save().sheets[sheet.getSheetId()];
+        const parsed = WorkbookObjects.safeParse(data?.custom?.excelmanusObjects);
+        if (!parsed.success) return;
+        for (const chart of [
+          ...parsed.data.charts,
+          ...parsed.data.images.map((image) => ({ ...image, type: "image", range: "" })),
+        ]) {
+          const range = parseRange(chart.anchor);
+          const popup = sheet
+            .getRange(range.startRow - 1, range.startCol - 1, 1, 1)
+            .attachRangePopup({
+              componentKey: "em-chart-placeholder",
+              direction: "bottom",
+              extraProps: {
+                title: chart.title,
+                type: chart.type,
+                range: chart.range,
+                width: chart.width,
+                height: chart.height,
+              },
+            });
+          if (popup) disposers.push(popup);
+        }
+      },
+      Math.max(20, 800 - (Date.now() - createdAt.current)),
+    );
+    return () => {
+      clearTimeout(timer);
+      for (const d of disposers) d.dispose();
+    };
+  }, [doc?.rev, activeSheet, ready]);
 
   useEffect(() => {
     const wb = apiRef.current?.wb;
@@ -835,6 +923,21 @@ function usePendingValues(): string {
     }
     return JSON.stringify(out);
   });
+}
+
+function ChartPlaceholder({ popup }: PopupProps) {
+  const p = popup.extraProps ?? {};
+  return (
+    <div
+      data-em-chart=""
+      className="pointer-events-none flex flex-col items-center justify-center gap-2 rounded border border-dashed border-border bg-muted/90 p-3 text-sm"
+      style={{ width: Number(p.width ?? 640), height: Number(p.height ?? 360) }}
+    >
+      <strong>{String(p.title ?? "")}</strong>
+      <span>{p.type === "image" ? S.nativeImagePlaceholder : S.nativeChartPlaceholder}</span>
+      <span className="text-xs text-muted-foreground">{String(p.range ?? "")}</span>
+    </div>
+  );
 }
 
 type PopupProps = { popup: { extraProps?: Record<string, unknown> } };
@@ -1450,10 +1553,20 @@ export function Workbench({
         <IconButton icon="x" label={S.closeDocument} onClick={closeDocument} />
       </header>
       <DocumentConflictBar docId={doc.docId} />
-      <div className="relative isolate min-h-0 flex-1 overflow-hidden bg-card">
-        <UniverViewer visibility={overlayVisibility} changes={recentChanges} />
-        {overlayVisibility.changed && <ChangeFeedback changes={recentChanges} />}
-      </div>
+      <ContextAction
+        label={S.askAgent}
+        enabled={sel !== null}
+        onSelect={() => {
+          if (narrow) setNarrowTab("chat");
+          else if (chatCollapsed) setLayout({ chatCollapsed: false });
+          requestAnimationFrame(() => focusComposer());
+        }}
+      >
+        <div className="relative isolate min-h-0 flex-1 overflow-hidden bg-card">
+          <UniverViewer visibility={overlayVisibility} changes={recentChanges} />
+          {overlayVisibility.changed && <ChangeFeedback changes={recentChanges} />}
+        </div>
+      </ContextAction>
       <ChangeNav />
       {narrow && <MiniComposer />}
     </div>

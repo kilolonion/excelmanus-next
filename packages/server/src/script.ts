@@ -541,7 +541,7 @@ console.log 可输出行数、合计等摘要；逐格 SDK 调用会增加往返
         for (const pd of docOrder) {
           if (pd.kind === "create") {
             svc!.validateCreatePath(root, pd.path);
-            const res = await svc!.previewCreate(pd.ops);
+            const res = await svc!.previewCreate(pd.ops, root);
             if (res.status !== "ok") {
               throw new PublishError(
                 res.error?.code ?? "INVALID_ARGUMENT",

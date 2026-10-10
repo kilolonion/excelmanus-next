@@ -30,6 +30,7 @@ import {
 } from "./compaction.ts";
 import { FileLeaseError, type LeaseService } from "./leases.ts";
 import type { QuestionCoordinator } from "./questions.ts";
+import { isResultPage, resultPageTool } from "./result-pages.ts";
 // Agent actor（04 §3 子集）：邮箱串行；Preparing→Calling→Executing→循环；
 // Retrying（网络/429/5xx/流中断，指数退避最多 5 次，尊重 retryAfterMs，写
 // retry.scheduled；流中断写 attempt.discarded）；不可重试写 error.guidance +
@@ -174,6 +175,25 @@ export class AgentRuntime {
   private readonly halted = new Set<string>();
   /** 已删除的会话：不再创建 actor、不再开轮。 */
   private readonly deleted = new Set<string>();
+  private shuttingDown = false;
+
+  get isShuttingDown(): boolean {
+    return this.shuttingDown;
+  }
+
+  /** 先停止全部 actor 并等待收尾，数据库和工具宿主在此期间必须保持可用。 */
+  async shutdown(timeoutMs = 30000): Promise<void> {
+    this.shuttingDown = true;
+    const sessions = new Set([...this.actors.values()].map((actor) => actor.sessionId));
+    for (const sessionId of sessions) this.stopAll(sessionId);
+    this.turnWaiters.clear();
+    const deadline = Date.now() + timeoutMs;
+    while ([...this.actors.values()].some((actor) => actor.running)) {
+      if (Date.now() >= deadline) throw new Error("代理尚未停止，数据库保持打开以保护在途操作");
+      await sleep(10);
+    }
+    this.actors.clear();
+  }
 
   constructor(deps: AgentRuntimeDeps) {
     this.deps = deps;
@@ -186,7 +206,7 @@ export class AgentRuntime {
    * `front`：被唤醒后仍没抢到名额的等待者回到表头，不丢失先后顺序。
    */
   acquireTurn(actor: AgentActor, front = false): "go" | "queued" | "blocked" {
-    if (this.deleted.has(actor.sessionId)) return "blocked";
+    if (this.shuttingDown || this.deleted.has(actor.sessionId)) return "blocked";
     const row = this.deps.db
       .prepare("SELECT role, status FROM agents WHERE session_id = ? AND id = ?")
       .get(actor.sessionId, actor.agentId) as { role: string; status: string } | undefined;
@@ -290,6 +310,7 @@ export class AgentRuntime {
 
   /** 收件箱消息到达：不伪造 user.message 派发，只唤醒目标 actor。 */
   enqueueInbox(sessionId: string, agentId: string): void {
+    if (this.shuttingDown) return;
     const row = this.deps.db
       .prepare("SELECT status FROM agents WHERE session_id = ? AND id = ?")
       .get(sessionId, agentId) as { status: string } | undefined;
@@ -627,10 +648,10 @@ class AgentActor {
         await this.continueTurn(spec.turnId, this.stepsSoFar(spec.turnId));
       }
     } finally {
-      this._running = false;
       const finishedTurn = this.currentTurnId;
       this.currentTurnId = null;
-      this.afterTurn(finishedTurn);
+      await this.afterTurn(finishedTurn);
+      this._running = false;
       this.host.releaseTurn(this.sessionId);
       // 审批决定后让等待期间排队的派发继续运行（04 §4.1 注：steer/queue 在决定后继续）
       void this.pump();
@@ -763,10 +784,10 @@ class AgentActor {
         await this.continueTurn(turnId, this.stepsSoFar(turnId));
       }
     } finally {
-      this._running = false;
       const finishedTurn = this.currentTurnId;
       this.currentTurnId = null;
-      this.afterTurn(finishedTurn);
+      await this.afterTurn(finishedTurn);
+      this._running = false;
       this.host.releaseTurn(this.sessionId);
       void this.pump();
     }
@@ -981,6 +1002,7 @@ class AgentActor {
    * 关闭）时把唤醒转交给下一个等待者，避免排在后面的代理无人唤醒。
    */
   private async pump(fromGate = false): Promise<void> {
+    if (this.host.isShuttingDown) return;
     const handOff = () => {
       if (fromGate) this.host.releaseTurn(this.sessionId);
     };
@@ -1010,10 +1032,10 @@ class AgentActor {
       // 未捕获的内部错误：尽力写 turn.failed，避免 actor 卡死在 running
       this.failInternal(err);
     } finally {
-      this._running = false;
       const finishedTurn = this.currentTurnId;
       this.currentTurnId = null;
-      this.afterTurn(finishedTurn);
+      await this.afterTurn(finishedTurn);
+      this._running = false;
       this.host.releaseTurn(this.sessionId);
       void this.pump();
     }
@@ -1577,9 +1599,9 @@ class AgentActor {
    *    非工作簿写入取本轮 status=ok 且 effect 为 write/destructive 的 tool.result。
    * 进程重启时由 recoverInterruptedAgents 合成的 turn.interrupted 不经此路径。
    */
-  private afterTurn(turnId: string | null): void {
+  private async afterTurn(turnId: string | null): Promise<void> {
     if (turnId === null) return;
-    void this.finishTurn(turnId).catch((err: unknown) => {
+    await this.finishTurn(turnId).catch((err: unknown) => {
       this.deps.emit?.("turn.after_failed", {
         sessionId: this.sessionId,
         agentId: this.agentId,
@@ -1682,6 +1704,7 @@ class AgentActor {
         )
         .get(this.sessionId, this.agentId, rec.toolCallId) as { a: string | null } | undefined;
       const intentArgs = intent?.a ? JSON.parse(intent.a) : undefined;
+      if (isResultPage(intentArgs)) continue;
       let effect: ToolEffect;
       try {
         effect =
@@ -1794,6 +1817,7 @@ class AgentActor {
       decision = await approval.wait(pending.id, approvalCtrl.signal);
       this.callAbort = null;
     }
+    if (this.host.isShuttingDown) return { required: true, decision: "denied" };
     if (approval.get(pending.id)?.status === "pending") {
       // 等待被中止（停止/打断）：以中止理由收口审批决定
       approval.decide(pending.id, "denied", this.abortReason);
@@ -1845,7 +1869,9 @@ class AgentActor {
       const declared = tools.get(call.name);
       const tool =
         declared !== undefined && (declared.roles as readonly string[]).includes(agentRole)
-          ? declared
+          ? isResultPage(call.args)
+            ? resultPageTool(declared, this.deps.db)
+            : declared
           : undefined;
       // 06 §2.1：targets/replay/effect 只对校验通过的参数求值；非法参数照常写 intent。
       const parsedArgs = tool?.input.safeParse(call.args);
@@ -2045,6 +2071,7 @@ class AgentActor {
                     stepId,
                     leased,
                   });
+            if (this.host.isShuttingDown && gate.required) return "done";
             // 04 §5.1：审批门放行（已批准、auto 模式或会话自动批准规则）即受信，
             // destructive 调用据此执行；未装配审批执行器时保持 fail-closed。
             // publish 工具的门是占位放行，不得注入（该标记对它表示"重启后已批准恢复"）。
@@ -2116,6 +2143,7 @@ class AgentActor {
                       ? AbortSignal.any([signal, AbortSignal.timeout(timeoutSeconds * 1000)])
                       : signal;
                   const resolution = await this.deps.question.wait(questionId, waitSignal);
+                  if (this.host.isShuttingDown) return "done";
                   if (resolution.aborted) {
                     // 超时、停止、打断都收口 pending 投影（与审批一致，04 §8.1）：
                     // 之后的用户回答返回幂等结果，不再恢复已结束的工具调用。
@@ -2186,6 +2214,15 @@ class AgentActor {
           },
         };
       }
+      if (
+        this.host.isShuttingDown &&
+        this.deps.db
+          .prepare(
+            "SELECT 1 FROM pending_interactions WHERE session_id = ? AND agent_id = ? AND tool_call_id = ? AND status = 'pending'",
+          )
+          .get(this.sessionId, this.agentId, call.id)
+      )
+        return "done";
       result = withVocabularyCode(result);
       log.append(this.sessionId, this.agentId, [
         {
@@ -2357,7 +2394,17 @@ export function recoverInterruptedAgents(deps: {
       )
       .all(agent.session_id, agent.id) as { tool_call_id: string; tool_name: string }[];
     const records: { type: string; data: unknown }[] = intents.map((it) => {
-      const tool = deps.tools?.get(it.tool_name);
+      const declared = deps.tools?.get(it.tool_name);
+      const originalIntent = deps.db
+        .prepare(
+          "SELECT data FROM session_log WHERE session_id = ? AND agent_id = ? AND type = 'tool.intent' AND json_extract(data, '$.toolCallId') = ? ORDER BY seq DESC LIMIT 1",
+        )
+        .get(agent.session_id, agent.id, it.tool_call_id) as { data: string } | undefined;
+      const originalArgs = originalIntent
+        ? (JSON.parse(originalIntent.data) as { args?: unknown }).args
+        : undefined;
+      const tool =
+        declared && isResultPage(originalArgs) ? resultPageTool(declared, deps.db) : declared;
       let recovered: ToolResult | undefined;
       if (tool?.recover) {
         // tool.intent 记录里有当时解析后的参数

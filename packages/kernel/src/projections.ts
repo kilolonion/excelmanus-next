@@ -1,3 +1,4 @@
+import { resultCursor } from "./result-pages.ts";
 // M1 内核投影（10 §3.3）：sessions、agents、agent_context、dispatches、open_intents。
 // 全部从 session_log 增量维护、可清表重建。
 
@@ -203,7 +204,7 @@ export const TOOL_RESULT_MAX_CHARS = 16_000;
  * 工具结果进入上下文时统一截断（06 §2.3、04 §6.2：产生时即有上限，之后不再改写）。
  * 日志保留完整结果；超限时只给模型状态、错误、修订号与前段预览。
  */
-export function capToolOutput(result: ToolResult): ToolResult {
+export function capToolOutput(result: ToolResult, sourceSeq?: number): ToolResult {
   const { images, ...rest } = result;
   const json = JSON.stringify(rest);
   if (json.length <= TOOL_RESULT_MAX_CHARS) return result;
@@ -215,10 +216,14 @@ export function capToolOutput(result: ToolResult): ToolResult {
       : {}),
     ...(result.docRevs ? { docRevs: result.docRevs } : {}),
     ...(result.versions ? { versions: result.versions } : {}),
-    ...(result.truncated ? { truncated: result.truncated } : {}),
+    ...(sourceSeq !== undefined
+      ? { truncated: { shown, total: json.length, cursor: resultCursor(sourceSeq, shown) } }
+      : result.truncated
+        ? { truncated: result.truncated }
+        : {}),
     data: {
       preview: json.slice(0, shown),
-      note: `结果过长（${json.length} 字符），只显示前 ${shown} 字符；请缩小范围或分批获取`,
+      note: `结果过长（${json.length} 字符），只显示前 ${shown} 字符；请缩小范围或保留原参数并携带 truncated.cursor 分批获取`,
     },
     ...(images ? { images } : {}),
   };
@@ -375,7 +380,7 @@ const agentContext: Projection = {
         toolCallId: str(d.toolCallId) ?? "",
         toolName: str(d.toolName) ?? "",
         output: result
-          ? capToolOutput(result)
+          ? capToolOutput(result, rec.seq)
           : {
               status,
               error: { code: "INTERNAL", message: "缺失结果", retryable: false },

@@ -10,6 +10,7 @@ import { RadioCard, RadioGroup, Switch } from "../ui/controls.tsx";
 import { Alert, Badge } from "../ui/display.tsx";
 import { Field as UiField } from "../ui/field.tsx";
 import { Input } from "../ui/input.tsx";
+import { SettingsRow } from "../ui/page-layout.tsx";
 import { NONE, SimpleSelect } from "../ui/select.tsx";
 import { Feedback, Field, Loading, Section, useAction, useLoad } from "./common.tsx";
 
@@ -89,38 +90,26 @@ export function GeneralTab() {
       </Section>
       <Section title={ST.roleTitle} hint={ST.roleHint}>
         <div className="settings-rows divide-y divide-border/65">
-          <div className="settings-row grid grid-cols-1 gap-3 py-4 first:pt-0 @min-[580px]:grid-cols-[minmax(0,1fr)_minmax(200px,.9fr)] @min-[580px]:gap-8">
+          <SettingsRow title={ST.roleMain} description={ST.roleMainBody}>
             <div className="flex min-w-0 flex-col gap-1.5">
-              <strong className="text-sm font-medium">{ST.roleMain}</strong>
-              <span className="text-xs leading-5 text-muted-foreground">{ST.roleMainBody}</span>
-            </div>
-            <div className="flex min-w-0 flex-col gap-1.5 @min-[580px]:items-end">
-              <strong className="max-w-full truncate text-sm font-medium">
+              <strong className="truncate text-sm font-medium">
                 {mainProfile ? (
                   <ProviderLabel provider={mainProfile.provider}>{mainProfile.name}</ProviderLabel>
                 ) : (
                   ST.empty
                 )}
               </strong>
-              <span className="max-w-full truncate font-mono text-2xs text-muted-foreground">
+              <span className="truncate font-mono text-2xs text-muted-foreground">
                 {mainProfile ? `${mainProfile.provider} / ${mainProfile.model}` : ""}
               </span>
             </div>
-          </div>
-          <div className="settings-row grid grid-cols-1 items-center gap-3 py-4 @min-[580px]:grid-cols-[minmax(0,1fr)_minmax(200px,.9fr)] @min-[580px]:gap-8">
-            <div className="flex min-w-0 flex-col gap-1.5">
-              <strong className="text-sm font-medium">{ST.roleSub}</strong>
-              <span className="text-xs leading-5 text-muted-foreground">{ST.roleSubBody}</span>
-            </div>
+          </SettingsRow>
+          <SettingsRow title={ST.roleSub} description={ST.roleSubBody}>
             {profileSelect("subAgentProfileId", ST.roleSub)}
-          </div>
-          <div className="settings-row grid grid-cols-1 items-center gap-3 py-4 pb-0 @min-[580px]:grid-cols-[minmax(0,1fr)_minmax(200px,.9fr)] @min-[580px]:gap-8">
-            <div className="flex min-w-0 flex-col gap-1.5">
-              <strong className="text-sm font-medium">{ST.roleCompact}</strong>
-              <span className="text-xs leading-5 text-muted-foreground">{ST.roleCompactBody}</span>
-            </div>
+          </SettingsRow>
+          <SettingsRow title={ST.roleCompact} description={ST.roleCompactBody}>
             {profileSelect("compactionProfileId", ST.roleCompact)}
-          </div>
+          </SettingsRow>
         </div>
       </Section>
       <Section title={S.dispatchDefaultTitle} hint={S.dispatchDefaultHint}>

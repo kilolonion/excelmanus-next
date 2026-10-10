@@ -1,42 +1,61 @@
 // 设置中心共用的小组件与工具函数。
 
-import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { S, ST } from "../../strings.ts";
 import { cn } from "../ui/cn.ts";
 import { useConfirm } from "../ui/confirm.tsx";
 import { Alert, Card } from "../ui/display.tsx";
 import { Field as UiField } from "../ui/field.tsx";
+import { useFormGuard } from "../ui/form-guard.tsx";
 import { toast } from "../ui/overlay.tsx";
-import { Skeleton } from "../ui/spinner.tsx";
+import { PageSection, PageState } from "../ui/page-layout.tsx";
 
 /** 加载一次并可手动刷新的异步数据。 */
 export function useLoad<T>(load: () => Promise<T>, deps: unknown[] = []) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const generation = useRef(0);
   // 依赖由调用方给出；序列化为稳定键，避免每次渲染重建
   const key = JSON.stringify(deps);
   // biome-ignore lint/correctness/useExhaustiveDependencies: load 随调用方闭包变化，重新加载只由 key 驱动
   const reload = useCallback(() => {
+    const current = ++generation.current;
     load()
       .then((d) => {
+        if (current !== generation.current) return;
         setData(d);
         setError(null);
       })
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+      .catch((e: unknown) => {
+        if (current === generation.current) setError(e instanceof Error ? e.message : String(e));
+      });
   }, [key]);
-  useEffect(() => reload(), [reload]);
+  useEffect(() => {
+    setData(null);
+    setError(null);
+    reload();
+    return () => {
+      generation.current++;
+    };
+  }, [reload]);
   return { data, error, reload };
 }
 
 /** 保存反馈：成功用提示框（附录 C P-14），失败留在原位。 */
 export function useAction() {
+  const inFlight = useRef(false);
+  const guard = useFormGuard();
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const run = async (fn: () => Promise<unknown>, okText: string = ST.saved): Promise<boolean> => {
+    if (inFlight.current) return false;
+    inFlight.current = true;
+    const submitted = guard.captureSubmit();
     setBusy(true);
     setMsg(null);
     try {
       await fn();
+      guard.saved(submitted);
       setMsg({ ok: true, text: okText });
       toast({ tone: "ok", title: okText });
       return true;
@@ -44,6 +63,7 @@ export function useAction() {
       setMsg({ ok: false, text: e instanceof Error ? e.message : ST.saveFailed });
       return false;
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   };
@@ -74,26 +94,14 @@ export function Section({
   className?: string;
 }) {
   return (
-    <section className={cn("settings-section flex min-w-0 flex-col gap-5", className)}>
-      {(title || hint || actions) && (
-        <div className="settings-section-heading flex min-h-8 flex-wrap items-start justify-between gap-x-5 gap-y-3">
-          <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-            {title && (
-              <h3 className="text-[15px] leading-6 font-semibold tracking-tight">{title}</h3>
-            )}
-            {hint && (
-              <p className="max-w-[560px] text-xs leading-5 text-muted-foreground">{hint}</p>
-            )}
-          </div>
-          {actions && (
-            <div className="settings-section-actions flex flex-wrap items-center gap-2">
-              {actions}
-            </div>
-          )}
-        </div>
-      )}
+    <PageSection
+      title={title}
+      description={hint}
+      actions={actions}
+      className={cn("settings-section", className)}
+    >
       {children}
-    </section>
+    </PageSection>
   );
 }
 
@@ -132,12 +140,7 @@ export function ItemCard({ children, className }: { children: ReactNode; classNa
 }
 
 export function Loading() {
-  return (
-    <div className="flex flex-col gap-2" role="status" aria-label={ST.loading}>
-      <Skeleton className="h-16" />
-      <Skeleton className="h-16 opacity-70" />
-    </div>
-  );
+  return <PageState kind="loading" title={ST.loading} />;
 }
 
 export function LoadStatus({ data, error }: { data: unknown; error: string | null }) {
@@ -151,11 +154,7 @@ export function LoadStatus({ data, error }: { data: unknown; error: string | nul
 }
 
 export function Empty({ text = ST.empty }: { text?: string }) {
-  return (
-    <p className="settings-empty rounded-lg bg-muted/40 px-5 py-7 text-sm leading-6 text-muted-foreground">
-      {text}
-    </p>
-  );
+  return <PageState kind="empty" title={text} />;
 }
 
 /** "名称: 值" 或 "KEY=值" 多行文本 ↔ 对象。 */

@@ -15,6 +15,7 @@ export * from "./paths.ts";
 export * from "./projections.ts";
 export * from "./prompts.ts";
 export * from "./questions.ts";
+export * from "./result-pages.ts";
 export * from "./runtime.ts";
 export * from "./session-log.ts";
 export * from "./tools.ts";

@@ -1,9 +1,10 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import { createApiClient } from "@excelmanus/protocol";
+import { importXlsx } from "@excelmanus/workbook";
 import { MockLanguageModelV4 } from "ai/test";
 import { afterAll, describe, expect, test } from "vitest";
 import { type RunningServer, startServer } from "../src/index.ts";
@@ -266,12 +267,12 @@ async function waitLog(
   tries = 800,
 ): Promise<{ type: string; agentId: string | null; data: unknown }[]> {
   for (let i = 0; i < tries; i += 1) {
-    const logs = await api.getSessionLog(sessionId);
+    const logs = await api.getSessionLog(sessionId, { limit: 500 });
     const items = logs.items as { type: string; agentId: string | null; data: unknown }[];
     if (match(items)) return items;
     await sleep(15);
   }
-  return (await api.getSessionLog(sessionId)).items as {
+  return (await api.getSessionLog(sessionId, { limit: 500 })).items as {
     type: string;
     agentId: string | null;
     data: unknown;
@@ -279,7 +280,7 @@ async function waitLog(
 }
 
 describe("M4 多代理：并发闸门 / 完成报告 / 租约 / 用户控制", () => {
-  test("场景13：并发闸门 ≤2 + 每代理写自己的输出文件 + 完成报告 + control REST", async () => {
+  test("场景13：12 文件并发闸门 ≤2 + 每代理写自己的输出文件 + 完成报告 + control REST", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "excelmanus-agents-gate-"));
     dirs.push(dataDir);
     let inflight = 0;
@@ -287,7 +288,7 @@ describe("M4 多代理：并发闸门 / 完成报告 / 租约 / 用户控制", (
     const mainPrompts: string[] = [];
     const childPrompts: string[] = [];
     let spawnedOnce = false;
-    const outFiles = ["out-1.xlsx", "out-2.xlsx", "out-3.xlsx"];
+    const outFiles = Array.from({ length: 12 }, (_, index) => `out-${index + 1}.xlsx`);
     const gateModel = new MockLanguageModelV4({
       provider: "mock",
       modelId: "mock-agents",
@@ -329,26 +330,14 @@ describe("M4 多代理：并发闸门 / 完成报告 / 租约 / 用户控制", (
           return {
             stream: stream([
               { type: "stream-start", warnings: [] },
-              ...spawnCalls([
-                {
-                  name: "w1",
+              ...spawnCalls(
+                outFiles.map((file, index) => ({
+                  name: `w${index + 1}`,
                   role: "worker",
-                  task: "写入 out-1.xlsx 并汇报",
-                  files: ["out-1.xlsx"],
-                },
-                {
-                  name: "w2",
-                  role: "worker",
-                  task: "写入 out-2.xlsx 并汇报",
-                  files: ["out-2.xlsx"],
-                },
-                {
-                  name: "w3",
-                  role: "worker",
-                  task: "写入 out-3.xlsx 并汇报",
-                  files: ["out-3.xlsx"],
-                },
-              ]),
+                  task: `写入 ${file} 并汇报`,
+                  files: [file],
+                })),
+              ),
               { type: "finish", usage, finishReason: { unified: "tool-calls", raw: "tool_calls" } },
             ]),
           };
@@ -372,7 +361,10 @@ describe("M4 多代理：并发闸门 / 完成报告 / 租约 / 用户控制", (
       apiKey: "test",
     });
     const { session } = await api.createSession({});
-    await api.sendMessage(session.id, "main", { clientMessageId: "m1", text: "并行做三件事" });
+    await api.sendMessage(session.id, "main", {
+      clientMessageId: "m1",
+      text: "并行整理十二个文件",
+    });
 
     const isReport = (r: { type: string; data: unknown }) =>
       r.type === "inbox.sent" && (r.data as { kind?: string }).kind === "report";
@@ -384,15 +376,15 @@ describe("M4 多代理：并发闸门 / 完成报告 / 租约 / 用户控制", (
       );
       const mainDone2 =
         all.filter((r) => r.type === "turn.completed" && r.agentId === "main").length >= 2;
-      return spawned.length >= 3 && reports.length >= 3 && childDone && mainDone2;
+      return spawned.length >= 12 && reports.length >= 12 && childDone && mainDone2;
     });
 
     // 闸门：同时处于模型调用中的子代理峰值恰为 2（上限生效且确有并行）
     expect(peak).toBe(2);
     const spawned = items.filter((r) => r.type === "agent.spawned" && r.agentId !== "main");
-    expect(spawned.length).toBe(3);
+    expect(spawned.length).toBe(12);
     const reports = items.filter(isReport);
-    expect(reports.length).toBe(3);
+    expect(reports.length).toBe(12);
     for (const r of reports) {
       const data = r.data as { fromAgentId: string; toAgentId: string; message: string };
       expect(data.toAgentId).toBe("main");
@@ -400,11 +392,14 @@ describe("M4 多代理：并发闸门 / 完成报告 / 租约 / 用户控制", (
       expect(data.message).toContain("【最终回复】");
       expect(data.message).toContain("【变更摘要】");
       // 报告含该子代理输出文件路径与"修订"字样（05 §4.3）
-      expect(data.message).toMatch(/out-\d\.xlsx（修订 rev\d+）/);
+      expect(data.message).toMatch(/out-\d+\.xlsx（修订 rev\d+）/);
     }
-    // 三个输出文件真实落盘在工作区
+    // 十二个输出文件真实落盘并校验内容
     for (const f of outFiles) {
       expect(existsSync(join(server.workspaceRoot, f))).toBe(true);
+      const workbook = importXlsx(readFileSync(join(server.workspaceRoot, f)), f).snapshot;
+      const sheet = workbook.sheets[workbook.sheetOrder[0] ?? ""];
+      expect(sheet?.cellData?.[0]?.[0]?.v).toBe(f);
     }
     // 每个子代理的步数 ≤ 60（step.started 计数）
     for (const s of spawned) {

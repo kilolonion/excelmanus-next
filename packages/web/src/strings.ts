@@ -1,6 +1,8 @@
 // 用户可见文案集中管理（简体中文）。
 
 export const S = {
+  nativeImagePlaceholder: "原始图片 · 可通过代理提取或下载工作簿查看",
+  nativeChartPlaceholder: "原生图表 · 下载后可在 Excel 中查看和编辑",
   dispatchDefaultTitle: "运行中消息的默认行为",
   dispatchDefaultHint: "引导在下一步送达；排队在当前任务结束后送达；打断会停止当前任务并立即发送。",
   pendingDelivery: "尚未送达模型 · 点击编辑",
@@ -30,6 +32,8 @@ export const S = {
   reconnecting: "连接已断开，正在重连…",
   authTitle: "正在连接此设备",
   authDescription: "ExcelManus 会自动完成本机登录，令牌由浏览器安全保存。",
+  protocolMismatch: "前后端版本不一致",
+  protocolMismatchHint: "请刷新页面；桌面版请升级到与后端一致的版本。为避免错误编辑，已停止同步。",
   authFailed: "暂时无法连接 ExcelManus",
   authFailedHint: "请确认后端仍在运行，然后重试。你不需要复制或粘贴任何令牌。",
   retryConnection: "重新连接",
@@ -318,8 +322,8 @@ export const S = {
   pendingSummaryHint: "查看待处理事项",
   noFiles: "工作区还没有文件。上传或拖入 xlsx / csv 开始。",
   emptyChatEyebrow: "你的表格工作室",
-  emptyChatTitle: "从一张表，开始新的工作。",
-  emptyChatHint: "整理数据、核对差异，或把零散的数字变成清楚的结果。说说你想完成什么。",
+  emptyChatTitle: "让表格工作，更进一步",
+  emptyChatHint: "描述任务，或添加工作簿开始分析。",
   emptyChatTaskLabel: "常用任务",
   emptyChatTasks: [
     {
@@ -897,4 +901,64 @@ export const OB = {
   tryTask: "让代理试一个任务",
   samplePrompt: (path: string) =>
     `请读取 ${path}，告诉我每列的含义；然后把金额最高的 3 行用浅黄色标出来，修改前先让我在表格上确认区域。`,
+};
+
+export const FILES = {
+  delete: "移入回收站",
+  newFolder: "新建文件夹",
+  rename: "重命名",
+  name: "名称",
+  nameHint: "输入当前目录中的名称，不含路径分隔符",
+  root: "工作区根目录",
+  parent: "上一级",
+  actions: "文件操作",
+  deleteTitle: "移入回收站？",
+  deleteHint: "文件会保留在工作区回收站，可在设置中恢复。已打开的工作簿不能直接移动或删除。",
+  confirm: "确定",
+  cancel: "取消",
+  download: "下载",
+  failed: "文件操作失败",
+  invalidName: "请输入有效名称，不要包含 /、\\、. 或 .. 路径",
+  loading: "正在读取文件列表…",
+};
+
+export const DIAGNOSTICS = {
+  export: "导出脱敏诊断包",
+  exported: "诊断包已导出",
+  hint: "仅导出版本、平台及事件元数据，不含密钥、聊天正文或文件内容。",
+};
+
+export const UI = {
+  reviewChanges: "查看预览",
+  confirmChanges: "确认这次修改",
+  reviewChangesHint: "检查修改范围与内容，批准后才会写入。",
+  searchResources: "搜索名称或说明…",
+  noSearchResults: "没有匹配的结果",
+  unsavedTitle: "有尚未保存的修改",
+  unsavedHint: "离开后这些修改会丢失。你可以取消并先保存。",
+  discardChanges: "放弃修改并离开",
+  filesTitle: "工作区文件",
+  filesDescription: "管理本地文件，让分析保持有序。",
+  backToWorkspace: "返回工作台",
+  backToList: "返回列表",
+  teamDescription: "查看代理分工、进度与结果，随时补充说明或停止任务。",
+  noTeam: "当前会话没有代理团队",
+  noTeamHint: "复杂任务需要协作时，代理团队会显示在这里。",
+  fileDetails: "文件信息",
+  filePath: "位置",
+  fileType: "类型",
+  fileSize: "大小",
+  fileUpdated: "修改时间",
+  openFile: "打开工作簿",
+  selectFile: "选择文件查看详情",
+  selectFileHint: "在左侧选择文件，或打开文件夹继续浏览。",
+  folder: "文件夹",
+  unknown: "—",
+  recentFiles: "工作区文件",
+  viewAll: "查看全部",
+  localFiles: "文件保存在本地工作区",
+  privacyHint: "使用云端模型时，相关内容将发送至你配置的模型服务。",
+  onboardingTitle: "开始你的第一个表格任务",
+  onboardingHint: "连接模型，打开工作簿，让分析自然发生。",
+  settingsBack: "返回设置导航",
 };

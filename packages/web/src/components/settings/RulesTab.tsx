@@ -9,6 +9,7 @@ import { Button } from "../ui/button.tsx";
 import { cn } from "../ui/cn.ts";
 import { Switch } from "../ui/controls.tsx";
 import { Label } from "../ui/field.tsx";
+import { useUnsavedChanges } from "../ui/form-guard.tsx";
 import { Textarea } from "../ui/input.tsx";
 import { Disclosure } from "../ui/overlay.tsx";
 import { SimpleSelect } from "../ui/select.tsx";
@@ -27,6 +28,7 @@ function RuleItem({ rule, onChanged }: { rule: Rule; onChanged(): void }) {
   const api = apiClientOf();
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(rule.content);
+  useUnsavedChanges(editing && text !== rule.content);
   const act = useAction();
   const confirmDelete = useConfirmDelete();
   const id = useId();
@@ -71,7 +73,14 @@ function RuleItem({ rule, onChanged }: { rule: Rule; onChanged(): void }) {
         <span className="flex-1" />
         {editing ? (
           <>
-            <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setText(rule.content);
+                setEditing(false);
+              }}
+            >
               {ST.cancel}
             </Button>
             <Button

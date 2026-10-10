@@ -36,8 +36,9 @@ import {
 } from "../store.ts";
 import { S, toolTitle } from "../strings.ts";
 import { useChatScroll } from "../use-chat-scroll.ts";
-import { Icon, type IconName, ProviderLogo } from "./Icon.tsx";
+import { BrandMark, Icon, type IconName, ProviderLogo } from "./Icon.tsx";
 import { Interactions } from "./Interactions.tsx";
+import { RecentFiles } from "./layout/RecentFiles.tsx";
 import { ModelReasoningControl } from "./ModelReasoningControl.tsx";
 import { Onboarding } from "./Onboarding.tsx";
 import { PendingMessage } from "./PendingMessage.tsx";
@@ -492,10 +493,7 @@ function Reasoning({ text, live = false, ms }: { text: string; live?: boolean; m
 function EmptyChatHeading() {
   return (
     <div className="empty-chat landing-heading flex flex-col gap-3 py-3 motion-safe:animate-surface-in">
-      <span className="landing-kicker flex items-center gap-2.5 text-xs font-medium tracking-[0.08em] text-muted-foreground">
-        <span className="h-px w-5 bg-muted-foreground/50" aria-hidden="true" />
-        {S.emptyChatEyebrow}
-      </span>
+      <BrandMark className="brand-mark" />
       <h1 className="empty-chat-title text-3xl font-semibold tracking-tight text-foreground">
         {S.emptyChatTitle}
       </h1>
@@ -523,6 +521,7 @@ function EmptyChatExtras({
 }) {
   return (
     <div className="landing-extras mx-auto flex w-full max-w-[808px] shrink-0 flex-col gap-6">
+      <RecentFiles />
       <div className="empty-chat-context order-last grid grid-cols-2 gap-4 border-t border-border/80 pt-5">
         <div className="flex min-w-0 items-center gap-3 px-1">
           <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">

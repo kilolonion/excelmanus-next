@@ -10,7 +10,7 @@ export interface SkillEvalCase {
   files: Record<string, string>;
   image?: string;
   prompt: string;
-  outputs: { path: string; cells: CellCheck[] }[];
+  outputs: { path: string; cells: CellCheck[]; nativeCharts?: number }[];
   manual: string[];
 }
 

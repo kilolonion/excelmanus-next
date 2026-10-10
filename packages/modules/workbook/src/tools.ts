@@ -1,10 +1,10 @@
 import { FileOperationError } from "@excelmanus/kernel";
 import { publishNew, workbookExportTool } from "./export.ts";
+
 // workbook_read / workbook_analyze（06 §4.1–4.2）：只读活文档工具。
 // 数据面：overview/range/search；分析面：sql（内存 SQLite，只许 SELECT/WITH）
 // 与 profile（列画像）。结果统一带 docRevs；上限 2000 格 / 16000 字符，截断给游标。
 
-import { DatabaseSync } from "node:sqlite";
 import { formatRange, indexToCol, parseRange, type RangeRef } from "@excelmanus/core";
 import type { ToolContext, ToolDefinition, WorkbookActivity } from "@excelmanus/kernel";
 import {
@@ -15,8 +15,13 @@ import {
 } from "@excelmanus/protocol";
 import type { ICellData, IWorkbookData, IWorksheetData } from "@univerjs/core";
 import { z } from "zod";
+import { CheckRule, checkTables, diffTables } from "./analysis.ts";
 import { workbookEditTool } from "./edit.ts";
+import { formulaGraph } from "./formula-graph.ts";
+import { objectsOf, preservedMetadata } from "./objects.ts";
+import { CF_RESOURCE, DV_RESOURCE, rulesResource } from "./rule-codec.ts";
 import { DocNotFoundError, type DocumentService } from "./service.ts";
+import { runSql, type SqlTable } from "./sql-runner.ts";
 import { workbookSheets } from "./summary.ts";
 
 const MAX_CELLS = 2000;
@@ -34,6 +39,7 @@ interface DocRef {
   name: string;
   sheetOrder: string[];
   sheets: Record<string, IWorksheetData>;
+  snapshot: IWorkbookData;
   /** 按 id 或表名取表。 */
   sheet(idOrName: string | undefined): IWorksheetData;
 }
@@ -62,6 +68,7 @@ async function openDoc(
     name: snapshot.name,
     sheetOrder,
     sheets,
+    snapshot,
     sheet(idOrName) {
       const s =
         idOrName !== undefined
@@ -126,7 +133,8 @@ const cellText = (v: unknown): string => (v === undefined || v === null ? "" : S
 
 function readRegion(
   region: Region,
-  facets: ("values" | "formulas" | "layout")[],
+  facets: ("values" | "formulas" | "layout" | "styles" | "rules")[],
+  snapshot: IWorkbookData,
   offset: number,
 ): { out: Record<string, unknown>; consumedRows: number; truncated: boolean } {
   const { sheet } = region;
@@ -135,16 +143,24 @@ function readRegion(
   const wantFormulas = facets.includes("formulas");
   const values: unknown[][] = [];
   const formulas: (string | null)[][] = [];
+  const styles: unknown[][] = [];
+  if (region.c1 - region.c0 + 1 > MAX_CELLS)
+    throw new Error("单次读取区域最多2000列，请拆分列范围读取");
   let cells = 0;
   let chars = 0;
   let consumedRows = 0;
   let truncated = false;
 
   for (let r = region.r0 + offset; r <= region.r1; r++) {
+    if (consumedRows > 0 && (cells + region.c1 - region.c0 + 1 > MAX_CELLS || chars >= MAX_CHARS)) {
+      truncated = true;
+      break;
+    }
     const vRow: unknown[] = [];
+    const sRow: unknown[] = [];
     const fRow: (string | null)[] = [];
     const rowCells = sheet.cellData?.[r] as Record<number, ICellData> | undefined;
-    let rowFull = true;
+
     for (let c = region.c0; c <= region.c1; c++) {
       const cell = rowCells?.[c];
       if (wantValues) {
@@ -157,20 +173,69 @@ function readRegion(
         if (f !== null) chars += f.length;
       }
       cells += 1;
-      if (cells > MAX_CELLS || chars > MAX_CHARS) {
-        truncated = true;
-        rowFull = false;
-        break;
+      if (facets.includes("styles")) {
+        const style =
+          typeof cell?.s === "string"
+            ? snapshot.styles?.[cell.s]
+            : (cell?.s ?? snapshot.styles?.s0);
+        sRow.push(style ?? null);
+        chars += JSON.stringify(style ?? null).length;
       }
     }
     if (wantValues) values.push(vRow);
     if (wantFormulas) formulas.push(fRow);
-    if (rowFull) consumedRows += 1;
-    if (truncated) break;
+    if (facets.includes("styles")) styles.push(sRow);
+    consumedRows += 1;
   }
   if (wantValues) out.values = values;
   if (wantFormulas) out.formulas = formulas;
+  if (facets.includes("styles")) out.styles = styles;
+  if (facets.includes("rules")) {
+    const overlaps = (rule: Record<string, unknown>) =>
+      Array.isArray(rule.ranges) &&
+      rule.ranges.some((range) => {
+        const r = range as Record<string, number>;
+        return (
+          r.startRow! <= region.r1 &&
+          r.endRow! >= region.r0 &&
+          r.startColumn! <= region.c1 &&
+          r.endColumn! >= region.c0
+        );
+      });
+    out.rules = {
+      conditionalFormats: (rulesResource(snapshot, CF_RESOURCE)[region.sheetId] ?? []).filter(
+        overlaps,
+      ),
+      dataValidations: (rulesResource(snapshot, DV_RESOURCE)[region.sheetId] ?? []).filter(
+        overlaps,
+      ),
+    };
+  }
+  out.coverage = Object.fromEntries(
+    ["values", "formulas", "styles", "layout", "rules"].map((facet) => [
+      facet,
+      facets.includes(facet as (typeof facets)[number]) ? "read" : "not_requested",
+    ]),
+  );
 
+  if (facets.includes("layout"))
+    out.hyperlinks = Object.entries(sheet.cellData ?? {}).flatMap(([r, cells]) =>
+      Number(r) >= region.r0 && Number(r) <= region.r1
+        ? Object.entries(cells ?? {}).flatMap(([c, raw]) => {
+            const cell = raw as ICellData;
+            return Number(c) >= region.c0 &&
+              Number(c) <= region.c1 &&
+              cell?.custom?.excelmanusHyperlink
+              ? [
+                  {
+                    cell: `${indexToCol(Number(c) + 1)}${Number(r) + 1}`,
+                    link: cell.custom.excelmanusHyperlink,
+                  },
+                ]
+              : [];
+          })
+        : [],
+    );
   if (facets.includes("layout")) {
     const merges = (sheet.mergeData ?? []).filter(
       (m) =>
@@ -194,6 +259,17 @@ function readRegion(
       merges,
       columnWidths,
       rowHeights,
+      rows: Object.fromEntries(
+        Object.entries(sheet.rowData ?? {}).filter(
+          ([index]) => Number(index) >= region.r0 && Number(index) <= region.r1,
+        ),
+      ),
+      filter: rulesResource(snapshot, "SHEET_FILTER_PLUGIN")[region.sheetId] ?? null,
+      columns: Object.fromEntries(
+        Object.entries(sheet.columnData ?? {}).filter(
+          ([index]) => Number(index) >= region.c0 && Number(index) <= region.c1,
+        ),
+      ),
     };
   }
   return { out, consumedRows, truncated };
@@ -235,11 +311,11 @@ function colName(raw: unknown, idx: number, used: Set<string>): string {
 
 /** 把区域装入内存表 `data`：首行为列名，无类型声明（BLOB affinity 保留原生类型）。 */
 function loadRegionTable(
-  db: DatabaseSync,
   doc: DocRef,
   sheetName: string | undefined,
   range: string | undefined,
-): { columns: string[]; rowCount: number } {
+  name = WORKBOOK_ANALYZE_SQL_TABLE,
+): SqlTable {
   const region =
     range !== undefined && range !== ""
       ? resolveRegion(doc, sheetName, range)
@@ -250,26 +326,25 @@ function loadRegionTable(
   for (let c = c0; c <= c1; c++) {
     cols.push(colName(sheet.cellData?.[r0]?.[c]?.v, c - c0, used));
   }
-  const quoted = cols.map((c) => `"${c.replace(/"/g, '""')}"`);
-  db.exec(`CREATE TABLE ${WORKBOOK_ANALYZE_SQL_TABLE} (${quoted.join(",")})`);
-  const insert = db.prepare(
-    `INSERT INTO ${WORKBOOK_ANALYZE_SQL_TABLE} VALUES (${cols.map(() => "?").join(",")})`,
-  );
-  let rowCount = 0;
-  for (let r = r0 + 1; r <= r1; r++) {
-    const row = sheet.cellData?.[r] as Record<number, ICellData> | undefined;
-    insert.run(
-      ...cols.map((_, i) => {
-        const v = row?.[c0 + i]?.v;
-        if (v === undefined || v === null) return null;
-        if (typeof v === "boolean") return v ? 1 : 0;
-        if (typeof v === "number" || typeof v === "string" || typeof v === "bigint") return v;
-        return String(v);
+  if (cols.length === 0 || (r1 - r0) * cols.length > 200000)
+    throw new FileOperationError("LIMIT_EXCEEDED", "SQL 每个输入最多20万格，请指定较小区域");
+  const rows: SqlTable["rows"] = [];
+  for (let r = r0 + 1; r <= r1; r++)
+    rows.push(
+      cols.map((_, i) => {
+        const v = sheet.cellData?.[r]?.[c0 + i]?.v;
+        return v === undefined || v === null
+          ? null
+          : typeof v === "boolean"
+            ? v
+              ? 1
+              : 0
+            : typeof v === "number" || typeof v === "string"
+              ? v
+              : String(v);
       }),
     );
-    rowCount += 1;
-  }
-  return { columns: cols, rowCount };
+  return { name, columns: cols, rows };
 }
 
 // ---------- profile ----------
@@ -372,10 +447,12 @@ function searchDoc(
 const readInput = z.object({
   docId: z.string().optional(),
   path: z.string().optional(),
-  mode: z.enum(["overview", "range", "search"]),
+  mode: z.enum(["overview", "range", "search", "objects", "table", "formula_graph"]),
+  depth: z.int().min(1).max(5).default(1),
+  imageId: z.string().optional(),
   sheet: z.string().optional(),
   range: z.string().optional(),
-  facets: z.array(z.enum(["values", "formulas", "layout"])).optional(),
+  facets: z.array(z.enum(["values", "formulas", "styles", "layout", "rules"])).optional(),
   offset: z.number().int().min(0).optional(),
   query: z.string().optional(),
 });
@@ -383,11 +460,34 @@ const readInput = z.object({
 const analyzeInput = z.object({
   docId: z.string().optional(),
   path: z.string().optional(),
-  mode: z.enum(["sql", "profile"]),
+  mode: z.enum(["sql", "profile", "diff", "check"]),
+  right: z
+    .object({
+      path: z.string().optional(),
+      docId: z.string().optional(),
+      sheet: z.string().optional(),
+      range: z.string().optional(),
+    })
+    .optional(),
+  keys: z.array(z.string()).max(20).optional(),
+  checks: z.array(CheckRule).min(1).max(20).optional(),
+  offset: z.int().nonnegative().default(0),
   sheet: z.string().optional(),
   range: z.string().optional(),
   sql: z.string().optional(),
   saveTo: AnalyzeSaveTo.optional(),
+  sources: z
+    .array(
+      z.object({
+        name: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/),
+        path: z.string().optional(),
+        docId: z.string().optional(),
+        sheet: z.string().optional(),
+        range: z.string().optional(),
+      }),
+    )
+    .max(12)
+    .optional(),
 });
 
 // ---------- 工具定义 ----------
@@ -421,7 +521,7 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
     name: "workbook_read",
     title: "读取工作簿",
     description:
-      "读取 xlsx/csv 工作簿快照。mode=overview 返回表清单与规模；mode=range 返回指定区域（facets: values|formulas|layout，紧凑行数组，超 2000 格或 16000 字符截断并返回 nextOffset）；mode=search 按子串搜索单元格。输入 docId 或工作区相对 path。",
+      "读取 xlsx/csv 工作簿快照。mode=overview 返回表清单与规模；mode=range 返回指定区域（facets: values|formulas|styles|layout|rules，紧凑行数组，超 2000 格或 16000 字符截断并返回 nextOffset）；mode=search 按子串搜索单元格。mode=table 将 range 首行作为表头返回对象行；mode=formula_graph 返回 range 的静态前驱和下游依赖，depth=1–5，并标明无法解析的动态/外部引用。mode=objects 返回图表和图片元数据，指定 imageId 提取该图片给视觉模型。输入 docId 或工作区相对 path。",
     input: readInput,
     output: z.record(z.string(), z.unknown()),
     effect: "read",
@@ -439,8 +539,45 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
       try {
         const doc = await openDoc(svc, ctx, a.docId, a.path);
         const base = { docId: doc.docId, path: doc.path, ...docRevsOf(doc.docId, doc.rev) };
+        const objectMetadata = Object.entries(doc.sheets).map(([sheetId, sheet]) => {
+          const objects = objectsOf(sheet);
+          return {
+            sheetId,
+            sheet: sheet.name,
+            charts: objects.charts,
+            images: objects.images.map(({ data: _data, ...metadata }) => metadata),
+          };
+        });
+        const preserved = () =>
+          svc
+            .entry(doc.docId, ctx.workspaceRoot)
+            .then((e) => preservedMetadata(e.imported.preservation?.parts ?? {}));
+        if (a.mode === "objects") {
+          if (a.imageId) {
+            const image = Object.values(doc.sheets)
+              .flatMap((sheet) => objectsOf(sheet).images)
+              .find((image) => image.id === a.imageId);
+            if (!image) throw new FileOperationError("NOT_FOUND", "图片对象不存在");
+            const entry = await svc.entry(doc.docId, ctx.workspaceRoot);
+            const bytes = image.mediaPart
+              ? entry.imported.preservation?.parts[image.mediaPart]
+              : undefined;
+            const data = image.data ?? (bytes ? Buffer.from(bytes).toString("base64") : undefined);
+            if (!data) throw new FileOperationError("NOT_FOUND", "图片内容不可用");
+            return {
+              status: "ok",
+              data: { ...base, objects: objectMetadata, preserved: await preserved() },
+              images: [{ mediaType: image.mediaType, data }],
+            };
+          }
+          return {
+            status: "ok",
+            data: { ...base, objects: objectMetadata, preserved: await preserved() },
+          };
+        }
         if (a.mode === "overview") {
           const e = await svc.entry(doc.docId, ctx.workspaceRoot);
+          const snapshot = (await svc.snapshot(doc.docId, ctx.workspaceRoot)).snapshot;
           return {
             status: "ok",
             data: {
@@ -449,6 +586,58 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
               name: doc.name,
               sheets: workbookSheets({ sheetOrder: doc.sheetOrder, sheets: doc.sheets }),
               unsupported: e.imported.unsupported,
+              conditionalFormats: rulesResource(snapshot, CF_RESOURCE),
+              dataValidations: rulesResource(snapshot, DV_RESOURCE),
+              objects: objectMetadata,
+              preserved: await preserved(),
+            },
+          };
+        }
+        if (a.mode === "table" || a.mode === "formula_graph") {
+          if (!a.range) throw new Error(`${a.mode} 模式需要 range`);
+          const region = resolveRegion(doc, a.sheet, a.range);
+          const target = {
+            sheetId: region.sheetId,
+            r0: region.r0,
+            r1: region.r1,
+            c0: region.c0,
+            c1: region.c1,
+          };
+          ctx.reads.record(
+            doc.docId,
+            a.mode === "formula_graph"
+              ? Object.keys(doc.sheets).map((sheetId) => ({
+                  sheetId,
+                  r0: 0,
+                  c0: 0,
+                  r1: 1048575,
+                  c1: 16383,
+                }))
+              : [target],
+            doc.rev,
+          );
+          if (a.mode === "formula_graph")
+            return {
+              status: "ok",
+              data: { ...base, mode: a.mode, ...formulaGraph(doc.snapshot, target, a.depth) },
+            };
+          const table = loadRegionTable(doc, a.sheet, a.range),
+            offset = a.offset ?? 0;
+          const rows = table.rows
+            .slice(offset, offset + 200)
+            .map((row) => Object.fromEntries(table.columns.map((name, i) => [name, row[i]])));
+          return {
+            status: "ok",
+            data: {
+              ...base,
+              mode: a.mode,
+              columns: table.columns,
+              rows,
+              total: table.rows.length,
+              ...(offset + rows.length < table.rows.length
+                ? { nextOffset: offset + rows.length }
+                : {}),
+              header: "first_row",
             },
           };
         }
@@ -456,7 +645,29 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
           if (a.range === undefined) throw new Error("range 模式需要 range 参数");
           const region = resolveRegion(doc, a.sheet, a.range);
           const facets = a.facets ?? ["values"];
-          const { out, consumedRows, truncated } = readRegion(region, facets, a.offset ?? 0);
+          const { out, consumedRows, truncated } = readRegion(
+            region,
+            facets,
+            doc.snapshot,
+            a.offset ?? 0,
+          );
+          if (facets.includes("rules")) {
+            const entry = await svc.entry(doc.docId, ctx.workspaceRoot),
+              preservation = entry.imported.preservation;
+            const part = preservation?.sheetParts[region.sheetId]?.path;
+            const xml = part ? new TextDecoder().decode(preservation?.parts[part]) : "";
+            const total =
+              (xml.match(/<(?:\w+:)?cfRule\b/g) ?? []).length +
+              (xml.match(/<(?:\w+:)?dataValidation\b/g) ?? []).length;
+            const known =
+              (rulesResource(entry.imported.snapshot, CF_RESOURCE)[region.sheetId] ?? []).length +
+              (rulesResource(entry.imported.snapshot, DV_RESOURCE)[region.sheetId] ?? []).length;
+            const unknown = Math.max(0, total - known);
+            if (unknown) {
+              (out.coverage as Record<string, string>).rules = "partial";
+              (out.rules as Record<string, unknown>).unsupportedOriginalCount = unknown;
+            }
+          }
           // 记录读集：range 模式记入所读区域（03 §6.1，截断的也算读过）
           ctx.reads.record(
             doc.docId,
@@ -538,13 +749,18 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
   const workbookAnalyze: ToolDefinition = {
     name: "workbook_analyze",
     title: "分析工作簿",
-    description: `对工作簿区域做分析。mode=sql 把指定工作表/区域（首行为表头）注册为 SQLite 的 ${WORKBOOK_ANALYZE_SQL_TABLE} 表并执行只读 SELECT/WITH 查询（也兼容 ${WORKBOOK_ANALYZE_SQL_SHEET_PLACEHOLDER} 作为 ${WORKBOOK_ANALYZE_SQL_TABLE} 的占位符），预览 ≤200 行；mode=profile 返回每列的类型/非空数/去重数/min/max/mean/top 值。输入 docId 或工作区相对 path。`,
+    description: `对工作簿区域做分析。mode=sql 把指定工作表/区域（首行为表头）注册为 SQLite 的 ${WORKBOOK_ANALYZE_SQL_TABLE} 表并执行只读 SELECT/WITH 查询（也兼容 ${WORKBOOK_ANALYZE_SQL_SHEET_PLACEHOLDER} 作为 ${WORKBOOK_ANALYZE_SQL_TABLE} 的占位符），可传 sources:[{name,path,docId,sheet,range}] 加载其他文件/工作表，以 name 作为 SQL 表名做 JOIN/UNION；每源20万格、合计40万格、查询10秒上限。预览 ≤200 行；mode=profile 返回每列的类型/非空数/去重数/min/max/mean/top 值；mode=diff 用 right 指定另一区域，可按 keys 组合键或位置比较；mode=check 用 checks 校验 required/unique/range/pattern/foreign_key/row_expression/cell/total/formula_errors，cell.row 为不含表头的1基明细行。输入 docId 或工作区相对 path。`,
     input: analyzeInput,
     output: z.record(z.string(), z.unknown()),
     effect: (a: z.infer<typeof analyzeInput> | null) => (a?.saveTo ? "write" : "read"),
     targets: (a) => {
       const q = analyzeInput.parse(a);
-      return [...(q.path ? [q.path] : []), ...(q.saveTo?.path ? [q.saveTo.path] : [])];
+      return [
+        ...(q.path ? [q.path] : []),
+        ...(q.saveTo?.path ? [q.saveTo.path] : []),
+        ...(q.sources ?? []).flatMap((s) => (s.path ? [s.path] : [])),
+        ...(q.right?.path ? [q.right.path] : []),
+      ];
     },
     activity: (a: z.infer<typeof analyzeInput>) => activityOf("read", a),
     replay: (a: z.infer<typeof analyzeInput> | null) => (a?.saveTo ? "unsafe" : "safe"),
@@ -561,6 +777,55 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
       try {
         const doc = await openDoc(svc, ctx, a.docId, a.path);
         const base = { docId: doc.docId, path: doc.path, ...docRevsOf(doc.docId, doc.rev) };
+        if (a.mode === "diff" || a.mode === "check") {
+          if (a.saveTo) throw new Error("saveTo 仅支持 sql 模式");
+          const table = loadRegionTable(doc, a.sheet, a.range);
+          const record = (d: DocRef, sheet: string | undefined, range: string | undefined) => {
+            const r = range ? resolveRegion(d, sheet, range) : wholeSheet(d, sheet);
+            ctx.reads.record(
+              d.docId,
+              [{ sheetId: r.sheetId, r0: r.r0, r1: r.r1, c0: r.c0, c1: r.c1 }],
+              d.rev,
+            );
+            base.docRevs[d.docId] = d.rev;
+          };
+          record(doc, a.sheet, a.range);
+          if (a.mode === "diff") {
+            if (!a.right) throw new Error("diff 模式需要 right");
+            const right =
+              a.right.path || a.right.docId
+                ? await openDoc(svc, ctx, a.right.docId, a.right.path)
+                : doc;
+            record(right, a.right.sheet, a.right.range);
+            return {
+              status: "ok",
+              data: {
+                ...base,
+                mode: a.mode,
+                ...diffTables(
+                  table,
+                  loadRegionTable(right, a.right.sheet, a.right.range),
+                  a.keys,
+                  a.offset,
+                ),
+              },
+            };
+          }
+          if (!a.checks?.length) throw new Error("check 模式需要 checks");
+          const tables = [table];
+          for (const src of a.sources ?? []) {
+            if (tables.some((t) => t.name.toLowerCase() === src.name.toLowerCase()))
+              throw new Error("数据源名称重复");
+            const other =
+              src.path || src.docId ? await openDoc(svc, ctx, src.docId, src.path) : doc;
+            tables.push(loadRegionTable(other, src.sheet, src.range, src.name));
+            record(other, src.sheet, src.range);
+          }
+          return {
+            status: "ok",
+            data: { ...base, mode: a.mode, ...(await checkTables(tables, a.checks, ctx.signal)) },
+          };
+        }
         if (a.mode === "sql") {
           if (a.sql === undefined) throw new Error("sql 模式需要 sql 参数");
           const sql = normalizeSql(a.sql);
@@ -571,17 +836,45 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
               error: { code: "INVALID_ARGUMENT", message: bad, field: "sql", retryable: false },
             };
           }
-          const mem = new DatabaseSync(":memory:");
-          try {
-            loadRegionTable(mem, doc, a.sheet, a.range);
-            const all = mem.prepare(sql.trim().replace(/;\s*$/, "")).all() as Record<
-              string,
-              unknown
-            >[];
+          {
+            const tables = [loadRegionTable(doc, a.sheet, a.range)];
+            const record = (d: DocRef, sheet: string | undefined, range: string | undefined) => {
+              const r = range ? resolveRegion(d, sheet, range) : wholeSheet(d, sheet);
+              ctx.reads.record(
+                d.docId,
+                [{ sheetId: r.sheetId, r0: r.r0, r1: r.r1, c0: r.c0, c1: r.c1 }],
+                d.rev,
+              );
+            };
+            record(doc, a.sheet, a.range);
+            for (const source of a.sources ?? []) {
+              if (
+                tables.some((t) => t.name.toLowerCase() === source.name.toLowerCase()) ||
+                source.name.toLowerCase().startsWith("sqlite_")
+              )
+                throw new FileOperationError(
+                  "INVALID_ARGUMENT",
+                  "SQL 数据源名称重复或使用保留名称",
+                );
+              const other =
+                source.docId || source.path
+                  ? await openDoc(svc, ctx, source.docId, source.path)
+                  : doc;
+              tables.push(loadRegionTable(other, source.sheet, source.range, source.name));
+              base.docRevs[other.docId] = other.rev;
+              record(other, source.sheet, source.range);
+            }
+            if (tables.reduce((sum, t) => sum + t.rows.length * t.columns.length, 0) > 400000)
+              throw new FileOperationError("LIMIT_EXCEEDED", "SQL 全部输入合计最多40万格");
+            const { rows: all, columns: resultColumns } = await runSql(
+              tables,
+              sql.trim().replace(/;\s*$/, ""),
+              ctx.signal,
+            );
             let saved: unknown;
             if (a.saveTo) {
               const values = [
-                all.length ? Object.keys(all[0] as object) : [],
+                resultColumns,
                 ...all.map((r) =>
                   Object.values(r).map((v) =>
                     v === null
@@ -662,18 +955,12 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
                 ...base,
                 ...(saved ? { saved } : {}),
                 mode: "sql",
-                columns: all.length > 0 ? Object.keys(all[0] as object) : [],
+                columns: resultColumns,
                 rows: all.slice(0, SQL_PREVIEW_ROWS).map((r) => Object.values(r)),
                 rowCount: all.length,
                 truncated: all.length > SQL_PREVIEW_ROWS,
               },
             };
-          } finally {
-            try {
-              mem.close();
-            } catch {
-              // 关闭失败忽略
-            }
           }
         }
         // profile

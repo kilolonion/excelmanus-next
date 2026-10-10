@@ -6,6 +6,7 @@
 @import "@univerjs/preset-sheets-core/lib/index.css" layer(univer);
 @import "tailwindcss/utilities.css" layer(utilities) source(none);
 @import "tw-animate-css";
+@import "./design-system.css";
 @source "./";
 
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
@@ -58,24 +59,24 @@
 
 :root {
   --base-font: 14px;
-  --background: #f7f7f5;
+  --background: #ffffff;
   --card: #ffffff;
   --popover: #ffffff;
-  --muted: #f5f6f2;
-  --secondary: #f5f6f2;
-  --accent: #e9ece4;
-  --foreground: #252923;
-  --foreground-secondary: #51584c;
-  --muted-foreground: #70776a;
-  --primary: #2d3529;
+  --muted: #f5f7f8;
+  --secondary: #f5f7f8;
+  --accent: #e6f3ee;
+  --foreground: #17211e;
+  --foreground-secondary: #495951;
+  --muted-foreground: #64746c;
+  --primary: #16735d;
   --primary-foreground: #fafaf9;
-  --border: #e5e8df;
-  --border-strong: #d4dacd;
-  --input: #8c9584;
-  --ring: #4f46e5;
-  --read: #4f46e5;
-  --read-soft: #eef2ff;
-  --read-ink: #3730a3;
+  --border: #e4ebe8;
+  --border-strong: #cbd8d2;
+  --input: #a8bbb1;
+  --ring: #16735d;
+  --read: #16735d;
+  --read-soft: #e8f5ef;
+  --read-ink: #125d4b;
   --warn: #d97706;
   --warn-soft: #fef3c7;
   --warn-ink: #92400e;
@@ -96,24 +97,24 @@
 }
 
 [data-theme="dark"] {
-  --background: #161715;
-  --card: #1d1f1c;
-  --popover: #242621;
-  --muted: #242621;
-  --secondary: #242621;
-  --accent: #30332c;
+  --background: #111917;
+  --card: #18231f;
+  --popover: #202e28;
+  --muted: #202e28;
+  --secondary: #202e28;
+  --accent: #2b3e34;
   --foreground: #f5f5f4;
   --foreground-secondary: #d6d3d1;
   --muted-foreground: #a8a29e;
-  --primary: #f5f5f4;
-  --primary-foreground: #1c1917;
-  --border: #30332d;
-  --border-strong: #44473e;
+  --primary: #71d8b2;
+  --primary-foreground: #10251b;
+  --border: #2a3b32;
+  --border-strong: #425b4d;
   --input: #787d6f;
-  --ring: #a5b4fc;
-  --read: #a5b4fc;
-  --read-soft: #1e1b4b;
-  --read-ink: #c7d2fe;
+  --ring: #71d8b2;
+  --read: #71d8b2;
+  --read-soft: #163c2d;
+  --read-ink: #b0efd7;
   --warn: #fbbf24;
   --warn-soft: #3a2a0c;
   --warn-ink: #fcd34d;
@@ -290,326 +291,6 @@
   :is(.univer-host, :not(html, body):is([class*="univer-"], [id^="univer"]))
     :is(*, ::before, ::after, ::placeholder):not([data-em-overlay], [data-em-overlay] *) {
     all: revert-layer;
-  }
-}
-
-@layer utilities {
-  .app-sidebar {
-    background: var(--background);
-  }
-  .sidebar-brand {
-    border-bottom: 1px solid transparent;
-  }
-  .sidebar-brand > span {
-    font-size: 15px;
-    letter-spacing: -0.035em;
-  }
-  .sidebar-controls [role="radiogroup"] {
-    background: transparent;
-    border-radius: 0;
-    padding: 0;
-    border-bottom: 1px solid var(--border);
-  }
-  .sidebar-controls [role="radio"] {
-    height: 38px;
-    border-radius: 0;
-    background: transparent;
-    box-shadow: none;
-    border-bottom: 2px solid transparent;
-  }
-  .sidebar-controls [role="radio"][data-state="on"] {
-    border-bottom-color: var(--foreground);
-    background: transparent;
-  }
-  .sidebar-new-session {
-    background: var(--accent);
-    color: var(--foreground);
-    font-weight: 500;
-  }
-  .sidebar-new-session:hover {
-    background: var(--border-strong);
-  }
-  .sidebar-search input::placeholder {
-    font-size: var(--text-xs);
-  }
-  .app-sidebar [data-slot="nav-item"] {
-    height: 37px;
-  }
-  .app-sidebar [data-slot="nav-item"]:has([aria-current]) {
-    background: var(--card);
-  }
-  .workbench-panel {
-    container: workbench / inline-size;
-  }
-  .workbench-header {
-    height: 64px;
-    min-height: 64px;
-    gap: 8px;
-  }
-  .document-heading {
-    padding-inline: 3px;
-  }
-  .document-save [data-slot="badge"] {
-    height: auto;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    padding: 0;
-    font-weight: 400;
-  }
-  .document-icon {
-    background: transparent;
-  }
-  .chat-panel {
-    container-type: inline-size;
-    container-name: chat;
-  }
-  .chat-header {
-    position: relative;
-    height: 64px;
-    min-height: 64px;
-    padding-top: 11px;
-    padding-bottom: 28px;
-    align-items: flex-start;
-    gap: 8px;
-  }
-  .chat-header .group\/title {
-    height: 24px;
-  }
-  .chat-header-controls {
-    height: 24px;
-    gap: 2px;
-  }
-  .chat-header-controls > [data-slot="button"] {
-    width: 26px;
-    height: 26px;
-  }
-  .chat-profile-line {
-    position: absolute;
-    left: 20px;
-    bottom: 8px;
-    height: 20px;
-  }
-  .chat-profile-line [data-slot="select-trigger"] {
-    height: 22px;
-    padding: 0 7px 0 0;
-    font-size: var(--text-xs);
-    color: var(--foreground-secondary);
-  }
-  .chat-profile-line [data-slot="select-trigger"]:hover {
-    color: var(--foreground);
-    background: transparent;
-  }
-  .chat-history-content {
-    padding-inline: clamp(20px, 5cqw, 40px);
-    padding-block: 28px;
-  }
-  .chat-panel[data-empty="true"] .chat-history-content {
-    max-width: 840px;
-    padding-block: 0;
-    justify-content: flex-start;
-    min-height: 0;
-  }
-  .chat-body[data-empty="true"] {
-    padding-block: clamp(32px, 8vh, 80px) 40px;
-  }
-  .chat-body[data-empty="true"] > .composer-dock {
-    max-width: 840px;
-    padding-inline: clamp(20px, 5cqw, 40px);
-    padding-block: 0;
-    margin-top: 24px;
-    background: transparent;
-  }
-  .landing-extras {
-    max-width: 840px;
-    padding-inline: clamp(20px, 5cqw, 40px);
-    margin-top: 28px;
-    gap: 24px;
-  }
-  .empty-chat {
-    gap: 28px;
-    padding-block: 0;
-  }
-  .landing-heading {
-    gap: 12px;
-  }
-  .empty-chat-title {
-    font-size: calc(var(--base-font) * 30 / 14);
-    font-weight: 500;
-    letter-spacing: -0.045em;
-    line-height: 1.45;
-  }
-  .landing-heading > p {
-    max-width: 520px;
-    font-size: var(--text-sm);
-    line-height: 1.85;
-    color: var(--muted-foreground);
-  }
-  .chat-body[data-empty="true"] .composer-surface {
-    border-color: var(--border-strong);
-    box-shadow: var(--elev-card);
-  }
-  .composer-dock {
-    padding-inline: clamp(14px, 4cqw, 28px);
-    padding-bottom: max(20px, env(safe-area-inset-bottom));
-  }
-  .composer-surface {
-    transition:
-      border-color 180ms var(--ease-studio),
-      box-shadow 180ms var(--ease-studio);
-    box-shadow: 0 2px 10px -4px rgb(28 25 23 / 7%);
-    border-radius: 12px;
-  }
-  .composer-surface:focus-within {
-    border-color: var(--input);
-    box-shadow:
-      var(--elev-card),
-      0 0 0 2px color-mix(in srgb, var(--foreground) 5%, transparent);
-  }
-  .composer-toolbar {
-    gap: 4px;
-  }
-  .composer-toolbar
-    > [data-slot="button"][aria-label]:not(.composer-submit):not(.composer-model-control) {
-    color: var(--muted-foreground);
-  }
-  .composer-toolbar [data-slot="select-trigger"] {
-    color: var(--muted-foreground);
-  }
-  .empty-chat-context {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px 26px;
-    order: 3;
-    border-top: 1px solid var(--border);
-    padding-top: 16px;
-  }
-  .empty-chat-context > div {
-    gap: 8px;
-    padding: 0;
-  }
-  .empty-chat-context > div > span:first-child {
-    width: 18px;
-    height: 18px;
-    border-radius: 0;
-    background: transparent;
-  }
-  .empty-chat-context > div > div > div:first-child {
-    display: none;
-  }
-  .empty-chat-context .empty-chat-file-hint {
-    display: none;
-  }
-  .empty-chat-context > div > div > .font-medium {
-    font-size: var(--text-xs);
-    color: var(--muted-foreground);
-    font-weight: 400;
-  }
-  .starter-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 5px 10px;
-  }
-  .starter-card {
-    background: color-mix(in srgb, var(--muted) 55%, transparent);
-    min-height: 54px;
-    flex-direction: row;
-    gap: 10px;
-    border: 0;
-    padding: 8px 10px;
-    box-shadow: none;
-    transition:
-      background-color 180ms var(--ease-studio),
-      color 180ms var(--ease-studio);
-  }
-  .starter-card > span:nth-child(2) > span:first-child {
-    font-size: var(--text-sm);
-    font-weight: 500;
-  }
-  .starter-card-hint {
-    font-size: var(--text-2xs);
-    line-height: 1.6;
-  }
-  .starter-card:hover {
-    transform: none;
-    box-shadow: none;
-    background: var(--muted);
-  }
-  .assistant-message .md {
-    font-size: var(--text-base);
-    line-height: 1.85;
-  }
-  .user-message > [data-slot="card"] {
-    background: var(--muted);
-    border-radius: 10px;
-  }
-  .settings-body > section + section {
-    border-top: 1px solid var(--border);
-    padding-top: 28px;
-  }
-  .settings-savebar {
-    border-color: var(--border);
-  }
-  .settings-profile {
-    border-color: var(--border);
-  }
-  .onboarding-studio {
-    max-width: 620px;
-  }
-  .onboarding-step {
-    padding-block: 20px;
-  }
-  @container chat (max-width: 650px) {
-    .chat-body[data-empty="true"] {
-      padding-top: 40px;
-    }
-    .starter-grid {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-    .starter-card-hint {
-      display: none;
-    }
-    .composer-hint {
-      display: none;
-    }
-    .empty-chat-title {
-      font-size: var(--text-xl);
-    }
-    .empty-chat {
-      gap: 24px;
-    }
-    .chat-header-controls > span {
-      display: none;
-    }
-  }
-  @container workbench (max-width: 550px) {
-    .document-save {
-      display: none;
-    }
-    .document-icon {
-      width: 22px;
-    }
-    .workbench-header {
-      padding-inline: 12px;
-      gap: 4px;
-    }
-  }
-  @media (max-height: 700px) {
-    .chat-body[data-empty="true"] {
-      padding-top: 28px;
-      padding-bottom: 24px;
-    }
-    .empty-chat {
-      gap: 20px;
-    }
-    .composer-dock {
-      padding-bottom: 12px;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .starter-card:hover,
-    [data-slot="button"]:active {
-      transform: none;
-    }
   }
 }
 

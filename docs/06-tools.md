@@ -248,3 +248,18 @@ MCP 工具以 `mcp__<服务器>__<工具>` 命名加入列表，`effect` 由服�
 | `introspect_capability`（知识门户） | 删除。工具用法随工具提供；产品说明放用户帮助和设置 UI，动态能力以实际工具目录与结果为准 |
 | `delivery_status`、`verify_visual`（交付账本） | 删除。由运行时自动生成的变更摘要取代"模型自报交付证据" |
 | Word 四件套 | 删除 |
+
+
+## 2026-10-10 实现补充
+
+不改变上方需求或推荐项，实际 API 以工具 Zod schema 为准：
+
+- `workbook_read`：overview/range/search/objects/table/formula_graph。range facets 增加 styles、rules；layout 包含行列隐藏/分组、筛选与超链接。`objects` 可用 `imageId` 提取视觉图片，普通元数据不含 base64。`table` 首行作为表头，offset 按明细行分页；依赖图 depth 1–5、静态覆盖明确标注限制。
+- `workbook_analyze`：sql/profile/diff/check。SQL 默认表 data，可附 `sources:[{name,path,docId,sheet,range}]` 联接其他文件或表；不指定 path/docId 时引用当前文档。结果列名须唯一，使用 AS 消除重复。diff 的 right 指定右侧数据，keys 可为组合业务键；check 的 checks 判别字段为 kind，九类规则见 schema，行表达式使用只读 SQLite 表达式。
+- `workbook_edit`：新增 chart.add/update/delete、image.add、cf.add/remove、dv.add/remove、rows.height/cols.width、axis.hide/group、sort、find_replace。尺寸单位像素；axis at/count 从1起；group.level=0取消分组。sort.keys.column 为1基绝对列号，header 默认 true；引擎排序不移动隐藏行，需要时先取消隐藏。find_replace.find 是字面量，replacement 不解释 `$&`，默认不修改公式。
+- style.set 新增 fontFamily/fontSize/vAlign/indent/borders（top/bottom/left/right，每边 style/color，可传 null 清除）。原生导出保留没有修改的未知样式 XML。
+- chart.range 含表头与分类列；常见八类型。导入复杂对象或不能保真的变换返回 UNSUPPORTED_FEATURE，不默默降级成图片或删除对象。
+- 通用 `truncated.cursor` 是作用域隔离的结果游标。保留原入参并携带 cursor 后，运行时读取原日志结果，绝不重执行原写入；大字段按 JSON 文本分片。
+- SQL 查询在独立子进程中硬超时/取消；每源20万格、合计40万格、序列化输入32MiB、结果20万格、默认10秒。查询失败不修改工作簿。
+
+补齐推荐 op：sheet.copy（sheet/name/index）、sheet.move（sheet/index，从0起）、sheet.hide（sheet/hidden，至少保留一张可见表）、cells.fill（source/range/mode=copy|series）、axis.size（sheet/axis/at/count/mode=pixels|scale|auto/value）、filter.set（range、columns:[{column,values,blank}]，或 clear:true）、hyperlink.set（单格 range、url|null、label 可选）。auto 为无头尺寸估算；筛选限枚举/空值；复杂对象工作表复制安全拒绝。支持边界与开放产品问题见 ADR 0023。

@@ -15,6 +15,7 @@ import { S } from "./strings.ts";
 
 /** 先让目标面板可见（窄屏切标签、宽屏展开折叠），下一帧再聚焦。 */
 function reveal(pane: "sheet" | "chat", selector: string): void {
+  useApp.setState({ workspaceView: "workbench" });
   const { layout, doc } = useApp.getState();
   if (pane === "chat" && layout.chatCollapsed) setLayout({ chatCollapsed: false });
   if (pane === "sheet" && doc && layout.tableCollapsed) setLayout({ tableCollapsed: false });
@@ -44,9 +45,14 @@ export const SHORTCUTS: { key: string; label: string; action: ShortcutAction }[]
 export function runShortcut(action: ShortcutAction): void {
   switch (action) {
     case "new-session":
-      void createSession().catch((error: unknown) =>
-        toast({ tone: "err", title: error instanceof Error ? error.message : S.newSessionFailed }),
-      );
+      void createSession()
+        .then(() => useApp.setState({ workspaceView: "workbench" }))
+        .catch((error: unknown) =>
+          toast({
+            tone: "err",
+            title: error instanceof Error ? error.message : S.newSessionFailed,
+          }),
+        );
       break;
     case "focus-composer":
       // 附带当前选区：撤销之前的"不附带"

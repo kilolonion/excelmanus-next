@@ -63,3 +63,11 @@ export const AnalyzeSaveTo = z.strictObject({
   path: z.string().optional().describe("新 xlsx 文件路径；省略表示当前文档"),
   sheet: z.string().min(1).describe("新工作表名称"),
 });
+
+/** 用户文件管理入口；删除由界面的确认操作显式标记，不能从模型参数推断。 */
+export const ManageFilesBody = FilesInput.extend({ confirmed: z.boolean().optional() });
+export type ManageFilesBody = z.infer<typeof ManageFilesBody>;
+export const ManageFilesResponse = z.object({
+  ok: z.literal(true),
+  paths: z.array(z.string()),
+});

@@ -2,7 +2,11 @@
 // 每个方法对应一个端点，响应都经对应 schema 解析。
 
 import type { z } from "zod";
-import { z as zod } from "zod";
+import {
+  type DiagnosticExportBody,
+  DiagnosticExportResponse,
+  DiagnosticTracesResponse,
+} from "./diagnostics.ts";
 import {
   AccountListResponse,
   BackupListResponse,
@@ -20,18 +24,25 @@ import {
   type OverrideCapabilitiesBody,
   ProbeResponse,
   RemoteModelsResponse,
+  RestoreBackupResponse,
   RuleListResponse,
   RuleResponse,
+  SampleListResponse,
+  SampleResponse,
   SettingsResponse,
   SkillDetailResponse,
   SkillListResponse,
+  SkillResponse,
+  SwitchAgentModelResponse,
   type UpdateMcpServerBody,
   type UpdateMemoryBody,
   type UpdateRuleBody,
   type UpdateSettingsBody,
-  Workspace,
+  type Workspace,
   WorkspaceListResponse,
+  WorkspaceResponse,
 } from "./extensions.ts";
+import { type ManageFilesBody, ManageFilesResponse } from "./files.ts";
 import { AttachmentRef } from "./records.ts";
 import {
   type ApprovalDecisionBody,
@@ -57,6 +68,8 @@ import {
   ProviderListResponse,
   type QuestionAnswerBody,
   QuestionResponse,
+  type RenderDocBody,
+  RenderDocResponse,
   type ResolveExternalBody,
   ResolveExternalResponse,
   RestError,
@@ -98,6 +111,15 @@ export class ApiError extends Error {
 }
 
 export interface ApiClient {
+  renderDoc(
+    workspaceId: string,
+    docId: string,
+    body: z.infer<typeof RenderDocBody>,
+  ): Promise<z.infer<typeof RenderDocResponse>>;
+  getDiagnosticTraces(sessionId?: string): Promise<z.infer<typeof DiagnosticTracesResponse>>;
+  exportDiagnostics(
+    body: z.infer<typeof DiagnosticExportBody>,
+  ): Promise<z.infer<typeof DiagnosticExportResponse>>;
   health(): Promise<z.infer<typeof HealthResponse>>;
   createBrowserSession(): Promise<z.infer<typeof AuthSessionResponse>>;
   logoutBrowserSession(): Promise<z.infer<typeof OkResponse>>;
@@ -177,11 +199,15 @@ export interface ApiClient {
     docId: string,
     body: z.infer<typeof ResolveExternalBody>,
   ): Promise<z.infer<typeof ResolveExternalResponse>>;
+  manageFiles(
+    workspaceId: string,
+    body: ManageFilesBody,
+  ): Promise<z.infer<typeof ManageFilesResponse>>;
   listFiles(workspaceId: string, path?: string): Promise<z.infer<typeof FileListResponse>>;
   /** multipart 单文件上传；file 为浏览器 File 或 {name, data}。 */
   uploadFile(
     workspaceId: string,
-    file: { name: string; data: Blob | ArrayBuffer | Uint8Array },
+    file: { name: string; data: Blob | ArrayBuffer | Uint8Array; path?: string },
   ): Promise<z.infer<typeof UploadResponse>>;
   /** 上传图片附件（POST /attachments，内容寻址去重）；返回可放进消息的附件引用。 */
   uploadAttachment(file: { name: string; data: Blob }): Promise<AttachmentRef>;
@@ -339,7 +365,6 @@ export function createApiClient(
       : "";
   };
 
-  const Loose = zod.looseObject({});
   return {
     getSettings: () => call(SettingsResponse, "GET", "/settings"),
     updateSettings: (body) => call(SettingsResponse, "PATCH", "/settings", body),
@@ -354,7 +379,7 @@ export function createApiClient(
     listSkills: () => call(SkillListResponse, "GET", "/skills"),
     getSkill: (name) => call(SkillDetailResponse, "GET", `/skills/${encodeURIComponent(name)}`),
     setSkillEnabled: (name, enabled) =>
-      call(Loose, "PATCH", `/skills/${encodeURIComponent(name)}`, { enabled }),
+      call(SkillResponse, "PATCH", `/skills/${encodeURIComponent(name)}`, { enabled }),
     importSkill: (source, preview) =>
       call(ImportSkillResponse, "POST", "/skills/import", { source, preview }),
     deleteSkill: (name) => call(OkResponse, "DELETE", `/skills/${encodeURIComponent(name)}`),
@@ -381,15 +406,10 @@ export function createApiClient(
       call(ModelCatalogResponse, "GET", `/model-catalog${qs({ provider })}`),
     refreshModelCatalog: () => call(ModelCatalogResponse, "POST", "/model-catalog/refresh"),
     switchAgentModel: (sessionId, agentId, body) =>
-      call(
-        zod.object({ ok: zod.literal(true), modelProfileId: zod.string(), name: zod.string() }),
-        "PATCH",
-        `/sessions/${sessionId}/agents/${agentId}`,
-        body,
-      ),
+      call(SwitchAgentModelResponse, "PATCH", `/sessions/${sessionId}/agents/${agentId}`, body),
     listWorkspaces: () => call(WorkspaceListResponse, "GET", "/workspaces"),
     addWorkspace: (path, name) =>
-      call(zod.object({ workspace: Workspace }), "POST", "/workspaces", {
+      call(WorkspaceResponse, "POST", "/workspaces", {
         path,
         ...(name ? { name } : {}),
       }),
@@ -397,17 +417,13 @@ export function createApiClient(
     listBackups: (workspaceId, kind) =>
       call(BackupListResponse, "GET", `/workspaces/${workspaceId}/${kind}`),
     restoreBackup: (workspaceId, kind, id) =>
-      call(
-        zod.object({ ok: zod.literal(true), path: zod.string() }),
-        "POST",
-        `/workspaces/${workspaceId}/${kind}/${id}/restore`,
-      ),
+      call(RestoreBackupResponse, "POST", `/workspaces/${workspaceId}/${kind}/${id}/restore`),
     deleteBackup: (workspaceId, kind, id) =>
       call(OkResponse, "DELETE", `/workspaces/${workspaceId}/${kind}/${id}`),
-    listSamples: () => call(zod.object({ items: zod.array(zod.string()) }), "GET", "/samples"),
+    listSamples: () => call(SampleListResponse, "GET", "/samples"),
     addSample: (workspaceId, name) =>
       call(
-        zod.object({ path: zod.string() }),
+        SampleResponse,
         "POST",
         `/workspaces/${workspaceId}/samples/${encodeURIComponent(name)}`,
       ),
@@ -500,6 +516,14 @@ export function createApiClient(
         `/workspaces/${workspaceId}/docs/${docId}/external`,
         body,
       ),
+    manageFiles: (workspaceId, body) =>
+      call(ManageFilesResponse, "POST", `/workspaces/${workspaceId}/files/manage`, body),
+    renderDoc: (workspaceId, docId, body) =>
+      call(RenderDocResponse, "POST", `/workspaces/${workspaceId}/docs/${docId}/render`, body),
+    getDiagnosticTraces: (sessionId) =>
+      call(DiagnosticTracesResponse, "GET", `/diagnostics/traces${qs({ sessionId })}`),
+    exportDiagnostics: (body) =>
+      call(DiagnosticExportResponse, "POST", "/diagnostics/export", body),
     listFiles: (workspaceId, path) =>
       call(FileListResponse, "GET", `/workspaces/${workspaceId}/files${qs({ path })}`),
     uploadFile: async (workspaceId, file) => {
@@ -511,6 +535,7 @@ export function createApiClient(
               file.data instanceof Uint8Array ? (file.data as unknown as ArrayBuffer) : file.data,
             ]);
       fd.append("file", blob, file.name);
+      if (file.path !== undefined) fd.append("path", file.path);
       const res = await fetchImpl(`${base}/api/v1/workspaces/${workspaceId}/files/upload`, {
         method: "POST",
         headers: token ? { authorization: `Bearer ${token}` } : undefined,

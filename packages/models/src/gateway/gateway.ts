@@ -119,7 +119,7 @@ async function* stepImpl(
       // 错误已作为 error 事件交给运行时；关闭 SDK 默认的 console.error（会打印请求 URL 等细节）
       onError: () => {},
     });
-    for await (const part of result.fullStream) {
+    for await (const part of abortableStream(result.fullStream, req.signal)) {
       switch (part.type) {
         case "text-delta":
           sawContent = true;
@@ -204,5 +204,34 @@ async function* stepImpl(
     }
   } catch (e) {
     yield { kind: "error", error: classifyError(e, sawContent) };
+  }
+}
+
+/** A provider can stall before returning its stream or ignore cancellation. Stop
+ * consuming independently so late model output cannot keep an actor/database alive.
+ * Keep the SDK abort signal too: cooperative transports still cancel their I/O. */
+async function* abortableStream<T>(
+  stream: ReadableStream<T>,
+  signal: AbortSignal,
+): AsyncIterable<T> {
+  signal.throwIfAborted();
+  const reader = stream.getReader();
+  let onAbort: () => void = () => {};
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(new DOMException("Model request cancelled", "AbortError"));
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    while (true) {
+      signal.throwIfAborted();
+      const next = await Promise.race([reader.read(), aborted]);
+      if (next.done) return;
+      yield next.value;
+    }
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+    // Cancellation itself may wait on a non-cooperative provider. Never await it.
+    void reader.cancel().catch(() => {});
+    reader.releaseLock();
   }
 }

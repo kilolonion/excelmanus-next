@@ -615,3 +615,57 @@ describe("docId 不能绑到其他工作区（P1-32）", () => {
     expect(ok.meta.workspaceId).toBe("ws1");
   });
 });
+
+test("确定种子并发模糊：用户与两代理不重叠写不丢失，重叠写只接受一次", async () => {
+  const { root, svc, docId, db } = await setup();
+  let seed = 20261010;
+  const random = () => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed;
+  };
+  const expected = new Map<number, string>();
+  try {
+    for (let round = 0; round < 30; round++) {
+      const row = 20 + (random() % 60);
+      const baseRev = (await svc.snapshot(docId, root)).meta.rev;
+      const writes = await Promise.all(
+        [user, agentY, agentZ].map((source, index) =>
+          svc.submit(docId, root, {
+            baseRev,
+            source,
+            ops: [
+              {
+                op: "cells.set",
+                range: `销售!${String.fromCharCode(65 + index)}${row}`,
+                values: [[`${round}/${index}`]],
+              },
+            ],
+          }),
+        ),
+      );
+      expect(writes.every((result) => result.ok)).toBe(true);
+      for (let index = 0; index < 3; index++)
+        expect(await cell(svc, root, docId, row, index)).toBe(`${round}/${index}`);
+      const currentRev = (await svc.snapshot(docId, root)).meta.rev;
+      const overlapping = await Promise.all(
+        [user, agentY].map((source, index) =>
+          svc.submit(docId, root, {
+            baseRev: currentRev,
+            source,
+            ops: [
+              { op: "cells.set", range: `销售!D${row}`, values: [[`winner-${round}-${index}`]] },
+            ],
+          }),
+        ),
+      );
+      expect(overlapping.filter((result) => result.ok)).toHaveLength(1);
+      expect(overlapping.find((result) => !result.ok)).toMatchObject({ code: "VERSION_CONFLICT" });
+      expected.set(row, `winner-${round}-${overlapping.findIndex((result) => result.ok)}`);
+    }
+    for (const [row, value] of expected) expect(await cell(svc, root, docId, row, 3)).toBe(value);
+    await svc.checkpoint(docId, root);
+  } finally {
+    await svc.close();
+    db.close();
+  }
+}, 60000);

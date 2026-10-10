@@ -89,7 +89,7 @@ function RowActions({ agent }: { agent: RosterEntry }) {
   );
 }
 
-export function TeamPanel() {
+export function TeamPanel({ onSelect }: { onSelect?: () => void } = {}) {
   const roster = useApp((s) => s.session.roster);
   const profiles = useApp((s) => s.profiles);
   const messages = useApp((s) => s.session.messages);
@@ -103,7 +103,7 @@ export function TeamPanel() {
   // 02 §2.1：会话有子代理时才出现「代理团队」
   if (!rows.some((r) => r.agent.parentId !== null)) return null;
   return (
-    <div className="flex flex-col gap-1">
+    <div className="team-panel flex flex-col gap-1">
       <div className="flex h-7 items-center gap-1.5 px-2">
         <SectionLabel>{S.teamView}</SectionLabel>
         {running > 0 && <Badge tone="read">{S.runningCount(running)}</Badge>}
@@ -154,7 +154,10 @@ export function TeamPanel() {
                   type="button"
                   className="min-w-0 truncate rounded-sm text-left text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring"
                   aria-current={active ? "true" : undefined}
-                  onClick={() => selectAgent(agent.id)}
+                  onClick={() => {
+                    selectAgent(agent.id);
+                    onSelect?.();
+                  }}
                 >
                   {agent.name ?? agent.id}
                 </button>

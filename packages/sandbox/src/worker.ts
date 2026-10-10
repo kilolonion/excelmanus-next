@@ -199,6 +199,7 @@ async function runScript(mod: QuickJSWASMModule, req: RunRequest): Promise<RunDo
   active = a;
 
   let outcome: WireOutcome;
+  let retire = false;
   try {
     rt.setMemoryLimit(req.memoryBytes);
     rt.setMaxStackSize(req.stackBytes);
@@ -230,7 +231,7 @@ async function runScript(mod: QuickJSWASMModule, req: RunRequest): Promise<RunDo
         pending.set(callId, { deferred: d });
         d.settled.then(() => {
           try {
-            rt.executePendingJobs();
+            rt.executePendingJobs().dispose();
           } catch {
             // 泵失败由主循环兜住；这里只负责尽快唤醒队列
           }
@@ -343,11 +344,18 @@ async function runScript(mod: QuickJSWASMModule, req: RunRequest): Promise<RunDo
       evalRes.dispose();
     }
   } catch (e) {
+    // wasm 的原生 JSON 深递归可能越过 VM 栈限制并抛宿主 RangeError。
+    // 此时 QuickJS 堆可能停在半初始化状态；不再进入其释放函数，交给宿主销毁整个 worker。
+    retire = true;
     outcome = {
       kind: "scriptError",
       name: "HostInternalError",
       message: e instanceof Error ? e.message : String(e),
     };
+  }
+  if (retire) {
+    active = undefined;
+    return { type: "done", runId: req.runId, outcome, stdout: stdout.text(), stats, retire: true };
   }
   return finish(outcome, a);
 }
@@ -368,7 +376,7 @@ function finish(outcome: WireOutcome, a: ActiveRun): RunDone {
   }
   pending.clear();
   try {
-    rt.executePendingJobs();
+    rt.executePendingJobs().dispose();
   } catch {
     // 同上
   }

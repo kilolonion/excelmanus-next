@@ -3,7 +3,11 @@
 import { z } from "zod";
 import { LogRecord } from "./records.ts";
 
-export const protocolVersion = 1;
+// v2 requires shared native-object and axis-group mutations on both peers.
+export const protocolVersion = 2;
+export function protocolCompatible(remote: number): boolean {
+  return remote === protocolVersion;
+}
 
 export const Topic = z.string().regex(/^(session|doc):[A-Za-z0-9_-]{1,64}$|^app$/);
 export type Topic = z.infer<typeof Topic>;

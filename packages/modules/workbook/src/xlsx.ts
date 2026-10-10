@@ -7,6 +7,8 @@ import { posix } from "node:path";
 import type { ICellData, IWorkbookData, IWorksheetData } from "@univerjs/core";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
 import { unzipSync } from "fflate";
+import { importObjects } from "./objects.ts";
+import { importRules } from "./rule-codec.ts";
 
 export class XlsxImportError extends Error {
   constructor(message: string) {
@@ -99,6 +101,11 @@ function readRichText(node: Xml): string {
 
 // ---------- styles（只取 numFmt 格式码 → Univer styles.n.pattern） ----------
 
+import { importFilterLinks } from "./filter-links.ts";
+import { shiftFormula } from "./formula-shift.ts";
+import { BORDER_STYLES } from "./style-constants.ts";
+import { resolveColor, themeColors } from "./theme.ts";
+
 const BUILTIN_NUMFMT: Record<number, string> = {
   9: "0%",
   10: "0.00%",
@@ -131,7 +138,7 @@ interface StylesOut {
   xfToStyle: (xfIndex: number) => string | undefined;
 }
 
-function readStyles(xml: Xml | undefined): StylesOut {
+function readStyles(xml: Xml | undefined, theme: Xml | undefined): StylesOut {
   const sheet = (xml?.styleSheet as Xml | undefined) ?? {};
   const numfmts = new Map<number, string>();
   for (const nf of asArr<Xml>((sheet.numFmts as Xml | undefined)?.numFmt as Xml[] | undefined)) {
@@ -142,11 +149,10 @@ function readStyles(xml: Xml | undefined): StylesOut {
   const styles: StylesOut["styles"] = {};
   const xfStyle = new Map<number, string>();
   const fonts = asArr<Xml>((sheet.fonts as Xml | undefined)?.font as Xml[] | undefined);
+  const borders = asArr<Xml>((sheet.borders as Xml | undefined)?.border as Xml[] | undefined);
   const fills = asArr<Xml>((sheet.fills as Xml | undefined)?.fill as Xml[] | undefined);
-  const rgb = (node: unknown): { rgb: string } | undefined => {
-    const v = node && typeof node === "object" ? attr(node as Xml, "rgb") : undefined;
-    return v && /^[\da-f]{6}([\da-f]{2})?$/i.test(v) ? { rgb: `#${v.slice(-6)}` } : undefined;
-  };
+  const palette = themeColors(theme);
+  const rgb = (node: unknown) => resolveColor(node, palette);
   const on = (node: unknown): boolean =>
     node !== undefined &&
     !(typeof node === "object" && node && ["0", "false"].includes(attr(node as Xml, "val") ?? ""));
@@ -171,12 +177,30 @@ function readStyles(xml: Xml | undefined): StylesOut {
     const pf = fills[Number(attr(xf, "fillId") ?? 0)]?.patternFill as Xml | undefined;
     const bg = pf && attr(pf, "patternType") === "solid" ? rgb(pf.fgColor) : undefined;
     if (bg) style.bg = bg;
+    const border = borders[Number(attr(xf, "borderId") ?? 0)];
+    if (border) {
+      const bd: Record<string, unknown> = {};
+      for (const [side, key] of [
+        ["top", "t"],
+        ["bottom", "b"],
+        ["left", "l"],
+        ["right", "r"],
+      ]) {
+        const node = border[side!] as Xml | undefined;
+        if (!node) continue;
+        const styleName = attr(node, "style"),
+          line = BORDER_STYLES.indexOf(styleName as (typeof BORDER_STYLES)[number]);
+        if (line > 0) bd[key!] = { s: line, cl: rgb(node.color) ?? { rgb: "#000000" } };
+      }
+      if (Object.keys(bd).length) style.bd = bd;
+    }
     const al = xf.alignment as Xml | undefined;
     if (al) {
       const ht = { left: 1, center: 2, right: 3 }[attr(al, "horizontal") ?? ""];
       if (ht) style.ht = ht;
       const vt = { top: 1, center: 2, bottom: 3 }[attr(al, "vertical") ?? ""];
       if (vt) style.vt = vt;
+      if (Number(attr(al, "indent")) > 0) style.pd = { l: Number(attr(al, "indent")) * 21 };
       if (["1", "true"].includes(attr(al, "wrapText") ?? "")) style.tb = 3;
     }
     styles[key] = style as StylesOut["styles"][string];
@@ -205,7 +229,7 @@ function parseCell(node: Xml, sst: string[], xfToStyle: StylesOut["xfToStyle"]):
     const fText =
       typeof fNode === "object" ? (fNode["#text"] as string | number | undefined) : fNode;
     const fType = typeof fNode === "object" ? attr(fNode as Xml, "t") : undefined;
-    // 共享公式的跟随单元格无公式文本：保留缓存值即可（展开为文本属后续增强）
+    // 共享公式从属项在 parseWorksheet 的第二遍按主公式展开。
     if (fText !== undefined && String(fText) !== "") {
       cell.f = `=${String(fText)}`;
       isFormula = true;
@@ -274,8 +298,9 @@ interface ParsedSheet {
 function parseWorksheet(xml: Xml, sst: string[], xfToStyle: StylesOut["xfToStyle"]): ParsedSheet {
   const sheet = (xml.worksheet as Xml | undefined) ?? {};
   const cellData: Record<number, Record<number, ICellData>> = {};
-  const rowData: Record<number, { h?: number; hd?: number }> = {};
-  const columnData: Record<number, { w?: number; hd?: number }> = {};
+  const rowData: Record<number, { h?: number; hd?: number; custom?: Record<string, unknown> }> = {};
+  const columnData: Record<number, { w?: number; hd?: number; custom?: Record<string, unknown> }> =
+    {};
   let cellCount = 0;
   let formulaCount = 0;
   let maxRow = 0;
@@ -306,19 +331,37 @@ function parseWorksheet(xml: Xml, sst: string[], xfToStyle: StylesOut["xfToStyle
       columnData[c] = {
         ...(w !== undefined ? { w: Math.round(Number(w) * 7) } : {}),
         ...(hidden ? { hd: 1 } : {}),
+        ...(Number(attr(col, "outlineLevel")) > 0
+          ? { custom: { excelmanusOutlineLevel: Number(attr(col, "outlineLevel")) } }
+          : {}),
       };
     }
   }
 
+  const shared = new Map<string, { formula: string; row: number; col: number }>();
+  for (const row of asArr<Xml>((sheet.sheetData as Xml | undefined)?.row as Xml[] | undefined))
+    for (const cell of asArr<Xml>(row.c as Xml[] | undefined)) {
+      const f = cell.f as Xml | undefined,
+        ref = cellAddr(attr(cell, "r") ?? "");
+      if (f && typeof f === "object" && attr(f, "t") === "shared" && f["#text"] && ref)
+        shared.set(attr(f, "si") ?? "", {
+          formula: `=${String(f["#text"])}`,
+          row: ref.row,
+          col: ref.col,
+        });
+    }
   for (const row of asArr<Xml>((sheet.sheetData as Xml | undefined)?.row as Xml[] | undefined)) {
     const r = Number(attr(row, "r")) - 1;
     if (!Number.isInteger(r) || r < 0) continue;
     const ht = attr(row, "ht");
     const hd = attr(row, "hidden");
-    if (ht !== undefined || hd === "1") {
+    if (ht !== undefined || hd === "1" || hd === "true" || Number(attr(row, "outlineLevel")) > 0) {
       rowData[r] = {
         ...(ht !== undefined ? { h: Number(ht) } : {}),
-        ...(hd === "1" ? { hd: 1 } : {}),
+        ...(hd === "1" || hd === "true" ? { hd: 1 } : {}),
+        ...(Number(attr(row, "outlineLevel")) > 0
+          ? { custom: { excelmanusOutlineLevel: Number(attr(row, "outlineLevel")) } }
+          : {}),
       };
     }
     for (const c of asArr<Xml>(row.c as Xml[] | undefined)) {
@@ -327,6 +370,22 @@ function parseWorksheet(xml: Xml, sst: string[], xfToStyle: StylesOut["xfToStyle
       if (!addr) continue;
       const parsed = parseCell(c, sst, xfToStyle);
       if (!parsed) continue;
+      const formulaNode = c.f as Xml | undefined;
+      if (
+        !parsed.data.f &&
+        formulaNode &&
+        typeof formulaNode === "object" &&
+        attr(formulaNode, "t") === "shared"
+      ) {
+        const master = shared.get(attr(formulaNode, "si") ?? "");
+        if (master)
+          parsed.data.f = shiftFormula(
+            master.formula,
+            addr.col - master.col,
+            addr.row - master.row,
+          );
+        else throw new XlsxImportError("共享公式缺少主公式，不能安全读取");
+      }
       const cellRow = cellData[addr.row - 1] ?? {};
       cellData[addr.row - 1] = cellRow;
       cellRow[addr.col - 1] = parsed.data;
@@ -444,7 +503,10 @@ export function importXlsx(bytes: Uint8Array, name: string): ImportedWorkbook {
   const sstPart = relTypes.get("sharedStrings");
   const stylesPart = relTypes.get("styles");
   const sst = readSharedStrings(readXmlDirect(sstPart ?? "xl/sharedStrings.xml", !!sstPart));
-  const styles = readStyles(readXmlDirect(stylesPart ?? "xl/styles.xml", !!stylesPart));
+  const styles = readStyles(
+    readXmlDirect(stylesPart ?? "xl/styles.xml", !!stylesPart),
+    readXmlDirect(relTypes.get("theme") ?? "xl/theme/theme1.xml"),
+  );
 
   const sheetsArr = asArr<Xml>(
     ((wbXml.workbook as Xml | undefined)?.sheets as Xml | undefined)?.sheet as Xml[] | undefined,
@@ -490,6 +552,7 @@ export function importXlsx(bytes: Uint8Array, name: string): ImportedWorkbook {
     }
   }
 
+  importObjects(files, sheetParts, sheets);
   return {
     preservation: { parts: files, sheetParts, stylesPart: stylesPart ?? "xl/styles.xml" },
     snapshot: {
@@ -498,6 +561,10 @@ export function importXlsx(bytes: Uint8Array, name: string): ImportedWorkbook {
       appVersion: "1.0.2",
       locale: "zh-CN" as never,
       styles: styles.styles as never,
+      resources: [
+        ...(importRules(files, sheetParts, stylesPart ?? "xl/styles.xml") ?? []),
+        importFilterLinks(files, sheetParts, sheets),
+      ],
       sheetOrder,
       sheets,
     },

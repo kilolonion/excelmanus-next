@@ -5,8 +5,8 @@ import userGuide from "../../../../../docs/user-guide.md?raw";
 import { desktop } from "../../api.ts";
 import { renderMarkdown } from "../../md.ts";
 import { SHORTCUTS } from "../../shortcuts.ts";
-import { setOnboardingOpen, setSettingsOpen, useApp } from "../../store.ts";
-import { S, ST } from "../../strings.ts";
+import { apiClientOf, setOnboardingOpen, setSettingsOpen, useApp } from "../../store.ts";
+import { DIAGNOSTICS, S, ST } from "../../strings.ts";
 import { getFontSize, getTheme, setFontSize, setTheme, type ThemePref } from "../../theme.ts";
 import { Button } from "../ui/button.tsx";
 import { SegmentedControl, Slider } from "../ui/controls.tsx";
@@ -120,6 +120,30 @@ export function AboutTab() {
           >
             {ST.reopenOnboarding}
           </Button>
+        </div>
+        <div className="mt-3 flex flex-col gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            loading={act.busy}
+            onClick={() =>
+              void act.run(async () => {
+                const report = await apiClientOf().exportDiagnostics({});
+                const blob = new Blob([JSON.stringify(report, null, 2)], {
+                  type: "application/json",
+                });
+                const url = URL.createObjectURL(blob);
+                const anchor = document.createElement("a");
+                anchor.href = url;
+                anchor.download = "excelmanus-diagnostics.json";
+                anchor.click();
+                window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+              }, DIAGNOSTICS.exported)
+            }
+          >
+            {DIAGNOSTICS.export}
+          </Button>
+          <p className="text-xs text-muted-foreground">{DIAGNOSTICS.hint}</p>
         </div>
         <Feedback msg={act.msg} />
         <p className="text-xs text-muted-foreground">{ST.privacyNote}</p>

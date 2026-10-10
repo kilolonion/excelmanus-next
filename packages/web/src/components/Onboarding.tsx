@@ -3,7 +3,7 @@
 
 import { type ReactNode, useState } from "react";
 import { openSample, send, setOnboardingOpen, setSettingsOpen, useApp } from "../store.ts";
-import { OB } from "../strings.ts";
+import { OB, UI } from "../strings.ts";
 import { BrandMark, Icon } from "./Icon.tsx";
 import { Button } from "./ui/button.tsx";
 import { cn } from "./ui/cn.ts";
@@ -71,69 +71,84 @@ export function Onboarding() {
             {OB.skip}
           </Button>
         </div>
-        <ol className="flex flex-col">
-          <Step
-            n={1}
-            state={hasModelProfile ? "done" : "ready"}
-            title={OB.step1}
-            hint={OB.step1Hint}
-          >
-            <div className="mt-1 flex flex-wrap gap-2">
-              <Button size="sm" onClick={() => setSettingsOpen(true, "models")}>
-                {OB.addKey}
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => setSettingsOpen(true, "accounts")}>
-                {OB.loginSubscription}
-              </Button>
+        <div className="onboarding-layout">
+          <div className="onboarding-intro">
+            <h1>{UI.onboardingTitle}</h1>
+            <p>{UI.onboardingHint}</p>
+            <div className="onboarding-privacy">
+              <Icon name="monitor" size="lg" />
+              <strong>{UI.localFiles}</strong>
+              <p>{UI.privacyHint}</p>
             </div>
-          </Step>
-          <Step
-            n={2}
-            state={hasModelProfile ? "ready" : "locked"}
-            title={OB.step2}
-            hint={OB.step2Hint}
-          />
-          <Step
-            n={3}
-            state={samplePath ? "done" : hasModelProfile ? "ready" : "locked"}
-            title={OB.step3}
-            hint={OB.step3Hint}
-          >
-            <div className="mt-1 flex flex-wrap gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                loading={busy}
-                onClick={() => {
-                  setBusy(true);
-                  setError(null);
-                  void openSample()
-                    .then(setSamplePath)
-                    .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
-                    .finally(() => setBusy(false));
-                }}
-              >
-                {OB.openSample}
-              </Button>
-              {samplePath && hasModelProfile && (
+          </div>
+          <ol className="onboarding-steps flex flex-col">
+            <Step
+              n={1}
+              state={hasModelProfile ? "done" : "ready"}
+              title={OB.step1}
+              hint={OB.step1Hint}
+            >
+              <div className="mt-1 flex flex-wrap gap-2">
+                <Button size="sm" onClick={() => setSettingsOpen(true, "models")}>
+                  {OB.addKey}
+                </Button>
                 <Button
                   size="sm"
+                  variant="outline"
+                  onClick={() => setSettingsOpen(true, "accounts")}
+                >
+                  {OB.loginSubscription}
+                </Button>
+              </div>
+            </Step>
+            <Step
+              n={2}
+              state={hasModelProfile ? "ready" : "locked"}
+              title={OB.step2}
+              hint={OB.step2Hint}
+            />
+            <Step
+              n={3}
+              state={samplePath ? "done" : hasModelProfile ? "ready" : "locked"}
+              title={OB.step3}
+              hint={OB.step3Hint}
+            >
+              <div className="mt-1 flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  loading={busy}
                   onClick={() => {
-                    void send(OB.samplePrompt(samplePath)).catch(() => {});
-                    setOnboardingOpen(false);
+                    setBusy(true);
+                    setError(null);
+                    void openSample()
+                      .then(setSamplePath)
+                      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+                      .finally(() => setBusy(false));
                   }}
                 >
-                  {OB.tryTask}
+                  {OB.openSample}
                 </Button>
+                {samplePath && hasModelProfile && (
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      void send(OB.samplePrompt(samplePath)).catch(() => {});
+                      setOnboardingOpen(false);
+                    }}
+                  >
+                    {OB.tryTask}
+                  </Button>
+                )}
+              </div>
+              {error && (
+                <p className="text-xs text-destructive" role="alert">
+                  {error}
+                </p>
               )}
-            </div>
-            {error && (
-              <p className="text-xs text-destructive" role="alert">
-                {error}
-              </p>
-            )}
-          </Step>
-        </ol>
+            </Step>
+          </ol>
+        </div>
       </section>
     </Card>
   );

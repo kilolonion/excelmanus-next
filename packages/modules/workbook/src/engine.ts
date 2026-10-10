@@ -1,17 +1,21 @@
 // 无头 Univer 实例装配（07 §2.1、ADR 0003）：node 侧 UniverSheetsNodeCorePreset +
 // 条件格式插件；运行在主线程（M2a，07 §3.1 允许后续迁 worker）。
 
+import { axisGroupMutation, sheetObjectsMutation } from "@excelmanus/protocol";
 import {
   CommandType,
   type ICommandInfo,
   ICommandService,
+  IUniverInstanceService,
   type IWorkbookData,
+  type Workbook,
 } from "@univerjs/core";
-import { UniverSheetsNodeCorePreset } from "@univerjs/preset-sheets-node-core";
+import { SheetsFilterService, UniverSheetsNodeCorePreset } from "@univerjs/preset-sheets-node-core";
 import sheetsNodeCoreEnUS from "@univerjs/preset-sheets-node-core/locales/en-US";
 import { createUniver, type FUniver, LocaleType, mergeLocales } from "@univerjs/presets";
 import { UniverSheetsConditionalFormattingPlugin } from "@univerjs/sheets-conditional-formatting";
-
+import { findReplaceCommand } from "./find-replace.ts";
+import { layoutCommands } from "./layout-commands.ts";
 /** 引擎版本，写入 documents.engine_version（ADR 0003：升级时回放旧日志）。 */
 export const ENGINE_VERSION = "1.0.2";
 
@@ -45,6 +49,43 @@ export function bootUniver(): Booted {
     plugins: [UniverSheetsConditionalFormattingPlugin],
   });
   const commandService = univer.__getInjector().get(ICommandService);
+  commandService.registerCommand(
+    sheetObjectsMutation(CommandType.MUTATION, (unitId, sheetId) =>
+      univer
+        .__getInjector()
+        .get(IUniverInstanceService)
+        .getUnit<Workbook>(unitId)
+        ?.getSheetBySheetId(sheetId),
+    ),
+  );
+  univer
+    .__getInjector()
+    .get(ICommandService)
+    .registerCommand(
+      axisGroupMutation(CommandType.MUTATION, (unitId, sheetId) =>
+        univer
+          .__getInjector()
+          .get(IUniverInstanceService)
+          .getUnit<Workbook>(unitId)
+          ?.getSheetBySheetId(sheetId),
+      ),
+    );
+  commandService.registerCommand(
+    findReplaceCommand(commandService, (unitId, sid) =>
+      univer
+        .__getInjector()
+        .get(IUniverInstanceService)
+        .getUnit<Workbook>(unitId)
+        ?.getSheetBySheetId(sid),
+    ),
+  );
+  for (const command of layoutCommands(
+    commandService,
+    (id) => univer.__getInjector().get(IUniverInstanceService).getUnit<Workbook>(id),
+    (unitId, sheetId) =>
+      !!univer.__getInjector().get(SheetsFilterService).getFilterModel(unitId, sheetId),
+  ))
+    commandService.registerCommand(command);
   // 进行中的计算轮数：dispose 前等它归零，避免引擎定时器在实例销毁后触发
   let running = 0;
   let starts = 0;

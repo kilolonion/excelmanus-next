@@ -11,12 +11,13 @@ import { cn } from "../ui/cn.ts";
 import { Combobox } from "../ui/command.tsx";
 import { Alert, Badge, Card, Separator } from "../ui/display.tsx";
 import { HelpText } from "../ui/field.tsx";
+import { useFormGuard } from "../ui/form-guard.tsx";
 import { Input, Textarea } from "../ui/input.tsx";
 import { Collapsible, CollapsibleContent, Disclosure } from "../ui/overlay.tsx";
+import { ResourceBrowser } from "../ui/resource-browser.tsx";
 import { NONE, SimpleSelect } from "../ui/select.tsx";
 import { Tip } from "../ui/tooltip.tsx";
 import {
-  Empty,
   Feedback,
   Field,
   formatPairs,
@@ -117,12 +118,13 @@ function ParamCell({
 }
 
 function ProfileRow({ p, onChanged }: { p: ModelProfile; onChanged(): void }) {
+  const guard = useFormGuard();
   const api = apiClientOf();
   const provider = useApp(
     (state) =>
       state.providers.find((preset) => preset.id === p.provider)?.displayName ?? p.provider,
   );
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   const caps = useLoad(
     () => api.getCapabilities(p.id).then((r) => r.capabilities as Caps),
     [p.id, p.updatedAt],
@@ -158,13 +160,29 @@ function ProfileRow({ p, onChanged }: { p: ModelProfile; onChanged(): void }) {
           size="sm"
           variant="ghost"
           className="text-[13px]"
-          onClick={() => setOpen(!open)}
+          onClick={async () => {
+            if (!open || (await guard.confirmLeave())) setOpen(!open);
+          }}
           aria-expanded={open}
         >
           <Icon name={open ? "x" : "pencil"} size="xs" />
           {open ? ST.cancel : ST.edit}
         </Button>
       </div>
+      {open && (
+        <>
+          <Separator />
+          <ProfileEditor
+            profile={p}
+            caps={caps.data ?? undefined}
+            onSaved={() => {
+              setOpen(false);
+              onChanged();
+              caps.reload();
+            }}
+          />
+        </>
+      )}
       <CapBadges caps={caps.data ?? undefined} />
       {caps.error && (
         <Alert layout="inline" tone="err">
@@ -252,20 +270,6 @@ function ProfileRow({ p, onChanged }: { p: ModelProfile; onChanged(): void }) {
         </Button>
       </div>
       <Feedback msg={act.msg} />
-      {open && (
-        <>
-          <Separator />
-          <ProfileEditor
-            profile={p}
-            caps={caps.data ?? undefined}
-            onSaved={() => {
-              setOpen(false);
-              onChanged();
-              caps.reload();
-            }}
-          />
-        </>
-      )}
     </Card>
   );
 }
@@ -628,12 +632,16 @@ export function ModelsTab() {
           </div>
         </CollapsibleContent>
       </Collapsible>
-      <div className="settings-profile-list flex flex-col gap-4">
-        {profiles.length === 0 && <Empty />}
-        {profiles.map((p) => (
-          <ProfileRow key={p.id} p={p} onChanged={changed} />
-        ))}
-      </div>
+      <ResourceBrowser
+        items={profiles}
+        id={(p) => p.id}
+        title={(p) => p.name}
+        subtitle={(p) => `${p.provider} · ${p.model}`}
+        icon={(p) => <ProviderLogo provider={p.provider} size="lg" />}
+        label={S.modelProfiles}
+        emptyText={ST.empty}
+        detail={(p) => <ProfileRow p={p} onChanged={changed} />}
+      />
     </Section>
   );
 }

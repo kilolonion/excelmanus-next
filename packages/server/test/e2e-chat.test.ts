@@ -205,7 +205,7 @@ describe("e2e：档案→会话→WS订阅→消息→只读工具→流式回�
     writeFileSync(join(srv.workspaceRoot, "note.txt"), "hello workspace\n", "utf8");
 
     const api = createApiClient(srv.url, srv.token);
-    expect(await api.health()).toMatchObject({ ok: true, protocolVersion: 1 });
+    expect(await api.health()).toMatchObject({ ok: true, protocolVersion: 2 });
     const boot = await api.bootstrap();
     expect(boot.hasModelProfile).toBe(false);
     expect(boot.modules).toContain("files");

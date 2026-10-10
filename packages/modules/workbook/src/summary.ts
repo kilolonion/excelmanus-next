@@ -58,7 +58,7 @@ export function sheetNamesOf(...snapshots: IWorkbookData[]): Map<string, string>
 }
 
 export function summarizeWriteSet(
-  writeSet: { ranges: RangeRef[]; structural: StructuralOp[] },
+  writeSet: { ranges: RangeRef[]; structural: StructuralOp[]; objects?: string[] },
   names: Map<string, string>,
 ): WorkbookChanges {
   const nameOf = (id: string) => names.get(id) ?? id;
@@ -74,11 +74,16 @@ export function summarizeWriteSet(
       [...rectsBySheet].map(([name, rects]) => [name, unionArea(rects)]),
     ),
     ranges: [...ranges],
-    structural: writeSet.structural.map((s) => {
-      const where =
-        s.count > 0 ? `${nameOf(s.sheetId)} 第 ${s.index + 1} 起 ${s.count} 个` : nameOf(s.sheetId);
-      return `${STRUCTURAL_LABELS[s.kind]}（${where}）`;
-    }),
+    structural: [
+      ...writeSet.structural.map((s) => {
+        const where =
+          s.count > 0
+            ? `${nameOf(s.sheetId)} 第 ${s.index + 1} 起 ${s.count} 个`
+            : nameOf(s.sheetId);
+        return `${STRUCTURAL_LABELS[s.kind]}（${where}）`;
+      }),
+      ...(writeSet.objects ?? []),
+    ],
     added: writeSet.structural
       .filter((s) => s.kind === "insertSheet")
       .map((s) => `工作表 ${nameOf(s.sheetId)}`),

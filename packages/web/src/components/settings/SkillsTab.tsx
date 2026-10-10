@@ -12,8 +12,8 @@ import { Alert, Badge } from "../ui/display.tsx";
 import { Label } from "../ui/field.tsx";
 import { Input } from "../ui/input.tsx";
 import { Disclosure } from "../ui/overlay.tsx";
+import { ResourceBrowser } from "../ui/resource-browser.tsx";
 import {
-  Empty,
   Feedback,
   ItemCard,
   Loading,
@@ -73,9 +73,15 @@ export function SkillsTab() {
       <Section className="settings-library">
         <LoadStatus data={list.data} error={list.error} />
         <Feedback msg={act.msg} />
-        <div className="settings-list flex flex-col gap-3">
-          {list.data?.items.length === 0 && <Empty />}
-          {list.data?.items.map((s) => (
+        <ResourceBrowser
+          items={list.data?.items ?? []}
+          id={(s) => s.name}
+          title={(s) => s.name}
+          subtitle={(s) => s.description}
+          icon={() => <Icon name="book" size="lg" />}
+          label={ST.tabs.skills}
+          emptyText={ST.empty}
+          detail={(s) => (
             <ItemCard key={s.name}>
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="flex min-w-0 flex-wrap items-center gap-1.5">
@@ -140,8 +146,8 @@ export function SkillsTab() {
                 )}
               </div>
             </ItemCard>
-          ))}
-        </div>
+          )}
+        />
       </Section>
       <Section title={ST.skillImport} hint={ST.skillImportHint}>
         <div className="settings-form flex flex-col gap-4">

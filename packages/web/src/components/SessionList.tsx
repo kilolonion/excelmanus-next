@@ -1,33 +1,33 @@
 // 侧栏（02 §2.1）：品牌 + 会话 + 文件 + 代理团队（有子代理时）+ 设置入口。
 
 import type { SessionSummary } from "@excelmanus/protocol";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { SessionState } from "../reduce.ts";
 import { filterSessions } from "../session-search.ts";
 import {
   apiClientOf,
   createSession,
   exportSession,
-  noteManualView,
-  openWorkspaceFile,
   removeSession,
   renameSessionById,
   selectSession,
   setSettingsOpen,
   signOut,
   switchWorkspace,
-  uploadWorkspaceFile,
   useApp,
 } from "../store.ts";
 import { S } from "../strings.ts";
 import { setTheme } from "../theme.ts";
 import { AddWorkspaceDialog } from "./AddWorkspaceDialog.tsx";
 import { BrandMark, Icon } from "./Icon.tsx";
+
+export { FileList } from "./FileBrowser.tsx";
+
+import { useWorkspaceNavigation } from "./layout/WorkspaceNavigation.tsx";
 import { TeamPanel } from "./TeamPanel.tsx";
 import { Button, IconButton } from "./ui/button.tsx";
 import { cn } from "./ui/cn.ts";
 import { useConfirm } from "./ui/confirm.tsx";
-import { SegmentedControl } from "./ui/controls.tsx";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "./ui/dialog.tsx";
 import { Badge, EmptyState, NavItem, SectionLabel, StatusDot } from "./ui/display.tsx";
 import {
@@ -47,10 +47,8 @@ import {
   ScrollArea,
   toast,
 } from "./ui/overlay.tsx";
-import { Spinner } from "./ui/spinner.tsx";
 import { Tip } from "./ui/tooltip.tsx";
 
-const OPENABLE = /\.(xlsx|xlsm|csv|tsv)$/i;
 const WORKSPACE_GROUPS_KEY = "excelmanus.workspaceGroups";
 const GROUP_PREVIEW_COUNT = 5;
 
@@ -174,138 +172,6 @@ function SideHeading({
   );
 }
 
-export function FileList({ compact = false }: { compact?: boolean }) {
-  const files = useApp((s) => s.files);
-  const doc = useApp((s) => s.doc);
-  const session = useApp((s) => s.session);
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [fileQuery, setFileQuery] = useState("");
-  const fileInput = useRef<HTMLInputElement>(null);
-  const normalizedFileQuery = fileQuery.trim().toLowerCase();
-  // 文件项的状态来自当前会话真实的 workbook_edit 结果；只标记当前轮产生的文件。
-  const changedThisTurn = useMemo(() => {
-    let lastUserSeq = 0;
-    for (const message of session.messages) {
-      if (message.role === "user" && (message.agentId ?? "main") === "main") {
-        lastUserSeq = Math.max(lastUserSeq, message.seq ?? 0);
-      }
-    }
-    return new Set(
-      session.changes
-        .filter((change) => change.seq > lastUserSeq && change.path !== "")
-        .map((change) => change.path),
-    );
-  }, [session]);
-  const visibleFiles =
-    normalizedFileQuery === ""
-      ? files
-      : files.filter(
-          (file) =>
-            file.name.toLowerCase().includes(normalizedFileQuery) ||
-            file.path.toLowerCase().includes(normalizedFileQuery),
-        );
-  return (
-    <div className={cn("flex flex-col gap-0.5", compact && "gap-0")}>
-      <SideHeading label={S.files} count={files.length}>
-        <IconButton
-          icon="upload"
-          size="icon-xs"
-          label={S.upload}
-          onClick={() => fileInput.current?.click()}
-        />
-        <input
-          ref={fileInput}
-          type="file"
-          hidden
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            e.target.value = "";
-            if (f) void uploadWorkspaceFile(f).catch(() => setErr(S.uploadFailed));
-          }}
-        />
-      </SideHeading>
-      <div className="relative px-0.5 pb-1">
-        <SearchInput
-          aria-label={S.searchFiles}
-          placeholder={S.searchFilesPlaceholder}
-          value={fileQuery}
-          onChange={(event) => setFileQuery(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Escape" && fileQuery !== "") {
-              event.preventDefault();
-              setFileQuery("");
-            }
-          }}
-          className="[&>input]:pr-9"
-        />
-        {fileQuery !== "" && (
-          <IconButton
-            icon="x"
-            size="icon-xs"
-            label={S.clearSearch}
-            tooltip={S.clearSearch}
-            className="absolute top-1/2 right-1.5 -translate-y-1/2"
-            onClick={() => setFileQuery("")}
-          />
-        )}
-      </div>
-      {err && (
-        <p className="px-2 text-xs text-destructive" role="alert">
-          {err}
-        </p>
-      )}
-      {visibleFiles.length === 0 && (
-        <EmptyState size="inline" title={fileQuery.trim() === "" ? S.noFiles : S.filesNoMatch} />
-      )}
-      {visibleFiles.map((f) => {
-        const openable = f.kind !== "dir" && OPENABLE.test(f.name);
-        const active = doc?.path === f.path;
-        const changed = changedThisTurn.has(f.path);
-        const modified = f.modifiedAt ? relativeTime(f.modifiedAt) : "";
-        return (
-          <Tip key={f.path} content={f.path} side="right">
-            <NavItem
-              data-slot="file-item"
-              current={active}
-              muted={!openable}
-              disabled={f.kind === "dir"}
-              icon={
-                <Icon
-                  name={f.kind === "dir" ? "folder" : openable ? "fileSheet" : "file"}
-                  size="sm"
-                  className={openable ? "text-ok" : "text-muted-foreground"}
-                />
-              }
-              meta={
-                <span className="flex items-center gap-1">
-                  {busy === f.path && <Spinner size="xs" />}
-                  {changed && <Badge tone="ok">{S.fileChangedThisTurn}</Badge>}
-                  {modified && <time dateTime={f.modifiedAt}>{modified}</time>}
-                </span>
-              }
-              onClick={() => {
-                if (!openable) {
-                  setErr(S.unsupportedFile);
-                  return;
-                }
-                setErr(null);
-                noteManualView();
-                setBusy(f.path);
-                void openWorkspaceFile(f.path)
-                  .catch(() => setErr(S.docLoadFailed))
-                  .finally(() => setBusy(null));
-              }}
-            >
-              {f.name}
-            </NavItem>
-          </Tip>
-        );
-      })}
-    </div>
-  );
-}
-
 /** 当前工作区始终可展开：切换、登记文件夹与管理入口。 */
 function WorkspaceSwitcher() {
   const workspaces = useApp((s) => s.workspaces);
@@ -386,6 +252,7 @@ function WorkspaceSwitcher() {
 }
 
 export function SessionList() {
+  const { view, setView } = useWorkspaceNavigation();
   const allSessions = useApp((s) => s.sessions);
   const files = useApp((s) => s.files);
   const workspaceId = useApp((s) => s.workspaceId);
@@ -401,7 +268,6 @@ export function SessionList() {
   const [renameBusy, setRenameBusy] = useState(false);
   const [renameError, setRenameError] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
-  const [activePane, setActivePane] = useState<"sessions" | "files">("sessions");
   const [creating, setCreating] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState(readCollapsedGroups);
@@ -451,6 +317,7 @@ export function SessionList() {
   }, [sessionId]);
 
   const newChat = (targetWorkspaceId = workspaceId) => {
+    setView("workbench");
     setCreating(true);
     setSessionQuery("");
     void createSession(targetWorkspaceId)
@@ -530,12 +397,18 @@ export function SessionList() {
             </span>
           }
           onClick={() =>
-            void selectSession(s.id).catch((error: unknown) =>
-              toast({
-                tone: "err",
-                title: error instanceof Error ? error.message : S.workspaceSwitchFailed,
-              }),
-            )
+            void selectSession(s.id)
+              .then(() => {
+                setView("workbench");
+                if (window.matchMedia("(max-width: 767px)").matches)
+                  useApp.setState({ sidebarCollapsed: true });
+              })
+              .catch((error: unknown) =>
+                toast({
+                  tone: "err",
+                  title: error instanceof Error ? error.message : S.workspaceSwitchFailed,
+                }),
+              )
           }
           actions={
             <DropdownMenu>
@@ -603,40 +476,8 @@ export function SessionList() {
         />
       </div>
       <div className="sidebar-controls flex flex-col gap-3 px-3.5 pb-4">
-        {activePane === "files" && <WorkspaceSwitcher />}
-        <SegmentedControl
-          value={activePane}
-          onChange={setActivePane}
-          ariaLabel={`${S.sessions} / ${S.files}`}
-          className="grid w-full grid-cols-2"
-          options={[
-            {
-              value: "sessions" as const,
-              icon: "chat",
-              label: (
-                <span className="flex items-center gap-1.5">
-                  {S.sessions}
-                  <span className="text-2xs tabular-nums text-muted-foreground">
-                    {allSessions.length}
-                  </span>
-                </span>
-              ),
-            },
-            {
-              value: "files" as const,
-              icon: "folder",
-              label: (
-                <span className="flex items-center gap-1.5">
-                  {S.files}
-                  <span className="text-2xs tabular-nums text-muted-foreground">
-                    {files.length}
-                  </span>
-                </span>
-              ),
-            },
-          ]}
-        />
-        {activePane === "sessions" && (
+        <WorkspaceSwitcher />
+        {
           <>
             <Tip
               content={S.newSessionIn(
@@ -681,11 +522,29 @@ export function SessionList() {
               )}
             </div>
           </>
-        )}
+        }
       </div>
+      <nav className="workspace-navigation" aria-label={S.workbench}>
+        <Button
+          variant={view === "files" ? "accent" : "ghost"}
+          size="sm"
+          onClick={() => setView(view === "files" ? "workbench" : "files")}
+        >
+          <Icon name="folder" size="sm" />
+          {S.files}
+        </Button>
+        <Button
+          variant={view === "team" ? "accent" : "ghost"}
+          size="sm"
+          onClick={() => setView(view === "team" ? "workbench" : "team")}
+        >
+          <Icon name="users" size="sm" />
+          {S.teamView}
+        </Button>
+      </nav>
       <ScrollArea className="flex-1">
         <div className="flex flex-col gap-4 px-3.5 pt-1 pb-4">
-          {activePane === "sessions" ? (
+          {
             <div className="flex flex-col gap-0.5">
               <SideHeading label={S.workspaceGroups} count={groups.length}>
                 <IconButton
@@ -790,7 +649,7 @@ export function SessionList() {
                           <DropdownMenuItem
                             onSelect={() =>
                               void switchWorkspace(workspace.id)
-                                .then(() => setActivePane("files"))
+                                .then(() => setView("files"))
                                 .catch((error: unknown) =>
                                   toast({
                                     tone: "err",
@@ -844,9 +703,7 @@ export function SessionList() {
                 );
               })}
             </div>
-          ) : (
-            <FileList />
-          )}
+          }
           <TeamPanel />
         </div>
       </ScrollArea>

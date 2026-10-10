@@ -19,7 +19,7 @@ export function workbookEditTool(svc: DocumentService): ToolDefinition {
     name: "workbook_edit",
     title: "修改工作簿",
     description:
-      '修改工作簿或用 create=true 和新的 .xlsx path 创建工作簿，整批原子提交。新建已含一个空白 Sheet1，ops=[] 即可创建空工作簿，无需 sheet.add、清空单元格或 recalculate；自定义默认表名用 sheet.rename，sheet.add 只新增其他工作表且名称必须唯一。示例：{"create":true,"path":"空工作簿.xlsx","ops":[]}。修改已有文件时 ops 至少一个。ops 支持 sheet.add/rename/delete、cells.set（二维数组，= 开头为公式）、cells.clear、style.set、merge、unmerge、rows/cols.insert/delete、freeze、recalculate（等待公式重算完成）。changes 区分单元格与结构变化，重叠区域只计一次；新建回执含 created 与实际 sheets。calc=computed 时 formulaValues 为写入公式的计算值；calc=pending 表示稍后重算，需要计算值时用 recalculate。baseRev 不传时自动用读集判定；VERSION_CONFLICT → 重读被改单元格后再写。dryRun=true 只预览不落库。',
+      '修改工作簿或用 create=true 和新的 .xlsx path 创建工作簿，整批原子提交。新建已含一个空白 Sheet1，ops=[] 即可创建空工作簿，无需 sheet.add、清空单元格或 recalculate；自定义默认表名用 sheet.rename，sheet.add 只新增其他工作表且名称必须唯一。示例：{"create":true,"path":"空工作簿.xlsx","ops":[]}。修改已有文件时 ops 至少一个。ops 支持 sheet.add/rename/delete/copy/move/hide（copy:name，move:index从0起，hide:hidden）、cells.fill（source源区域、range目标、mode=copy/series）、axis.size（sheet、axis=rows/cols、at/count、mode=pixels/scale/auto、value；auto为无头估算）、filter.set（range含表头，columns:[{column:1基绝对列号,values,blank}]或clear:true）、hyperlink.set（单格range、url或null移除、label可选）、cells.set（二维数组，= 开头为公式）、cells.clear、style.set、merge、unmerge、rows/cols.insert/delete、freeze、cf.add/remove（条件格式：range、kind=formula/number/blank/duplicate/unique、fill/fontColor/bold；更新传id）、dv.add/remove（数据验证：range、type=whole/decimal/list/date/time/textLength/custom、formula1/formula2、operator；更新传id）、axis.hide（axis=rows/cols、at/count、hidden）、axis.group（at/count、level=0取消或1–7分组）、find_replace（range、find、replacement，默认不改公式，caseSensitive/formulas可选）、rows.height/cols.width（pixels）、sort（keys 为1基绝对列号和asc/desc，header 默认true）、image.add（sheet、工作区图片path、anchor、width/height像素）、chart.add/update/delete（原生图表，sheet、range含表头、type 为column/bar/line/pie/doughnut/scatter/area/combo，title；返回对象清单可取得id）、recalculate（等待公式重算完成）。changes 区分单元格与结构变化，重叠区域只计一次；新建回执含 created 与实际 sheets。calc=computed 时 formulaValues 为写入公式的计算值；calc=pending 表示稍后重算，需要计算值时用 recalculate。baseRev 不传时自动用读集判定；VERSION_CONFLICT → 重读被改单元格后再写。dryRun=true 只预览不落库。',
     input: editInput,
     output: z.record(z.string(), z.unknown()),
     effect: "write",
@@ -73,7 +73,7 @@ export function workbookEditTool(svc: DocumentService): ToolDefinition {
       if (a.create && a.dryRun) {
         try {
           svc.validateCreatePath(ctx.workspaceRoot, a.path as string);
-          return svc.previewCreate(a.ops);
+          return svc.previewCreate(a.ops, ctx.workspaceRoot);
         } catch (e) {
           if (e instanceof FileOperationError || e instanceof PathSafetyError)
             return err(e.code, e.message);

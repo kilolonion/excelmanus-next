@@ -29,6 +29,7 @@ import {
   SyncBus,
   TeamCoordinator,
   type ToolDefinition,
+  withResultCursor,
 } from "@excelmanus/kernel";
 import { MCP_MIGRATION, mcpModule } from "@excelmanus/mcp";
 import { MEMORIES_MIGRATION, memoryModule } from "@excelmanus/memory";
@@ -57,6 +58,7 @@ import { AccountService } from "./accounts.ts";
 import { createApp } from "./app.ts";
 import { workbookChangeSummary } from "./change-summary.ts";
 import { decryptSecret, encryptSecret, loadMasterKey } from "./crypto.ts";
+import { appendDiagnosticLog } from "./diagnostics.ts";
 import {
   appendEnvNotices,
   autoProfilesForAccount,
@@ -103,6 +105,8 @@ export interface StartServerOptions {
   shape?: string;
   /** 额外允许的 Origin（桌面版 app://excelmanus，13 §1.1）。 */
   extraOrigins?: string[];
+  /** 额外允许的 Host（服务器部署反代域名，逗号分隔，来自环境变量）。 */
+  extraHosts?: string[];
   /** 桌面版由主进程经 safeStorage 解出的主密钥（13 §1）；缺省读写 <数据目录>/master.key。 */
   masterKey?: Buffer;
   /** 打包资源位置（桌面安装包）：模型目录快照目录、沙箱 worker 产物。 */
@@ -149,6 +153,12 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       Object.entries(fields).map(([k, v]) => [k, typeof v === "string" ? redactSecrets(v) : v]),
     );
     log(redactSecrets(JSON.stringify({ t: nowIso(), event, ...safe })));
+    try {
+      appendDiagnosticLog(opts.dataDir, event, safe, redactSecrets);
+    } catch {
+      // Observability must not turn a successful write into a failed HTTP response.
+      log(JSON.stringify({ t: nowIso(), event: "diagnostics.write_failed" }));
+    }
   };
 
   const dataDir = opts.dataDir;
@@ -298,7 +308,9 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
         .map((t) => ({
           name: t.name,
           description: t.description,
-          inputSchema: t.inputJsonSchema ?? (z.toJSONSchema(t.input) as Record<string, unknown>),
+          inputSchema: withResultCursor(
+            t.inputJsonSchema ?? (z.toJSONSchema(t.input) as Record<string, unknown>),
+          ),
         }));
       specCache.set(role, specs);
       return specs;
@@ -370,6 +382,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       new Set([
         `127.0.0.1:${port}`,
         `localhost:${port}`,
+        ...(opts.extraHosts ?? []),
         ...(opts.dev ? ["127.0.0.1:5173", "localhost:5173"] : []),
       ]);
     const allowedOrigins = () =>
@@ -381,6 +394,8 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       ]);
 
     const app = createApp({
+      renderDocument: (layout) => renderBroker.request(layout),
+      validateResponses: opts.dev === true || process.env.NODE_ENV === "test",
       db,
       masterKey,
       bus,
@@ -406,6 +421,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       extensions: (fail) =>
         extensionRoutes(
           {
+            dataDir,
             db,
             masterKey,
             bus,
@@ -533,6 +549,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       process.stdout.write(`http://127.0.0.1:${port}/\n`);
     else log(`http://127.0.0.1:${port}/`);
 
+    let closePromise: Promise<void> | undefined;
     return {
       url: `http://127.0.0.1:${port}`,
       port,
@@ -633,21 +650,26 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
         });
         return results;
       },
-      close: async () => {
-        clearInterval(sweeper);
-        unNotify();
-        accounts.close();
-        await mcp.service.close().catch(() => {});
-        detach();
-        server.closeAllConnections();
-        await new Promise<void>((r) => server.close(() => r()));
-        try {
-          await sandbox.close();
-          await workbook?.service.close();
-        } finally {
-          db.close();
-          lock.release();
-        }
+      close: () => {
+        if (!closePromise)
+          closePromise = (async () => {
+            clearInterval(sweeper);
+            unNotify();
+            accounts.close();
+            detach();
+            server.closeAllConnections();
+            await new Promise<void>((resolve) => server.close(() => resolve()));
+            await runtime.shutdown();
+            await mcp.service.close().catch(() => {});
+            try {
+              await sandbox.close();
+              await workbook?.service.close();
+            } finally {
+              db.close();
+              lock.release();
+            }
+          })();
+        return closePromise;
       },
     };
   } catch (err) {

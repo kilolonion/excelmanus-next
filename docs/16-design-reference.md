@@ -1,5 +1,9 @@
 # 16 页面设计参考：Studio Minimal Editorial
 
+## 2026-10-10 已批准的实现方向
+
+用户批准新的九页概念方向，并要求实际流程优先、共用页面框架。当前实现以白色/冷灰/玉绿 token 为主，见 [ADR 0024](decisions/0024-shared-page-framework-and-jade-ui.md)。下文旧草案保留为历史参考，不再要求沿用其中暖灰/靛蓝的示例颜色。主要页面的具体交付与未完成的浏览器视觉验收见 [本轮验收记录](acceptance/frontend-redesign-2026-10-10.md)。
+
 ## 1. 定位与使用方式
 
 **这是参考草案，不是最终页面规格，也不要求一比一复刻。** 2026-09-30 将后续补入的 `stitch/` 草案整理进文档集，供工作台、对话、设置和打磨环节使用。接入决定见 [ADR 0007](decisions/0007-design-reference-integration.md)。

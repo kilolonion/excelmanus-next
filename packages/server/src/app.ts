@@ -38,16 +38,21 @@ import {
   ControlBody,
   CreateModelProfileBody,
   CreateSessionBody,
+  createOpenApiDocument,
+  findHttpContract,
   OpenDocBody,
   protocolVersion,
   QuestionAnswerBody,
+  RenderDocBody,
+  type RenderLayout,
   ResolveExternalBody,
   SendMessageBody,
   SessionListQuery,
+  SessionLogQuery,
   UpdateModelProfileBody,
   UpdateSessionBody,
 } from "@excelmanus/protocol";
-import type { DocumentService } from "@excelmanus/workbook";
+import { buildLayout, type DocumentService } from "@excelmanus/workbook";
 import { type Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import type { z } from "zod";
@@ -74,6 +79,8 @@ const MAX_BODY_BYTES = 10 * 1024 * 1024;
 const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
 
 export interface AppDeps {
+  renderDocument?(layout: RenderLayout): Promise<string>;
+  validateResponses?: boolean;
   db: DatabaseSync;
   masterKey: Buffer;
   bus: SyncBus;
@@ -371,6 +378,25 @@ export function createApp(deps: AppDeps): Hono {
     }
   });
 
+  if (deps.validateResponses) {
+    app.use("/api/v1/*", async (c, next) => {
+      await next();
+      if (
+        c.res.status < 200 ||
+        c.res.status >= 300 ||
+        !c.res.headers.get("content-type")?.includes("application/json")
+      )
+        return;
+      const contract = findHttpContract(c.req.method, c.req.path.slice("/api/v1".length));
+      if (!contract) return;
+      const body: unknown = await c.res.clone().json();
+      if (!contract.response.safeParse(body).success) {
+        emit("http.contract_invalid", { method: c.req.method, route: contract.path });
+        c.res = fail(c, 500, "internal", "响应不符合接口契约");
+      }
+    });
+  }
+
   // ---------- 基础 ----------
 
   app.get("/api/v1/health", (c) => c.json({ ok: true, protocolVersion, version: APP_VERSION }));
@@ -405,26 +431,8 @@ export function createApp(deps: AppDeps): Hono {
     return c.json({ ok: true });
   });
 
-  // 契约入口：开发/测试客户端可取得机器可读的 API 描述（11 §1）。
-  // 路由仍由 protocol 包中的 Zod 契约定义；这里仅发布版本与资源索引，避免复制 DTO。
-  app.get("/api/docs", (c) =>
-    c.json({
-      openapi: "3.1.0",
-      info: { title: "ExcelManus API", version: APP_VERSION },
-      servers: [{ url: "/api/v1" }],
-      paths: {
-        "/health": { get: {} },
-        "/auth/session": { post: {} },
-        "/auth/logout": { post: {} },
-        "/bootstrap": { get: {} },
-        "/sessions": { get: {}, post: {} },
-        "/workspaces": { get: {}, post: {} },
-        "/attachments": { post: {} },
-      },
-      security: [{ bearerAuth: [] }],
-      components: { securitySchemes: { bearerAuth: { type: "http", scheme: "bearer" } } },
-    }),
-  );
+  const openApi = createOpenApiDocument(APP_VERSION);
+  app.get("/api/docs", (c) => c.json(openApi));
 
   app.get("/api/v1/bootstrap", (c) => {
     const hasModelProfile =
@@ -814,13 +822,9 @@ export function createApp(deps: AppDeps): Hono {
   app.get("/api/v1/sessions/:id/log", (c) => {
     const row = getSession(db, c.req.param("id"));
     if (!row) return fail(c, 404, "not_found", "会话不存在");
-    const beforeQ = c.req.query("before");
-    const before = beforeQ !== undefined && beforeQ !== "" ? Number(beforeQ) : undefined;
-    if (before !== undefined && !Number.isInteger(before)) {
-      return fail(c, 400, "bad_request", "before 必须是整数游标");
-    }
-    const limit = Math.min(Number(c.req.query("limit") ?? 200), 500);
-    return c.json({ items: deps.log.readBefore(row.id, before, limit) });
+    const query = SessionLogQuery.safeParse(c.req.query());
+    if (!query.success) return fail(c, 400, "bad_request", "日志分页参数无效");
+    return c.json({ items: deps.log.readBefore(row.id, query.data.before, query.data.limit) });
   });
 
   // ---------- 派发消息 / 停止 ----------
@@ -1237,6 +1241,59 @@ export function createApp(deps: AppDeps): Hono {
     }
   });
 
+  app.post("/api/v1/workspaces/:id/docs/:docId/render", async (c) => {
+    const svc = deps.docService;
+    if (!svc) return fail(c, 501, "not_implemented", "workbook 模块未装配");
+    const workspace = getWorkspace(db, c.req.param("id"));
+    const docId = c.req.param("docId");
+    const row = db.prepare("SELECT workspace_id FROM documents WHERE id = ?").get(docId) as
+      | { workspace_id: string }
+      | undefined;
+    if (!workspace || !row || row.workspace_id !== workspace.id)
+      return fail(c, 404, "not_found", "文档不存在");
+    const body = RenderDocBody.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return fail(c, 400, "bad_request", "截图参数无效");
+    try {
+      const { meta, snapshot } = await svc.snapshot(docId, workspace.path);
+      if (body.data.rev !== undefined && body.data.rev !== meta.rev)
+        return fail(c, 409, "conflict", "只能渲染当前修订，请重新读取工作簿");
+      let sheetName = body.data.sheet;
+      try {
+        if (body.data.range) sheetName = parseRange(body.data.range).sheet ?? sheetName;
+      } catch {
+        return fail(c, 400, "bad_request", "截图区域无效");
+      }
+      const sheet = sheetName
+        ? Object.values(snapshot.sheets).find(
+            (item) => item.name === sheetName || item.id === sheetName,
+          )
+        : snapshot.sheets[snapshot.sheetOrder[0] ?? ""];
+      if (!sheet) return fail(c, 404, "not_found", "工作表不存在");
+      const output = buildLayout(
+        snapshot,
+        sheet as Parameters<typeof buildLayout>[1],
+        body.data.range,
+      );
+      let png: string;
+      try {
+        if (!deps.renderDocument) throw new Error("没有可用的渲染端");
+        png = await deps.renderDocument(output.layout);
+      } catch {
+        return fail(c, 502, "bad_gateway", "截图失败：请保持工作台打开并确认渲染端已连接");
+      }
+      return c.json({
+        docId,
+        rev: meta.rev,
+        range: output.range,
+        png,
+        limitations: output.limitations,
+        size: { width: output.layout.width, height: output.layout.height },
+      });
+    } catch (error) {
+      return docErr(c, error);
+    }
+  });
+
   app.get("/api/v1/workspaces/:id/docs/:docId/snapshot", async (c) => {
     const svc = deps.docService;
     if (!svc) return fail(c, 501, "not_implemented", "workbook 模块未装配");
@@ -1504,6 +1561,19 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   if (deps.extensions) app.route("/api/v1", deps.extensions(fail));
+  if (deps.validateResponses) {
+    // Inspect actual mounted Hono routes, including dynamically mounted extensions.
+    const missing = app.routes.filter(
+      (route) =>
+        route.method !== "ALL" &&
+        route.path.startsWith("/api/v1/") &&
+        !findHttpContract(route.method, route.path.slice(7)),
+    );
+    if (missing.length)
+      throw new Error(
+        `Missing REST contracts: ${missing.map((route) => `${route.method} ${route.path}`).join(", ")}`,
+      );
+  }
 
   // ---------- 前端静态托管（生产：server 直接提供 packages/web/dist） ----------
   const webDist = deps.webDist;
