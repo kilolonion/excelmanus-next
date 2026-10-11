@@ -416,6 +416,99 @@ describe("xlsx 写回保真（真实 DocumentService + SQLite + 公式引擎）"
     expect(xml).toContain(`<c r="A1" s="0"><v>1</v></c>`);
     expect(xml).toContain(`<c r="B1" s="1"><v>2</v></c>`);
   });
+
+  test("工作台格式工具栏：下划线/删除线/颜色/填充与数字格式写回，并能重新导入", async () => {
+    const { dir, svc, id, unitId, sheetXml } = await openBook(
+      book(
+        [`<sheetData><row r="1"><c r="A1"><v>1</v></c><c r="B1"><v>0.25</v></c></row></sheetData>`],
+        { styles: BOLD_STYLES },
+      ),
+    );
+    const r = await svc.submit(id, dir, {
+      baseRev: 0,
+      source: user,
+      mutations: [
+        {
+          id: "sheet.mutation.set-range-values",
+          params: {
+            unitId,
+            subUnitId: "s0",
+            trigger: "sheet.command.set-range-underline",
+            cellValue: {
+              0: {
+                0: {
+                  s: {
+                    bl: 1,
+                    ul: { s: 1 },
+                    st: { s: 1 },
+                    cl: { rgb: "#C0392B" },
+                    bg: { rgb: "#FFF2CC" },
+                  },
+                },
+              },
+            },
+          },
+        },
+        {
+          id: "sheet.mutation.set.numfmt",
+          params: {
+            unitId,
+            subUnitId: "s0",
+            values: { pct: { ranges: [{ startRow: 0, endRow: 0, startColumn: 1, endColumn: 1 }] } },
+            refMap: { pct: { pattern: "0.00%" } },
+          },
+        },
+      ],
+    });
+    expect(r, JSON.stringify(r)).toMatchObject({ ok: true, rev: 1 });
+    await sheetXml();
+    const bytes = readFileSync(join(dir, "book.xlsx"));
+    const styles = dec(unzipSync(bytes)["xl/styles.xml"]);
+    expect(styles).toMatch(/<font>[\s\S]*?<u\/>[\s\S]*?<\/font>/);
+    expect(styles).toMatch(/<strike\/>/);
+    expect(styles).toContain('formatCode="0.00%"');
+    const snap = importXlsx(bytes, "book.xlsx").snapshot;
+    const styleOf = (row: number, col: number) => {
+      const s = cells(snap, "s0")[row]?.[col]?.s;
+      return typeof s === "string" ? snap.styles?.[s] : s;
+    };
+    expect(styleOf(0, 0)).toMatchObject({
+      bl: 1,
+      ul: { s: 1 },
+      st: { s: 1 },
+      cl: { rgb: "#C0392B" },
+      bg: { rgb: "#FFF2CC" },
+    });
+    expect(styleOf(0, 1)).toMatchObject({ n: { pattern: "0.00%" } });
+  });
+
+  test("工作台在原表尺寸之外输入：值写回并在重新导入后扩展表格尺寸", async () => {
+    const { dir, svc, id, unitId, sheetXml } = await openBook(
+      book([`<sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData>`]),
+    );
+    const r = await svc.submit(id, dir, {
+      baseRev: 0,
+      source: user,
+      mutations: [
+        {
+          id: "sheet.mutation.set-range-values",
+          params: {
+            unitId,
+            subUnitId: "s0",
+            trigger: "sheet.command.set-range-values",
+            cellValue: { 0: { 4: { v: 5 } }, 9: { 0: { v: "end" } } },
+          },
+        },
+      ],
+    });
+    expect(r, JSON.stringify(r)).toMatchObject({ ok: true, rev: 1 });
+    const xml = await sheetXml();
+    expect(xml).toContain(`<c r="E1"><v>5</v></c>`);
+    expect(xml).toMatch(/<row r="10"[^>]*><c r="A10" t="(?:str|inlineStr|s)"/);
+    const sheet = importXlsx(readFileSync(join(dir, "book.xlsx")), "book.xlsx").snapshot.sheets.s0;
+    expect(sheet?.rowCount).toBeGreaterThanOrEqual(10);
+    expect(sheet?.columnCount).toBeGreaterThanOrEqual(5);
+  });
 });
 
 describe("CSV", () => {

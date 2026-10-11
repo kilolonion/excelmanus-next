@@ -167,6 +167,9 @@ function readStyles(xml: Xml | undefined, theme: Xml | undefined): StylesOut {
     if (font) {
       if (on(font.b)) style.bl = 1;
       if (on(font.i)) style.it = 1;
+      if (font.u !== undefined && attr((font.u as Xml) ?? {}, "val") !== "none")
+        style.ul = { s: 1 };
+      if (on(font.strike)) style.st = { s: 1 };
       const sz = Number(attr((font.sz as Xml | undefined) ?? {}, "val"));
       if (Number.isFinite(sz) && sz > 0) style.fs = sz;
       const ff = attr((font.name as Xml | undefined) ?? {}, "val");

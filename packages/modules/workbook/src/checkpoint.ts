@@ -208,7 +208,7 @@ export function assertWritable(
   if (
     mutations.some(
       (m) =>
-        !/^sheet\.mutation\.(?:set-range-values|set-worksheet-name|set-worksheet-hidden|set-worksheet-order|insert-sheet|remove-sheet|insert-row|remove-rows|insert-col|remove-col|add-worksheet-merge|remove-worksheet-merge|set-frozen|set-worksheet-row-count|set-worksheet-column-count|set-worksheet-row-height|set-worksheet-row-is-auto-height|set-worksheet-row-auto-height|set-row-hidden|set-row-visible|set-worksheet-col-width|set-col-hidden|set-col-visible)$/.test(
+        !/^sheet\.mutation\.(?:set-range-values|set-worksheet-name|set-worksheet-hidden|set-worksheet-order|insert-sheet|remove-sheet|insert-row|remove-rows|insert-col|remove-col|add-worksheet-merge|remove-worksheet-merge|set-frozen|set-worksheet-row-count|set-worksheet-column-count|set-worksheet-row-height|set-worksheet-row-is-auto-height|set-worksheet-row-auto-height|set-row-hidden|set-row-visible|set-worksheet-col-width|set-col-hidden|set-col-visible|set\.numfmt|remove\.numfmt)$/.test(
           m.id,
         ),
     )

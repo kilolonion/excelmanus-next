@@ -312,7 +312,8 @@ interface DocRow {
   last_opened_at: string;
 }
 
-const docMutationId = /^[\w-]+\.mutation\.[\w-]+$/;
+// 尾段允许一级点号：Univer 数字格式 mutation 为 sheet.mutation.set.numfmt / remove.numfmt
+const docMutationId = /^[\w-]+\.mutation\.[\w-]+(?:\.[\w-]+)?$/;
 
 function normalizeMutations(raw: unknown): DocMutation[] {
   if (!Array.isArray(raw)) throw new OpCompileError("mutations 必须是数组");

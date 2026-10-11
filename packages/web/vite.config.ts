@@ -24,8 +24,10 @@ export default defineConfig({
             return "shared-ui";
           }
           // 共享组件与状态独立于入口，懒加载页面无需反向导入首屏包。
+          // components/workbench/ 依赖 Univer，只随懒加载的工作台一起打包，不进首屏。
           if (
             id.includes("/packages/web/src/") &&
+            !id.includes("/packages/web/src/components/workbench/") &&
             !/\/(?:main|App|Workbench|SettingsModal)\.[jt]sx?$/.test(id)
           ) {
             return "shared-ui";

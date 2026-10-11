@@ -91,6 +91,16 @@ export function deriveWriteSet(m: DocMutation): DerivedWriteSet {
   switch (m.id) {
     case "sheet.mutation.set-range-values":
       return { ranges: matrixRegion(sub, q.cellValue), structural: [] };
+    // 数字格式写入单元格样式 n（工作台工具栏 / numfmt 命令）
+    case "sheet.mutation.set.numfmt":
+      return {
+        ranges: Object.values((q.values ?? {}) as Record<string, { ranges?: unknown }>).flatMap(
+          (v) => fromRanges(sub, asRanges(v?.ranges)),
+        ),
+        structural: [],
+      };
+    case "sheet.mutation.remove.numfmt":
+      return { ranges: fromRanges(sub, asRanges(q.ranges)), structural: [] };
     case "sheet.mutation.insert-row": {
       const r = (q.range ?? {}) as R;
       return {

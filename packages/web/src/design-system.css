@@ -269,18 +269,8 @@
     container: workbench / inline-size;
   }
   .workbench-header {
-    height: 56px;
-    min-height: 56px;
-    gap: 8px;
-  }
-  .document-icon {
-    background: var(--read-soft);
-    color: var(--read-ink);
-  }
-  .document-save [data-slot="badge"] {
-    border: 0;
-    background: transparent;
-    font-weight: 400;
+    height: 72px;
+    min-height: 72px;
   }
   .chat-panel {
     container: chat / inline-size;
@@ -522,8 +512,8 @@
     .document-save {
       display: none;
     }
-    .workbench-header {
-      padding-inline: 12px;
+    .workbench-titlebar {
+      padding-inline: 12px 8px;
       gap: 4px;
     }
   }

@@ -12,7 +12,6 @@ import {
   CommandType,
   ICommandService,
   IUniverInstanceService,
-  type IWorkbookData,
   type Univer,
   type Workbook,
 } from "@univerjs/core";
@@ -63,12 +62,15 @@ import { Button, IconButton } from "./ui/button.tsx";
 import { cn } from "./ui/cn.ts";
 import { useConfirm } from "./ui/confirm.tsx";
 import { SegmentedControl, Switch } from "./ui/controls.tsx";
-import { Alert, Badge, RangeChip, Separator } from "./ui/display.tsx";
+import { Alert, Badge, RangeChip } from "./ui/display.tsx";
 import { Label } from "./ui/field.tsx";
 import { Input } from "./ui/input.tsx";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/overlay.tsx";
 import { Dots, Spinner } from "./ui/spinner.tsx";
 import { Tip } from "./ui/tooltip.tsx";
+import { keepEditingRoom, withEditingRoom } from "./workbench/editing-room.ts";
+import { FormatToolbar, type SheetApi } from "./workbench/format-toolbar.tsx";
+import { jadeTheme } from "./workbench/univer-theme.ts";
 
 /** 叠加层语义色取自主题 token；已修改通过短时边框反馈。 */
 const FALLBACK = { read: "#4f46e5", ok: "#059669", warn: "#d97706" } as const;
@@ -140,9 +142,12 @@ function overlayStyles() {
 function UniverViewer({
   visibility,
   changes,
+  onApi,
 }: {
   visibility: OverlayVisibility;
   changes: ChangeEntry[];
+  /** 实例就绪 / 销毁时通知外层（格式工具栏执行命令用）。 */
+  onApi: (api: SheetApi | null) => void;
 }) {
   const doc = useApp((s) => s.doc);
   const docId = doc?.docId;
@@ -178,6 +183,7 @@ function UniverViewer({
     }
     setSnapshotLoad(null);
     const { univer, univerAPI } = createUniver({
+      theme: jadeTheme,
       plugins: [
         UniverSheetsConditionalFormattingPlugin,
         UniverSheetsDataValidationPlugin,
@@ -221,10 +227,13 @@ function UniverViewer({
             ?.getSheetBySheetId(sheetId),
         ),
       );
-    const wb = univerAPI.createWorkbook(structuredClone(snapshot) as unknown as IWorkbookData);
+    const wb = univerAPI.createWorkbook(withEditingRoom(snapshot));
     // 工作台编辑与代理共用 doc.submit；服务端负责串行化与冲突判定。
     wb.setEditable(true);
     apiRef.current = { univer, wb };
+    onApi({ univer, univerAPI, wb });
+    // 开发态便于浏览器复核脚本直接定位单元格；生产构建中此分支被移除
+    if (import.meta.env.DEV) (window as { __emUniverAPI?: unknown }).__emUniverAPI = univerAPI;
     // 叠加层角标与对比浮层（对齐清单 C1、C2）；组件无状态，只读 popup.extraProps
     const chartSub = univerAPI.registerComponent("em-chart-placeholder", ChartPlaceholder as never);
     const tagSub = univerAPI.registerComponent("em-overlay-tag", OverlayTag as never);
@@ -254,7 +263,7 @@ function UniverViewer({
           for (const mutation of mutations) {
             const ok = await univerAPI.executeCommand(
               mutation.id,
-              (mutation.params ?? {}) as object,
+              keepEditingRoom(wb, mutation.id, mutation.params),
               { fromCollab: true },
             );
             if (!ok) throw new Error(S.remoteMutationFailed(mutation.id));
@@ -301,9 +310,10 @@ function UniverViewer({
       sub.dispose();
       registerDocumentEditor(null);
       apiRef.current = null;
+      onApi(null);
       univer.dispose();
     };
-  }, [docId, snapshot]);
+  }, [docId, snapshot, onApi]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: imperative engine snapshots change on revision, active-sheet switch and instance readiness
   useEffect(() => {
@@ -721,30 +731,42 @@ function ActivityChip({ visible }: { visible: boolean }) {
   );
 }
 
-/** 控制表格上的瞬时活动、待审批与已修改叠加层；偏好保存在本机浏览器。 */
-function OverlayVisibilityControl({
+/** 视图选项：跟随代理与表格叠加层（活动、待审批、已修改）；偏好保存在本机浏览器。 */
+function ViewOptions({
   visibility,
   onChange,
 }: {
   visibility: OverlayVisibility;
   onChange: (next: OverlayVisibility) => void;
 }) {
+  const follow = useApp((s) => s.followAgent);
   const set = (key: keyof OverlayVisibility) => (checked: boolean) =>
     onChange({ ...visibility, [key]: checked });
   return (
     <Popover>
       <PopoverTrigger asChild>
         <IconButton
-          icon="sliders"
+          icon="eye"
           size="icon-sm"
-          label={S.overlayVisibility}
-          pressed={!visibility.activity || !visibility.pending || !visibility.changed}
+          className="size-7 shrink-0"
+          label={S.viewOptions}
+          pressed={!follow || !visibility.activity || !visibility.pending || !visibility.changed}
         />
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-64">
-        <div className="mb-2">
-          <div className="text-xs font-semibold text-foreground">{S.overlayVisibility}</div>
-          <p className="mt-0.5 text-2xs text-muted-foreground">{S.overlayVisibilityHint}</p>
+      <PopoverContent align="end" className="w-72">
+        <div className="mb-3">
+          <div className="text-xs font-semibold text-foreground">{S.viewOptions}</div>
+          <p className="mt-0.5 text-2xs text-muted-foreground">{S.viewOptionsHint}</p>
+        </div>
+        <OverlayVisibilityToggle
+          id="follow-agent"
+          checked={follow}
+          onCheckedChange={setFollowAgent}
+          label={S.followAgent}
+          hint={S.followAgentHint}
+        />
+        <div className="mt-3 mb-2 border-t border-border pt-3 text-2xs font-medium text-muted-foreground">
+          {S.overlaySection}
         </div>
         <div className="flex flex-col gap-2">
           <OverlayVisibilityToggle
@@ -813,7 +835,7 @@ function DocumentStatusPopover({
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <IconButton icon="info" size="icon-sm" label={S.documentDetails} />
+        <IconButton icon="info" size="icon-sm" className="size-7" label={S.documentDetails} />
       </PopoverTrigger>
       <PopoverContent align="start" className="w-72">
         <div className="flex flex-col gap-3">
@@ -845,7 +867,7 @@ function DocumentStatusPopover({
   );
 }
 
-/** 同一文档上的其他参与者；名称与区域同时显示，避免只依赖选区颜色。 */
+/** 同一文档的其他窗口（本机单用户）：小圆点 + 悬停说明位置，不占用标题栏宽度。 */
 function PresenceSummary() {
   const participants = useApp((s) => s.presence);
   const connectionId = useApp((s) => s.presenceConnectionId);
@@ -854,41 +876,45 @@ function PresenceSummary() {
   if (others.length === 0) return null;
   return (
     <div
-      className="flex min-w-0 max-w-[36vw] items-center gap-1 overflow-hidden"
+      className="flex shrink-0 items-center -space-x-1"
       role="status"
       aria-label={S.presenceLabel}
     >
-      <span className="shrink-0 text-2xs text-muted-foreground">{S.presenceLabel}</span>
       {others.slice(0, 3).map((participant) => (
-        <PresenceBadge key={participant.participantId} participant={participant} />
+        <PresenceDot key={participant.participantId} participant={participant} />
       ))}
-      {others.length > 3 && <Badge tone="outline">{S.presenceMore(others.length - 3)}</Badge>}
+      {others.length > 3 && (
+        <Tip content={S.presenceMore(others.length - 3)} side="bottom">
+          <span
+            role="img"
+            aria-label={S.presenceMore(others.length - 3)}
+            className="flex size-6 items-center justify-center rounded-full border-2 border-card bg-muted font-mono text-2xs text-muted-foreground"
+          >
+            +{others.length - 3}
+          </span>
+        </Tip>
+      )}
     </div>
   );
 }
 
-function PresenceBadge({ participant }: { participant: PresenceParticipant }) {
-  const location = participant.selection
-    ? `${participant.sheet ? `${participant.sheet}!` : ""}${participant.selection}`
-    : S.presenceNoSelection;
+function PresenceDot({ participant }: { participant: PresenceParticipant }) {
+  // 选区本身可能已带表名（'销售'!A1:F1），不再重复拼接
+  const location = !participant.selection
+    ? S.presenceNoSelection
+    : participant.selection.includes("!") || !participant.sheet
+      ? participant.selection
+      : `${participant.sheet}!${participant.selection}`;
   return (
-    <Tip content={S.presenceAt(participant.name, location)} side="bottom">
-      <Badge
-        tone="outline"
-        className="max-w-44 overflow-hidden"
-        style={{ borderColor: `${participant.color}66` }}
-        aria-label={S.presenceAt(participant.name, location)}
+    <Tip content={S.presenceAt(location)} side="bottom">
+      <span
+        role="img"
+        aria-label={S.presenceAt(location)}
+        className="flex size-6 items-center justify-center rounded-full border-2 border-card text-white"
+        style={{ backgroundColor: participant.color }}
       >
-        <span
-          className="size-1.5 shrink-0 rounded-full"
-          style={{ backgroundColor: participant.color }}
-          aria-hidden="true"
-        />
-        <span className="truncate">{participant.name}</span>
-        <span className="max-w-24 truncate font-mono text-2xs text-muted-foreground">
-          {location}
-        </span>
-      </Badge>
+        <Icon name="monitor" size="xs" />
+      </span>
     </Tip>
   );
 }
@@ -1076,36 +1102,46 @@ function SaveState() {
     (s) => Object.values(s.docSync.pending).filter((p) => p.status === "pending").length,
   );
   if (!doc) return null;
+  const cls = "document-save flex shrink-0 items-center gap-1 text-xs whitespace-nowrap";
   if (doc.checkpointError) {
     return (
-      <Tip content={doc.checkpointError}>
-        <Badge tone="err" tabIndex={0}>
+      <Tip content={`${S.checkpointFailed} · ${doc.checkpointError}`} side="bottom">
+        <span className={cn(cls, "font-medium text-destructive")} role="status">
           <Icon name="alert" size="xs" />
-          {S.checkpointFailed}
-        </Badge>
+          {S.checkpointFailedShort}
+          <span className="sr-only">{`${S.checkpointFailed} · ${doc.checkpointError}`}</span>
+        </span>
       </Tip>
     );
   }
   if (pending > 0) {
     return (
-      <Badge tone="warn">
+      <span className={cn(cls, "text-muted-foreground")} role="status">
         <Spinner size="xs" />
         {S.pendingSubmits(pending)}
-      </Badge>
+      </span>
     );
   }
   const saved = doc.checkpointRev !== undefined && doc.checkpointRev >= doc.rev;
   return (
-    <Badge tone={saved ? "ok" : "neutral"}>
-      <Icon name={saved ? "check" : "clock"} size="xs" />
-      {saved ? S.savedToFile : S.savingToFile}
-    </Badge>
+    <Tip content={saved ? S.savedToFile : S.savingToFile} side="bottom">
+      <span className={cn(cls, "text-muted-foreground")} role="status">
+        <Icon
+          name={saved ? "check" : "clock"}
+          size="xs"
+          className={saved ? "text-ok" : undefined}
+        />
+        {saved ? S.savedShort : S.savingShort}
+      </span>
+    </Tip>
   );
 }
 
 /** doc.submit 被服务端拒绝后的可恢复提示（只读 docSync 中真实冲突，不猜测代理状态）。 */
 function DocumentConflictBar({ docId }: { docId: string }) {
-  const conflict = useApp((s) => latestDocConflict(s.docSync));
+  // latestDocConflict 每次返回新对象，不能直接作 store 选择器（否则无限重渲染）
+  const docSync = useApp((s) => s.docSync);
+  const conflict = useMemo(() => latestDocConflict(docSync), [docSync]);
   const [reloading, setReloading] = useState(false);
   if (!conflict) return null;
 
@@ -1177,12 +1213,16 @@ function ChangeNav() {
     () => (doc ? changeRanges(session, doc.docId, since) : []),
     [session, doc, since],
   );
+  // 本会话对该文档没有任何已提交改动时不占用一行
+  const total = useMemo(
+    () => (doc ? changeRanges(session, doc.docId, 0).length : 0),
+    [session, doc],
+  );
   // 新改动到达时跳到最新一处
-  // biome-ignore lint/correctness/useExhaustiveDependencies: 只在条目数变化时重置
   useEffect(() => {
     setIndex(Math.max(0, items.length - 1));
   }, [items.length]);
-  if (!doc) return null;
+  if (!doc || total === 0) return null;
   const cur = items[Math.min(index, items.length - 1)];
   const go = (i: number) => {
     const next = items[i];
@@ -1192,7 +1232,7 @@ function ChangeNav() {
   };
   return (
     <nav
-      className="flex min-h-11 shrink-0 flex-wrap items-center gap-2 border-t border-border bg-muted/45 px-4 py-2 text-xs"
+      className="flex min-h-10 shrink-0 flex-wrap items-center gap-2 border-t border-border bg-muted/40 px-3 py-1.5 text-xs"
       aria-label={S.changesThisTurn}
     >
       <SegmentedControl
@@ -1241,8 +1281,6 @@ function ChangeNav() {
           {cur.entry.backupPath && <RestoreBackup docPath={doc.path} />}
         </>
       )}
-      <span className="flex-1" />
-      <FollowToggle />
     </nav>
   );
 }
@@ -1399,21 +1437,6 @@ function RestoreBackup({ docPath }: { docPath: string }) {
   );
 }
 
-/** 跟随代理开关（02 §4.8）：代理读写文件时自动打开并滚动到活动区域。 */
-function FollowToggle() {
-  const on = useApp((s) => s.followAgent);
-  return (
-    <Tip content={S.followAgentHint}>
-      <span className="flex shrink-0 items-center gap-1.5">
-        <Switch id="follow-agent" size="sm" checked={on} onCheckedChange={setFollowAgent} />
-        <Label htmlFor="follow-agent" className="text-xs">
-          {S.followAgent}
-        </Label>
-      </span>
-    </Tip>
-  );
-}
-
 /** 窄屏表格页底部的迷你输入条（02 §2.2）：沿用「引导」派发策略。 */
 function MiniComposer() {
   const [text, setText] = useState("");
@@ -1477,6 +1500,7 @@ export function Workbench({
 }) {
   const doc = useApp((s) => s.doc);
   const [overlayVisibility, setOverlayVisibility] = useOverlayVisibility();
+  const [sheetApi, setSheetApi] = useState<SheetApi | null>(null);
   const recentChanges = useRecentChanges();
   const selection = useApp((s) => s.selection);
   const chatCollapsed = useApp((s) => s.layout.chatCollapsed);
@@ -1488,82 +1512,83 @@ export function Workbench({
   );
   if (!doc) return null;
   const sel = selection?.docId === doc.docId ? selection : null;
+  const askAgent = () => {
+    if (narrow) setNarrowTab("chat");
+    else if (chatCollapsed) setLayout({ chatCollapsed: false });
+    requestAnimationFrame(() => focusComposer());
+  };
   return (
     <div className="workbench-panel flex min-h-0 flex-1 flex-col">
-      <header className="workbench-header flex h-16 shrink-0 items-center gap-2 border-b border-border/75 bg-card px-4">
-        {sidebarToggle && (
-          <IconButton
-            icon="sidebar"
-            label={S.expandSidebar}
-            shortcut="B"
-            onClick={() => useApp.setState({ sidebarCollapsed: false })}
-          />
-        )}
-        <span className="document-icon flex size-8 shrink-0 items-center justify-center rounded-md bg-muted/70 text-foreground-secondary">
-          <Icon name="fileSheet" size="md" />
-        </span>
-        <div className="document-heading flex min-w-0 flex-1 flex-col gap-1">
+      {/* 两行共 72px，与对话栏标题区底边对齐：文档栏 + 格式工具栏 */}
+      <header className="workbench-header flex shrink-0 flex-col border-b border-border/75 bg-card">
+        <div className="workbench-titlebar flex h-10 shrink-0 items-center gap-2 pt-1 pr-2 pl-4">
+          {sidebarToggle && (
+            <IconButton
+              icon="sidebar"
+              size="icon-sm"
+              className="size-7"
+              label={S.expandSidebar}
+              shortcut="B"
+              onClick={() => useApp.setState({ sidebarCollapsed: false })}
+            />
+          )}
+          <Icon name="fileSheet" size="md" className="text-primary" />
           <Tip content={doc.path} side="bottom">
             <h2 className="document-title min-w-0 truncate text-sm font-semibold">
               {baseName(doc.path)}
             </h2>
           </Tip>
-          <div className="flex min-w-0 items-center gap-2.5">
-            <span className="document-revision font-mono text-2xs text-muted-foreground">
-              {S.revLabel(doc.rev)}
-            </span>
-            <span className="document-save">
-              <SaveState />
-            </span>
-          </div>
+          <SaveState />
+          <span className="min-w-2 flex-1" />
+          <ActivityChip visible={overlayVisibility.activity} />
+          <PresenceSummary />
+          {sel && (
+            <Tip content={`${sel.range} · ${S.attachSelection}`} side="bottom">
+              <Button size="xs" variant="accent" className="h-7 gap-1.5 px-2.5" onClick={askAgent}>
+                <Icon name="sparkle" size="xs" />
+                {S.askAgent}
+              </Button>
+            </Tip>
+          )}
+          <span className="flex items-center">
+            <DocumentStatusPopover
+              doc={doc}
+              selection={sel?.range ?? null}
+              changedCount={changedCount}
+            />
+            {!narrow && (
+              <IconButton
+                icon={chatCollapsed ? "panelRight" : "expand"}
+                size="icon-sm"
+                className="size-7"
+                label={chatCollapsed ? S.expandChat : S.collapseChat}
+                pressed={chatCollapsed}
+                onClick={() => setLayout({ chatCollapsed: !chatCollapsed })}
+              />
+            )}
+            <IconButton
+              icon="x"
+              size="icon-sm"
+              className="size-7"
+              label={S.closeDocument}
+              onClick={closeDocument}
+            />
+          </span>
         </div>
-        <DocumentStatusPopover
-          doc={doc}
-          selection={sel?.range ?? null}
-          changedCount={changedCount}
+        <FormatToolbar
+          api={sheetApi}
+          csv={/\.(csv|tsv)$/i.test(doc.path)}
+          trailing={<ViewOptions visibility={overlayVisibility} onChange={setOverlayVisibility} />}
         />
-        <ActivityChip visible={overlayVisibility.activity} />
-        <PresenceSummary />
-        <OverlayVisibilityControl visibility={overlayVisibility} onChange={setOverlayVisibility} />
-        {sel && (
-          <Tip content={`${sel.range} · ${S.attachSelection}`} side="bottom">
-            <Button
-              size="sm"
-              variant="accent"
-              onClick={() => {
-                if (narrow) setNarrowTab("chat");
-                else if (chatCollapsed) setLayout({ chatCollapsed: false });
-                requestAnimationFrame(() => focusComposer());
-              }}
-            >
-              <Icon name="sparkle" size="xs" />
-              {S.askAgent}
-            </Button>
-          </Tip>
-        )}
-        <Separator orientation="vertical" className="h-5 self-center" />
-        {!narrow && (
-          <IconButton
-            icon={chatCollapsed ? "panelRight" : "expand"}
-            label={chatCollapsed ? S.expandChat : S.collapseChat}
-            pressed={chatCollapsed}
-            onClick={() => setLayout({ chatCollapsed: !chatCollapsed })}
-          />
-        )}
-        <IconButton icon="x" label={S.closeDocument} onClick={closeDocument} />
       </header>
       <DocumentConflictBar docId={doc.docId} />
-      <ContextAction
-        label={S.askAgent}
-        enabled={sel !== null}
-        onSelect={() => {
-          if (narrow) setNarrowTab("chat");
-          else if (chatCollapsed) setLayout({ chatCollapsed: false });
-          requestAnimationFrame(() => focusComposer());
-        }}
-      >
+      <ContextAction label={S.askAgent} enabled={sel !== null} onSelect={askAgent}>
         <div className="relative isolate min-h-0 flex-1 overflow-hidden bg-card">
-          <UniverViewer visibility={overlayVisibility} changes={recentChanges} />
+          <UniverViewer
+            visibility={overlayVisibility}
+            changes={recentChanges}
+            onApi={setSheetApi}
+          />
           {overlayVisibility.changed && <ChangeFeedback changes={recentChanges} />}
         </div>
       </ContextAction>

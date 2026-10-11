@@ -75,7 +75,7 @@ export class StyleWriter {
       open = '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0">';
       xf = `${open}</xf>`;
     }
-    const fontChanged = ["bl", "it", "cl", "ff", "fs"].some(
+    const fontChanged = ["bl", "it", "ul", "st", "cl", "ff", "fs"].some(
       (k) => JSON.stringify(a[k as keyof IStyleData]) !== JSON.stringify(b[k as keyof IStyleData]),
     );
     if (fontChanged) {
@@ -86,6 +86,8 @@ export class StyleWriter {
       for (const [key_, tag] of [
         ["bl", "b"],
         ["it", "i"],
+        ["ul", "u"],
+        ["st", "strike"],
         ["ff", "name"],
         ["fs", "sz"],
         ["cl", "color"],
@@ -95,9 +97,14 @@ export class StyleWriter {
         const raw =
           val == null
             ? ""
-            : key_ === "cl"
-              ? `<color rgb="${color(val)}"/>`
-              : `<${tag} val="${escapeXml(val)}"/>`;
+            : key_ === "ul" || key_ === "st"
+              ? // Univer 文本装饰 { s: 1 } 为开启；单线下划线 / 删除线
+                (val as { s?: number }).s === 1
+                ? `<${tag}/>`
+                : ""
+              : key_ === "cl"
+                ? `<color rgb="${color(val)}"/>`
+                : `<${tag} val="${escapeXml(val)}"/>`;
         font = replaceElement(font, tag, raw);
       }
       open = setAttribute(
@@ -198,6 +205,8 @@ export class StyleWriter {
     const supported = new Set([
       "bl",
       "it",
+      "ul",
+      "st",
       "cl",
       "ff",
       "fs",
