@@ -1,0 +1,26 @@
+[
+  {
+    "url": "https://api.xiaomimimo.com/v1/chat/completions",
+    "method": "POST",
+    "requestHeaders": {
+      "authorization": "<redacted>",
+      "content-type": "application/json",
+      "user-agent": "ai-sdk/openai-compatible/3.0.53 ai-sdk/provider-utils/5.0.45 runtime/node.js/24"
+    },
+    "requestBody": "{\"model\":\"nonexistent-model-xyz\",\"messages\":[{\"role\":\"system\",\"content\":\"You are a helpful assistant.\"},{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true,\"stream_options\":{\"include_usage\":true}}",
+    "status": 400,
+    "responseHeaders": {
+      "cache-control": "no-cache, no-store, must-revalidate",
+      "connection": "keep-alive",
+      "content-length": "109",
+      "content-type": "application/json",
+      "date": "Tue, 29 Sep 2026 14:09:44 GMT",
+      "expires": "0",
+      "pragma": "no-cache",
+      "server": "MiFE/3.4.34",
+      "vary": "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
+      "x-mife-upstream-status": "400"
+    },
+    "responseBody": "{\n    \"error\": {\n        \"code\": \"400\",\n        \"message\": \"Unsupported model nonexistent-model-xyz\"\n    }\n}\n"
+  }
+]

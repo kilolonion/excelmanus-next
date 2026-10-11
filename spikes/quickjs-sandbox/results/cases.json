@@ -1,0 +1,1196 @@
+{
+  "summary": {
+    "total": 51,
+    "passed": 51,
+    "failed": [],
+    "canaryEnv": "CANARY-ENV-d4c77426d66bca03ea67a4427b5a135b",
+    "sentinelConnections": 0,
+    "platform": {
+      "os": "darwin",
+      "arch": "arm64",
+      "node": "v24.1.0"
+    }
+  },
+  "cases": [
+    {
+      "id": "G01",
+      "category": "宿主对象访问",
+      "expect": {
+        "result": "undefined"
+      },
+      "outcome": "ok:\"undefined\"",
+      "durationMs": 1.7,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0.9
+      },
+      "pass": true,
+      "detail": "result=\"undefined\""
+    },
+    {
+      "id": "G02",
+      "category": "宿主对象访问",
+      "expect": {
+        "result": "undefined"
+      },
+      "outcome": "ok:\"undefined\"",
+      "durationMs": 2.6,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 7.8
+      },
+      "pass": true,
+      "detail": "result=\"undefined\""
+    },
+    {
+      "id": "G03",
+      "category": "宿主对象访问",
+      "expect": {
+        "result": "undefined,undefined,undefined,undefined,undefined"
+      },
+      "outcome": "ok:\"undefined,undefined,undefined,undefined,undefined\"",
+      "durationMs": 1.1,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0
+      },
+      "pass": true,
+      "detail": "result=\"undefined,undefined,undefined,undefined,undefined\""
+    },
+    {
+      "id": "G04",
+      "category": "宿主对象访问",
+      "expect": {
+        "result": "undefined,undefined,undefined,undefined,undefined"
+      },
+      "outcome": "ok:\"undefined,undefined,undefined,undefined,undefined\"",
+      "durationMs": 1.3,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0.2
+      },
+      "pass": true,
+      "detail": "result=\"undefined,undefined,undefined,undefined,undefined\""
+    },
+    {
+      "id": "G05",
+      "category": "宿主对象访问",
+      "expect": {
+        "result": "undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined"
+      },
+      "outcome": "ok:\"undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined\"",
+      "durationMs": 0.8,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0.1
+      },
+      "pass": true,
+      "detail": "result=\"undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined\""
+    },
+    {
+      "id": "G06",
+      "category": "宿主对象访问",
+      "expect": {
+        "result": "undefined,undefined"
+      },
+      "outcome": "ok:\"undefined,undefined\"",
+      "durationMs": 0.9,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0.5
+      },
+      "pass": true,
+      "detail": "result=\"undefined,undefined\""
+    },
+    {
+      "id": "G07",
+      "category": "宿主对象访问",
+      "expect": {
+        "result": "undefined"
+      },
+      "outcome": "ok:\"undefined\"",
+      "durationMs": 0.7,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": -0.1
+      },
+      "pass": true,
+      "detail": "result=\"undefined\""
+    },
+    {
+      "id": "G08",
+      "category": "宿主对象访问",
+      "expect": {
+        "result": "undefinedundefined"
+      },
+      "outcome": "ok:\"undefinedundefined\"",
+      "durationMs": 0.7,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0
+      },
+      "pass": true,
+      "detail": "result=\"undefinedundefined\""
+    },
+    {
+      "id": "G09",
+      "category": "宿主对象访问",
+      "expect": {
+        "result": "BLOCKED"
+      },
+      "outcome": "ok:\"BLOCKED\"",
+      "durationMs": 1,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0.1
+      },
+      "pass": true,
+      "detail": "result=\"BLOCKED\""
+    },
+    {
+      "id": "G10",
+      "category": "宿主对象访问",
+      "expect": {
+        "kind": "globalsSubsetOfAllowlist"
+      },
+      "outcome": "ok:[\"AggregateError\",\"Array\",\"ArrayBuffer\",\"BigInt\",\"BigInt64Array\",\"BigUint64Array\",\"Boolean\",\"DataView\",\"Date\",\"Error\",\"E",
+      "durationMs": 0.6,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0
+      },
+      "pass": true,
+      "detail": "63 globals ⊆ allowlist"
+    },
+    {
+      "id": "G11",
+      "category": "宿主对象访问",
+      "expect": {
+        "result": "BLOCKED"
+      },
+      "outcome": "ok:\"BLOCKED\"",
+      "durationMs": 0.8,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0.1
+      },
+      "pass": true,
+      "detail": "result=\"BLOCKED\""
+    },
+    {
+      "id": "G12",
+      "category": "信息泄露",
+      "expect": {
+        "result": "CLEAN"
+      },
+      "outcome": "ok:\"CLEAN\"",
+      "durationMs": 1.5,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0.2
+      },
+      "pass": true,
+      "detail": "result=\"CLEAN\""
+    },
+    {
+      "id": "G13",
+      "category": "信息泄露",
+      "expect": {
+        "resultIn": [
+          "SAFE"
+        ]
+      },
+      "outcome": "ok:\"SAFE\"",
+      "durationMs": 0.6,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0.3
+      },
+      "pass": true,
+      "detail": "result=\"SAFE\" ∈ expected"
+    },
+    {
+      "id": "P01",
+      "category": "原型污染",
+      "expect": {
+        "kind": "scriptFailsOrSafe"
+      },
+      "outcome": "ok:evil",
+      "durationMs": 0.9,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0.3
+      },
+      "pass": true,
+      "detail": "outcome=ok:evil（仅以公共后置条件为准）",
+      "note": "重点是公共后置条件：宿主原型链与内建行为不受影响"
+    },
+    {
+      "id": "P02",
+      "category": "原型污染",
+      "expect": {
+        "kind": "scriptFailsOrSafe"
+      },
+      "outcome": "ok:\"done\"",
+      "durationMs": 2,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0.5
+      },
+      "pass": true,
+      "detail": "outcome=ok:\"done\"（仅以公共后置条件为准）",
+      "note": "SDK 返回值必须是沙箱内创建的纯数据副本；宿主对象原型不可被触达"
+    },
+    {
+      "id": "P03",
+      "category": "原型污染",
+      "expect": {
+        "resultIn": [
+          1,
+          "1"
+        ]
+      },
+      "outcome": "ok:1",
+      "durationMs": 0.8,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0.5
+      },
+      "pass": true,
+      "detail": "result=1 ∈ expected",
+      "note": "宿主桩每次返回同一份缓存对象；脚本修改第一次结果不得影响第二次"
+    },
+    {
+      "id": "R01",
+      "category": "返回值滥用",
+      "expect": {
+        "terminated": "timeout"
+      },
+      "outcome": "terminated:timeout",
+      "durationMs": 1501.6,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 6
+      },
+      "pass": true,
+      "detail": "terminated:timeout in 1502ms via worker",
+      "terminationWithinBound": true
+    },
+    {
+      "id": "R02",
+      "category": "返回值滥用",
+      "expect": {
+        "limited": [
+          "scriptError"
+        ]
+      },
+      "outcome": "scriptError:TypeError:circular reference",
+      "durationMs": 0.6,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0
+      },
+      "pass": true,
+      "detail": "limited:scriptError:TypeError:circular reference in 1ms via worker"
+    },
+    {
+      "id": "R03",
+      "category": "返回值滥用",
+      "expect": {
+        "limited": [
+          "output",
+          "memory",
+          "scriptError"
+        ]
+      },
+      "outcome": "terminated:output",
+      "durationMs": 972.3,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 26.3
+      },
+      "pass": true,
+      "detail": "limited:terminated:output in 972ms via worker",
+      "note": "返回值上限 1 MB"
+    },
+    {
+      "id": "R04",
+      "category": "返回值滥用",
+      "expect": {
+        "kind": "scriptFailsOrSafe"
+      },
+      "outcome": "scriptError:TypeError:Do not know how to serialize a BigInt",
+      "durationMs": 0.8,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 1.2
+      },
+      "pass": true,
+      "detail": "outcome=scriptError:TypeError:Do not know how to serialize a BigInt（仅以公共后置条件为准）",
+      "note": "不可序列化返回值必须被规整或报错，不得让宿主抛出未捕获异常"
+    },
+    {
+      "id": "R05",
+      "category": "返回值滥用",
+      "expect": {
+        "terminated": "timeout"
+      },
+      "outcome": "terminated:timeout",
+      "durationMs": 1501.4,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 30.2
+      },
+      "pass": true,
+      "detail": "terminated:timeout in 1501ms via worker",
+      "terminationWithinBound": true
+    },
+    {
+      "id": "X01",
+      "category": "资源耗尽",
+      "expect": {
+        "terminated": "timeout"
+      },
+      "outcome": "terminated:timeout",
+      "durationMs": 1001.7,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0.4
+      },
+      "pass": true,
+      "detail": "terminated:timeout in 1002ms via worker",
+      "terminationWithinBound": true
+    },
+    {
+      "id": "X02",
+      "category": "资源耗尽",
+      "expect": {
+        "limited": [
+          "scriptError",
+          "timeout",
+          "memory"
+        ]
+      },
+      "outcome": "scriptError:InternalError:stack overflow",
+      "durationMs": 6.5,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 4.8
+      },
+      "pass": true,
+      "detail": "limited:scriptError:InternalError:stack overflow in 6ms via worker"
+    },
+    {
+      "id": "X03",
+      "category": "资源耗尽",
+      "expect": {
+        "limited": [
+          "memory",
+          "scriptError",
+          "timeout"
+        ]
+      },
+      "outcome": "terminated:memory",
+      "durationMs": 355.6,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": -21.6
+      },
+      "pass": true,
+      "detail": "limited:terminated:memory in 356ms via worker"
+    },
+    {
+      "id": "X04",
+      "category": "资源耗尽",
+      "expect": {
+        "limited": [
+          "memory",
+          "timeout"
+        ]
+      },
+      "outcome": "terminated:memory",
+      "durationMs": 1850.3,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 410.1
+      },
+      "pass": true,
+      "detail": "limited:terminated:memory in 1850ms via worker"
+    },
+    {
+      "id": "X05",
+      "category": "资源耗尽",
+      "expect": {
+        "limited": [
+          "memory",
+          "scriptError",
+          "timeout"
+        ]
+      },
+      "outcome": "scriptError:InternalError:string too long",
+      "durationMs": 0.9,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0
+      },
+      "pass": true,
+      "detail": "limited:scriptError:InternalError:string too long in 1ms via worker"
+    },
+    {
+      "id": "X06",
+      "category": "资源耗尽",
+      "expect": {
+        "limited": [
+          "timeout",
+          "memory",
+          "scriptError"
+        ]
+      },
+      "outcome": "terminated:timeout",
+      "durationMs": 3251,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 5.3
+      },
+      "pass": true,
+      "detail": "limited:terminated:timeout in 3251ms via terminate"
+    },
+    {
+      "id": "X07",
+      "category": "资源耗尽",
+      "expect": {
+        "terminated": "timeout"
+      },
+      "outcome": "terminated:timeout",
+      "durationMs": 1501.2,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 10.8
+      },
+      "pass": true,
+      "detail": "terminated:timeout in 1501ms via worker",
+      "terminationWithinBound": true
+    },
+    {
+      "id": "X08",
+      "category": "资源耗尽",
+      "expect": {
+        "terminated": "timeout"
+      },
+      "outcome": "terminated:timeout",
+      "durationMs": 2000.4,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 2.6
+      },
+      "pass": true,
+      "detail": "terminated:timeout in 2000ms via worker",
+      "note": "正则回溯也必须能被强制终止（若解释器中断回调覆盖不到，则靠 worker.terminate()）",
+      "terminationWithinBound": true
+    },
+    {
+      "id": "X09",
+      "category": "资源耗尽",
+      "expect": {
+        "limited": [
+          "output",
+          "timeout",
+          "memory"
+        ]
+      },
+      "outcome": "terminated:timeout",
+      "durationMs": 5251.6,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": -5.8
+      },
+      "pass": true,
+      "detail": "limited:terminated:timeout in 5251ms via terminate",
+      "note": "标准输出保留上限 200 行/64 KB，宿主内存不得随输出无限增长"
+    },
+    {
+      "id": "X10",
+      "category": "资源耗尽",
+      "expect": {
+        "limited": [
+          "scriptError",
+          "memory",
+          "timeout"
+        ]
+      },
+      "outcome": "scriptError:HostInternalError:Maximum call stack size exceeded",
+      "durationMs": 13.6,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 13
+      },
+      "pass": true,
+      "detail": "limited:scriptError:HostInternalError:Maximum call stack size exceeded in 14ms via worker"
+    },
+    {
+      "id": "X11",
+      "category": "资源耗尽",
+      "expect": {
+        "limited": [
+          "timeout",
+          "memory",
+          "scriptError"
+        ]
+      },
+      "outcome": "terminated:timeout",
+      "durationMs": 3055,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 445.4
+      },
+      "pass": true,
+      "detail": "limited:terminated:timeout in 3055ms via worker"
+    },
+    {
+      "id": "S01",
+      "category": "SDK 边界",
+      "expect": {
+        "result": "OUT_OF_WORKSPACE"
+      },
+      "outcome": "ok:\"OUT_OF_WORKSPACE\"",
+      "durationMs": 1.6,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0.1
+      },
+      "pass": true,
+      "detail": "result=\"OUT_OF_WORKSPACE\""
+    },
+    {
+      "id": "S02",
+      "category": "SDK 边界",
+      "expect": {
+        "result": "OUT_OF_WORKSPACE"
+      },
+      "outcome": "ok:\"OUT_OF_WORKSPACE\"",
+      "durationMs": 0.8,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0.1
+      },
+      "pass": true,
+      "detail": "result=\"OUT_OF_WORKSPACE\""
+    },
+    {
+      "id": "S03",
+      "category": "SDK 边界",
+      "expect": {
+        "result": "OUT_OF_WORKSPACE"
+      },
+      "outcome": "ok:\"OUT_OF_WORKSPACE\"",
+      "durationMs": 1,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0
+      },
+      "pass": true,
+      "detail": "result=\"OUT_OF_WORKSPACE\""
+    },
+    {
+      "id": "S04",
+      "category": "SDK 边界",
+      "expect": {
+        "result": "OUT_OF_WORKSPACE"
+      },
+      "outcome": "ok:\"OUT_OF_WORKSPACE\"",
+      "durationMs": 0.8,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0
+      },
+      "pass": true,
+      "detail": "result=\"OUT_OF_WORKSPACE\""
+    },
+    {
+      "id": "S05",
+      "category": "SDK 边界",
+      "expect": {
+        "resultIn": [
+          "OUT_OF_WORKSPACE",
+          "NOT_FOUND"
+        ]
+      },
+      "outcome": "ok:\"NOT_FOUND\"",
+      "durationMs": 1,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0
+      },
+      "pass": true,
+      "detail": "result=\"NOT_FOUND\" ∈ expected"
+    },
+    {
+      "id": "S06",
+      "category": "SDK 边界",
+      "expect": {
+        "result": "ALL_BLOCKED"
+      },
+      "outcome": "ok:\"ALL_BLOCKED\"",
+      "durationMs": 1.5,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0.1
+      },
+      "pass": true,
+      "detail": "result=\"ALL_BLOCKED\""
+    },
+    {
+      "id": "S07",
+      "category": "SDK 边界",
+      "expect": {
+        "result": "OUT_OF_WORKSPACE"
+      },
+      "outcome": "ok:\"OUT_OF_WORKSPACE\"",
+      "durationMs": 0.7,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0
+      },
+      "pass": true,
+      "detail": "result=\"OUT_OF_WORKSPACE\""
+    },
+    {
+      "id": "S08",
+      "category": "SDK 边界",
+      "expect": {
+        "resultIn": [
+          "LIMIT_EXCEEDED"
+        ]
+      },
+      "outcome": "ok:\"LIMIT_EXCEEDED\"",
+      "durationMs": 249.6,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 40
+      },
+      "pass": true,
+      "detail": "result=\"LIMIT_EXCEEDED\" ∈ expected",
+      "note": "单次 SDK 调用数据上限 32 MB"
+    },
+    {
+      "id": "S09",
+      "category": "SDK 边界",
+      "expect": {
+        "limited": [
+          "timeout",
+          "scriptError",
+          "memory"
+        ]
+      },
+      "outcome": "terminated:timeout",
+      "durationMs": 5250.8,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": -401.8
+      },
+      "pass": true,
+      "detail": "limited:terminated:timeout in 5251ms via terminate",
+      "note": "在途 SDK 调用数必须有上限；宿主侧待处理队列不得无限增长"
+    },
+    {
+      "id": "S10",
+      "category": "SDK 边界",
+      "expect": {
+        "terminated": "timeout"
+      },
+      "outcome": "terminated:timeout",
+      "durationMs": 1500.9,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 7.4
+      },
+      "pass": true,
+      "detail": "terminated:timeout in 1501ms via worker",
+      "note": "序列化参数时执行的 getter 也在沙箱内、受中断限制",
+      "terminationWithinBound": true
+    },
+    {
+      "id": "S11",
+      "category": "SDK 边界",
+      "expect": {
+        "resultIn": [
+          "INVALID_ARGUMENT",
+          "UNSUPPORTED_FEATURE"
+        ]
+      },
+      "outcome": "ok:\"UNSUPPORTED_FEATURE\"",
+      "durationMs": 1.7,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0.1
+      },
+      "pass": true,
+      "detail": "result=\"UNSUPPORTED_FEATURE\" ∈ expected",
+      "note": "SDK 中删除不可用"
+    },
+    {
+      "id": "S12",
+      "category": "SDK 边界",
+      "expect": {
+        "result": "undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined"
+      },
+      "outcome": "ok:\"undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined\"",
+      "durationMs": 0.6,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0
+      },
+      "pass": true,
+      "detail": "result=\"undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined\""
+    },
+    {
+      "id": "S13",
+      "category": "SDK 边界",
+      "expect": {
+        "kind": "sdkSurfaceExact",
+        "files": [
+          "find",
+          "manage",
+          "readText",
+          "writeText"
+        ],
+        "wb": [
+          "analyze",
+          "edit",
+          "export",
+          "read"
+        ]
+      },
+      "outcome": "ok:{\"files\":[\"find\",\"manage\",\"readText\",\"writeText\"],\"wb\":[\"analyze\",\"edit\",\"export\",\"read\"],\"fp\":[\"__defineGetter__\",\"__de",
+      "durationMs": 0.6,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0.1
+      },
+      "pass": true,
+      "detail": "files=[\"find\",\"manage\",\"readText\",\"writeText\"] wb=[\"analyze\",\"edit\",\"export\",\"read\"] fpExtra=[]",
+      "note": "SDK 暴露面必须恰好是白名单，不得有额外方法/原型上的宿主函数"
+    },
+    {
+      "id": "S14",
+      "category": "SDK 边界",
+      "expect": {
+        "result": "OUT_OF_WORKSPACE"
+      },
+      "outcome": "ok:\"OUT_OF_WORKSPACE\"",
+      "durationMs": 1,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0
+      },
+      "pass": true,
+      "detail": "result=\"OUT_OF_WORKSPACE\""
+    },
+    {
+      "id": "S15",
+      "category": "SDK 边界",
+      "expect": {
+        "result": "true,true,undefined"
+      },
+      "outcome": "ok:\"true,true,undefined\"",
+      "durationMs": 0.7,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0
+      },
+      "pass": true,
+      "detail": "result=\"true,true,undefined\"",
+      "note": "返回值是沙箱内的纯对象"
+    },
+    {
+      "id": "T01",
+      "category": "终止与隔离",
+      "expect": {
+        "terminated": "timeout"
+      },
+      "outcome": "terminated:timeout",
+      "durationMs": 805.9,
+      "evidence": [
+        {
+          "event": "slow.xlsx read aborted for run 96",
+          "at": "2026-09-29T11:38:38.149Z"
+        }
+      ],
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0.8
+      },
+      "pass": true,
+      "detail": "terminated:timeout in 806ms via worker",
+      "terminationWithinBound": true
+    },
+    {
+      "id": "T02",
+      "category": "终止与隔离",
+      "expect": {
+        "result": "A"
+      },
+      "outcome": "ok:\"A\" | ok:\"undefined\"",
+      "durationMs": 0.8,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0
+      },
+      "pass": true,
+      "detail": "result=\"A\"; followUp=\"undefined\"",
+      "note": "脚本之间不得共享全局状态（每次运行新上下文）"
+    },
+    {
+      "id": "T03",
+      "category": "终止与隔离",
+      "expect": {
+        "results": [
+          "A",
+          "B"
+        ]
+      },
+      "outcome": "ok:\"A\" | ok:\"B\"",
+      "durationMs": 3.3,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": 0.2
+      },
+      "pass": true,
+      "detail": "results=[\"A\",\"B\"]",
+      "note": "两个脚本并发运行互相隔离"
+    },
+    {
+      "id": "T04",
+      "category": "终止与隔离",
+      "expect": {
+        "kind": "rssGrowthBounded",
+        "maxGrowthMB": 100
+      },
+      "outcome": "(none)",
+      "outcomeDetail": {
+        "runs": 100,
+        "ok": 60,
+        "errors": 20,
+        "timeouts": 20,
+        "other": 0,
+        "anomalies": [],
+        "rssGrowthMB": -84.9,
+        "activeWorkers": 2
+      },
+      "durationMs": 8054.9,
+      "postconditions": {
+        "noCanaryLeak": true,
+        "prototypesUnchanged": true,
+        "sentinelDirUnchanged": true,
+        "sentinelPortNoConnections": true,
+        "noWritesOutsideWorkspace": true,
+        "livenessReturn2": true,
+        "rssGrowthWithin512MB": true,
+        "rssGrowthMB": -84.9
+      },
+      "pass": true,
+      "detail": "100 runs, rss +-84.9MB, workers=2",
+      "note": "连续 100 次运行（其中穿插 20 次超时终止与 20 次脚本抛错）后 RSS 增长不超过 100 MB，无 worker 泄漏（活跃 worker 数回到预热池大小）"
+    }
+  ]
+}

@@ -1,0 +1,136 @@
+{
+  "env": {
+    "name": "node",
+    "execPath": "/opt/homebrew/Cellar/node/24.1.0/bin/node",
+    "node": "v24.1.0",
+    "electron": null,
+    "v8": "13.6.233.10-node.16",
+    "platform": "darwin/arm64",
+    "processType": "node",
+    "ELECTRON_RUN_AS_NODE": "1",
+    "tsLoaderNote": "由宿主 Node 直接执行 .ts（类型剥离）",
+    "warnings": [
+      "ExperimentalWarning: Type Stripping is an experimental feature and might change at any time",
+      "ExperimentalWarning: SQLite is an experimental feature and might change at any time"
+    ]
+  },
+  "import": {
+    "ok": true,
+    "withoutFlag": true,
+    "flagProbe": {
+      "acceptedFlag": true,
+      "exitStatus": 0,
+      "importOk": true,
+      "stderrTail": "(node:49629) ExperimentalWarning: SQLite is an experimental feature and might change at any time\n(Use `node --trace-warnings ...` to show where the warning was created)"
+    }
+  },
+  "notes": [],
+  "sqliteVersion": "3.49.1",
+  "pragmas": {
+    "journal_mode": "wal",
+    "synchronous": 1,
+    "foreign_keys": 1,
+    "busy_timeout": 5000,
+    "expected": {
+      "journal_mode": "wal",
+      "synchronous": 1,
+      "foreign_keys": 1,
+      "busy_timeout": 5000
+    }
+  },
+  "fts5": {
+    "unicode61": {
+      "queries": {
+        "生成": {
+          "hits": []
+        },
+        "模型生成": {
+          "hits": []
+        },
+        "检索": {
+          "hits": []
+        },
+        "沙箱隔离模型": {
+          "hits": []
+        }
+      },
+      "note": "unicode61 对中文大概率把整句当一个 token：子串检索预期 0 命中或仅整句命中"
+    },
+    "trigram": {
+      "queries": {
+        "生成代": {
+          "hits": [
+            1
+          ]
+        },
+        "模型生成": {
+          "hits": [
+            1
+          ]
+        },
+        "要可靠": {
+          "hits": [
+            2
+          ]
+        },
+        "沙箱": {
+          "hits": []
+        }
+      },
+      "note": "trigram 应能命中 3 字以上中文子串；2 字 '沙箱' 行为记录于实测"
+    }
+  },
+  "json1": {
+    "ok": true,
+    "value": 2
+  },
+  "txn": {
+    "perTxnMs": {
+      "n": 10000,
+      "min": 0.013,
+      "p50": 0.015,
+      "p95": 0.03,
+      "p99": 0.047,
+      "max": 3.43
+    },
+    "batch100": {
+      "totalMs": 0.351,
+      "perRowMs": 0.004
+    },
+    "criterion": "每个事务目标 <5ms，p99>20ms 则需移入 worker"
+  },
+  "crash": {
+    "lastSeenCommit": 500,
+    "killed": true,
+    "exit": {
+      "code": null,
+      "signal": "SIGKILL"
+    },
+    "committedRowsAfterReopen": 500,
+    "rowsGeLastSeen": true,
+    "integrityCheck": "ok",
+    "note": "WAL + per-txn commit：杀前已确认提交的行重启后必须仍在"
+  },
+  "twoConn": {
+    "blockThenSucceed": {
+      "childBusyTimeoutMs": 5000,
+      "holdMs": 1500,
+      "childOutput": "OK 1539.9",
+      "childStderr": "(node:49631) ExperimentalWarning: SQLite is an experimental feature and might change at any time",
+      "exit": {
+        "code": 0,
+        "signal": null
+      }
+    },
+    "timeoutFails": {
+      "childBusyTimeoutMs": 200,
+      "holdMs": 1500,
+      "childOutput": "BUSY 258.6 database is locked",
+      "childStderr": "(node:49632) ExperimentalWarning: SQLite is an experimental feature and might change at any time",
+      "exit": {
+        "code": 0,
+        "signal": null
+      }
+    }
+  }
+}

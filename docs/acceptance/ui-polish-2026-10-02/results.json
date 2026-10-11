@@ -1,0 +1,369 @@
+{
+  "results": [
+    {
+      "name": "landing avoids workbook engine",
+      "scripts": ["/assets/index-B5CFhkaa.js", "/assets/shared-ui-CrZ55Dwu.js"]
+    },
+    {
+      "name": "empty-1920",
+      "width": 1920,
+      "height": 1080,
+      "scrollWidth": 1920,
+      "panelWidth": 1646,
+      "headerHeight": 59,
+      "composer": {
+        "x": 684,
+        "top": 904,
+        "right": 1492,
+        "bottom": 1071
+      },
+      "outerTop": 0
+    },
+    {
+      "name": "empty-1440",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "panelWidth": 1166,
+      "headerHeight": 59,
+      "composer": {
+        "x": 444,
+        "top": 724,
+        "right": 1252,
+        "bottom": 891
+      },
+      "outerTop": 0
+    },
+    {
+      "name": "empty-1280",
+      "width": 1280,
+      "height": 800,
+      "scrollWidth": 1280,
+      "panelWidth": 1006,
+      "headerHeight": 59,
+      "composer": {
+        "x": 364,
+        "top": 624,
+        "right": 1172,
+        "bottom": 791
+      },
+      "outerTop": 0
+    },
+    {
+      "name": "empty-1024",
+      "width": 1024,
+      "height": 768,
+      "scrollWidth": 1024,
+      "panelWidth": 782,
+      "headerHeight": 59,
+      "composer": {
+        "x": 233,
+        "top": 592,
+        "right": 1015,
+        "bottom": 759
+      },
+      "outerTop": 0
+    },
+    {
+      "name": "empty-768",
+      "width": 768,
+      "height": 768,
+      "scrollWidth": 768,
+      "panelWidth": 526,
+      "headerHeight": 59,
+      "composer": {
+        "x": 233,
+        "top": 592,
+        "right": 759,
+        "bottom": 759
+      },
+      "outerTop": 0
+    },
+    {
+      "name": "task card fills and focuses composer"
+    },
+    {
+      "name": "draft survives reload"
+    },
+    {
+      "name": "settings-模型",
+      "width": 1118,
+      "scroll": 1118
+    },
+    {
+      "name": "settings-订阅账号",
+      "width": 1118,
+      "scroll": 1118
+    },
+    {
+      "name": "settings-权限与运行",
+      "width": 1118,
+      "scroll": 1118
+    },
+    {
+      "name": "settings-规则",
+      "width": 1118,
+      "scroll": 1118
+    },
+    {
+      "name": "settings-记忆",
+      "width": 1118,
+      "scroll": 1118
+    },
+    {
+      "name": "settings-技能",
+      "width": 1118,
+      "scroll": 1118
+    },
+    {
+      "name": "settings-MCP 服务器",
+      "width": 1118,
+      "scroll": 1118
+    },
+    {
+      "name": "settings-工作区与备份",
+      "width": 1118,
+      "scroll": 1118
+    },
+    {
+      "name": "settings-外观与关于",
+      "width": 1118,
+      "scroll": 1118
+    },
+    {
+      "name": "settings keyboard focus stays inside dialog"
+    },
+    {
+      "name": "settings Escape closes and restores focus"
+    },
+    {
+      "name": "workbench-1440",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "panelWidth": 463,
+      "headerHeight": 80,
+      "composer": {
+        "x": 968.1875,
+        "top": 690,
+        "right": 1431,
+        "bottom": 891
+      },
+      "outerTop": 0
+    },
+    {
+      "name": "splitter supports keyboard and reset"
+    },
+    {
+      "name": "range-confirm-1440",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "panelWidth": 463,
+      "headerHeight": 80,
+      "composer": {
+        "x": 968.1875,
+        "top": 474.015625,
+        "right": 1431,
+        "bottom": 891
+      },
+      "outerTop": 0
+    },
+    {
+      "name": "range-confirm-1024",
+      "width": 1024,
+      "height": 768,
+      "scrollWidth": 1024,
+      "panelWidth": 782,
+      "headerHeight": 59,
+      "composer": {
+        "x": 233,
+        "top": 376.015625,
+        "right": 1015,
+        "bottom": 759
+      },
+      "outerTop": 0
+    },
+    {
+      "name": "deny reason can be entered and cancelled without deciding"
+    },
+    {
+      "name": "approval-1024",
+      "width": 1024,
+      "height": 768,
+      "scrollWidth": 1024,
+      "panelWidth": 782,
+      "headerHeight": 59,
+      "composer": {
+        "x": 233,
+        "top": 288.171875,
+        "right": 1015,
+        "bottom": 759
+      },
+      "outerTop": 0
+    },
+    {
+      "name": "approval-1280-short",
+      "width": 1280,
+      "height": 720,
+      "scrollWidth": 1280,
+      "panelWidth": 399,
+      "headerHeight": 80,
+      "composer": {
+        "x": 872.1875,
+        "top": 224.40625,
+        "right": 1271,
+        "bottom": 711
+      },
+      "outerTop": 0
+    },
+    {
+      "name": "approval actions remain visible in short viewport"
+    },
+    {
+      "name": "approval commits revision and checkpoint through real server"
+    },
+    {
+      "name": "before and after values use committed server snapshot"
+    },
+    {
+      "name": "sheet-1024",
+      "width": 1024,
+      "height": 768,
+      "scrollWidth": 1024,
+      "composer": null,
+      "outerTop": 0
+    },
+    {
+      "name": "chat-1024",
+      "width": 1024,
+      "height": 768,
+      "scrollWidth": 1024,
+      "panelWidth": 782,
+      "headerHeight": 59,
+      "composer": {
+        "x": 233,
+        "top": 558,
+        "right": 1015,
+        "bottom": 759
+      },
+      "outerTop": 0
+    },
+    {
+      "name": "sheet-768",
+      "width": 768,
+      "height": 768,
+      "scrollWidth": 768,
+      "composer": null,
+      "outerTop": 0
+    },
+    {
+      "name": "chat-768",
+      "width": 768,
+      "height": 768,
+      "scrollWidth": 768,
+      "panelWidth": 526,
+      "headerHeight": 59,
+      "composer": {
+        "x": 233,
+        "top": 558,
+        "right": 759,
+        "bottom": 759
+      },
+      "outerTop": 0
+    },
+    {
+      "name": "committed values survive sheet remounts at 1024 and 768"
+    },
+    {
+      "name": "dark-workbench-1440",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "panelWidth": 463,
+      "headerHeight": 80,
+      "composer": {
+        "x": 968.1875,
+        "top": 690,
+        "right": 1431,
+        "bottom": 891
+      },
+      "outerTop": 0
+    },
+    {
+      "name": "reduced motion disables hover movement",
+      "duration": "1e-06s",
+      "transform": "none"
+    },
+    {
+      "name": "running-1440",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "panelWidth": 463,
+      "headerHeight": 80,
+      "composer": {
+        "x": 968.1875,
+        "top": 690,
+        "right": 1431,
+        "bottom": 891
+      },
+      "outerTop": 0
+    },
+    {
+      "name": "running send strategy and stop fit inside composer",
+      "controls": [
+        {
+          "name": "添加文件（也可粘贴或拖入）",
+          "left": 997.375,
+          "right": 1029.375,
+          "bottom": 856
+        },
+        {
+          "name": "插入引用（@）",
+          "left": 1035.375,
+          "right": 1067.375,
+          "bottom": 856
+        },
+        {
+          "name": "思考等级",
+          "left": 1073.375,
+          "right": 1149.375,
+          "bottom": 854
+        },
+        {
+          "name": "停止",
+          "left": 1186.8125,
+          "right": 1256.8125,
+          "bottom": 856
+        },
+        {
+          "name": "本条消息的派发策略：引导",
+          "left": 1262.8125,
+          "right": 1327.8125,
+          "bottom": 856
+        },
+        {
+          "name": "发送",
+          "left": 1327.8125,
+          "right": 1401.8125,
+          "bottom": 858
+        }
+      ]
+    },
+    {
+      "name": "stop settles through server"
+    }
+  ],
+  "errors": [],
+  "warnings": ["未知记录类型：change.summary"],
+  "scripts": [
+    "/assets/index-B5CFhkaa.js",
+    "/assets/shared-ui-CrZ55Dwu.js",
+    "/assets/SettingsModal-Cg0n4cpS.js",
+    "/assets/index-B5CFhkaa.js",
+    "/assets/shared-ui-CrZ55Dwu.js",
+    "/assets/SettingsModal-Cg0n4cpS.js",
+    "/assets/Workbench-DFZmC_zP.js"
+  ]
+}

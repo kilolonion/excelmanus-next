@@ -1,0 +1,16 @@
+node_modules/
+dist/
+coverage/
+*.log
+.DS_Store
+packages/desktop/build/
+.agents/
+.claude/
+.vscode/
+
+# Local credentials and runtime artifacts (public repository)
+.env
+.env.*
+!.env.example
+.excelmanus/
+.playwright-mcp/

@@ -1,0 +1,70 @@
+{
+  "meta": {
+    "test": "A1b-resource-mismatch-scan",
+    "baseSeed": 20260929,
+    "elapsedMs": 108334
+  },
+  "summary": {
+    "sequencesOk": 908,
+    "totalMismatch": 92,
+    "resourceMismatch": 4
+  },
+  "resourceMismatches": [
+    {
+      "seqIndex": 228,
+      "seed": 20261157,
+      "opIndex": 14,
+      "opType": "remove-cols",
+      "commandId": "sheet.command.remove-col-by-range",
+      "diffs": [
+        {
+          "path": "resources.10.data",
+          "a": "{\"s1\":{\"cachedFilteredOut\":[],\"filterColumns\":[],\"ref\":{\"endColumn\":8,\"endRow\":20,\"startColumn\":7,\"startRow\":16}},\"swxis12jK63A8y-JmqdvD\":{\"cachedFilteredOut\":[],\"filterColumns\":[],\"ref\":{\"endColumn\":8,\"endRow\":26,\"startColumn\":7,\"startRow\":16}}}",
+          "b": "{\"s1\":{\"cachedFilteredOut\":[],\"filterColumns\":[],\"ref\":{\"endColumn\":8,\"endRow\":20,\"startColumn\":7,\"startRow\":16}},\"swxis12jK63A8y-JmqdvD\":{\"cachedFilteredOut\":[],\"filterColumns\":[],\"ref\":{\"endColumn\":8,\"endRow\":35,\"startColumn\":7,\"startRow\":16}}}"
+        }
+      ]
+    },
+    {
+      "seqIndex": 388,
+      "seed": 20261317,
+      "opIndex": 35,
+      "opType": "remove-rows",
+      "commandId": "sheet.command.remove-row-by-range",
+      "diffs": [
+        {
+          "path": "resources.10.data",
+          "a": "{\"s2\":{\"cachedFilteredOut\":[],\"filterColumns\":[],\"ref\":{\"endColumn\":11,\"endRow\":86,\"startColumn\":8,\"startRow\":45}}}",
+          "b": "{\"s2\":{\"cachedFilteredOut\":[],\"filterColumns\":[],\"ref\":{\"endColumn\":11,\"endRow\":90,\"startColumn\":8,\"startRow\":45}}}"
+        }
+      ]
+    },
+    {
+      "seqIndex": 512,
+      "seed": 20261441,
+      "opIndex": 8,
+      "opType": "insert-cols",
+      "commandId": "sheet.command.insert-col-by-range",
+      "diffs": [
+        {
+          "path": "resources.10.data",
+          "a": "{\"s3\":{\"cachedFilteredOut\":[],\"filterColumns\":[],\"ref\":{\"endColumn\":14,\"endRow\":94,\"startColumn\":10,\"startRow\":29}}}",
+          "b": "{\"s3\":{\"cachedFilteredOut\":[],\"filterColumns\":[],\"ref\":{\"endColumn\":14,\"endRow\":99,\"startColumn\":10,\"startRow\":29}}}"
+        }
+      ]
+    },
+    {
+      "seqIndex": 779,
+      "seed": 20261708,
+      "opIndex": 15,
+      "opType": "remove-cols",
+      "commandId": "sheet.command.remove-col-by-range",
+      "diffs": [
+        {
+          "path": "resources.10.data",
+          "a": "{\"s1\":{\"cachedFilteredOut\":[],\"filterColumns\":[],\"ref\":{\"endColumn\":8,\"endRow\":25,\"startColumn\":6,\"startRow\":2}},\"s3\":{\"cachedFilteredOut\":[],\"filterColumns\":[],\"ref\":{\"endColumn\":1,\"endRow\":46,\"startColumn\":1,\"startRow\":24}}}",
+          "b": "{\"s1\":{\"cachedFilteredOut\":[],\"filterColumns\":[],\"ref\":{\"endColumn\":8,\"endRow\":30,\"startColumn\":6,\"startRow\":2}},\"s3\":{\"cachedFilteredOut\":[],\"filterColumns\":[],\"ref\":{\"endColumn\":1,\"endRow\":46,\"startColumn\":1,\"startRow\":24}}}"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,318 @@
+{
+  "meta": {
+    "test": "A1b-T3-fixed",
+    "sequences": 1000,
+    "baseSeed": 20260929,
+    "transportRules": [
+      "styles-subset(insert-sheet)",
+      "filter-reconcile(SHEET_FILTER_PLUGIN)"
+    ],
+    "node": "v24.1.0",
+    "ts": "2026-09-29T05:11:52.111Z",
+    "elapsedMs": 173633
+  },
+  "summary": {
+    "sequencesOk": 1000,
+    "sequencesMismatch": 0,
+    "totalOps": 34842,
+    "replayedMutations": 67671,
+    "replayFailures": 0,
+    "fixupStats": {
+      "insertSheetFixed": 1140,
+      "stylesBytes": 4348,
+      "filterReconcile": 6,
+      "reconcileOps": 6
+    },
+    "danglingByMutation": {}
+  },
+  "opStats": {
+    "clear-all": {
+      "executed": 684,
+      "ok": 684,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "set-value-string": {
+      "executed": 1822,
+      "ok": 1822,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "hide-rows": {
+      "executed": 719,
+      "ok": 719,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "autofill": {
+      "executed": 722,
+      "ok": 721,
+      "failed": 1,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "set-value-number": {
+      "executed": 2352,
+      "ok": 2352,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "show-cols": {
+      "executed": 758,
+      "ok": 758,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "set-value-boolean": {
+      "executed": 915,
+      "ok": 915,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "copy-down": {
+      "executed": 453,
+      "ok": 314,
+      "failed": 139,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "remove-filter": {
+      "executed": 491,
+      "ok": 491,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "merge": {
+      "executed": 975,
+      "ok": 975,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "move-rows": {
+      "executed": 751,
+      "ok": 744,
+      "failed": 7,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "set-value-empty": {
+      "executed": 919,
+      "ok": 919,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "move-sheet": {
+      "executed": 699,
+      "ok": 699,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "set-formula": {
+      "executed": 1222,
+      "ok": 1222,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "rename-sheet": {
+      "executed": 668,
+      "ok": 668,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "move-range": {
+      "executed": 945,
+      "ok": 944,
+      "failed": 1,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "set-filter-criteria": {
+      "executed": 732,
+      "ok": 723,
+      "failed": 9,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "clear-format": {
+      "executed": 714,
+      "ok": 714,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "add-cf": {
+      "executed": 710,
+      "ok": 710,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "clear-dv": {
+      "executed": 479,
+      "ok": 479,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "clear-content": {
+      "executed": 977,
+      "ok": 977,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "unmerge": {
+      "executed": 990,
+      "ok": 990,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "move-cols": {
+      "executed": 762,
+      "ok": 676,
+      "failed": 86,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "insert-sheet": {
+      "executed": 657,
+      "ok": 657,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "hide-cols": {
+      "executed": 701,
+      "ok": 701,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "delete-cf": {
+      "executed": 507,
+      "ok": 507,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "insert-cols": {
+      "executed": 988,
+      "ok": 910,
+      "failed": 78,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "sort-range": {
+      "executed": 754,
+      "ok": 754,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "remove-cols": {
+      "executed": 961,
+      "ok": 961,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "insert-rows": {
+      "executed": 1143,
+      "ok": 1131,
+      "failed": 12,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "copy-sheet": {
+      "executed": 483,
+      "ok": 483,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "set-style": {
+      "executed": 1696,
+      "ok": 1696,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "set-frozen": {
+      "executed": 439,
+      "ok": 439,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "remove-rows": {
+      "executed": 1173,
+      "ok": 1173,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "set-row-height": {
+      "executed": 925,
+      "ok": 925,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "set-filter": {
+      "executed": 663,
+      "ok": 577,
+      "failed": 86,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "set-col-width": {
+      "executed": 980,
+      "ok": 980,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "cancel-frozen": {
+      "executed": 456,
+      "ok": 456,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "show-rows": {
+      "executed": 682,
+      "ok": 682,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "remove-sheet": {
+      "executed": 481,
+      "ok": 481,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    },
+    "add-dv": {
+      "executed": 694,
+      "ok": 694,
+      "failed": 0,
+      "causedDiff": 0,
+      "danglingAttributed": 0
+    }
+  },
+  "mismatches": []
+}

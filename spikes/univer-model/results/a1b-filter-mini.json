@@ -1,0 +1,322 @@
+{
+  "results": [
+    {
+      "step": "remove-rows-inside-filter",
+      "okA": true,
+      "emittedIds": [
+        "sheet.mutation.remove-rows",
+        "sheet.mutation.set-filter-range"
+      ],
+      "emittedParams": [
+        {
+          "id": "sheet.mutation.remove-rows",
+          "params": {
+            "unitId": "wb-a1b-mini",
+            "subUnitId": "s1",
+            "range": {
+              "startRow": 20,
+              "endRow": 23,
+              "startColumn": 0,
+              "endColumn": 11
+            },
+            "trigger": "sheet.command.remove-row-by-range"
+          }
+        },
+        {
+          "id": "sheet.mutation.set-filter-range",
+          "params": {
+            "unitId": "wb-a1b-mini",
+            "subUnitId": "s1",
+            "range": {
+              "startRow": 10,
+              "startColumn": 2,
+              "endRow": 46,
+              "endColumn": 8
+            },
+            "trigger": "sheet.command.remove-row-by-range",
+            "filteredOutRows": []
+          }
+        }
+      ],
+      "filterA": "{\"s1\":{\"ref\":{\"startRow\":10,\"startColumn\":2,\"endRow\":46,\"endColumn\":8},\"filterColumns\":[],\"cachedFilteredOut\":[]}}",
+      "emittedBeforeCleared": "[\"sheet.mutation.set-filter-range\",\"formula.mutation.set-trigger-formula-calculation-start\"]",
+      "perMode": {
+        "collab": {
+          "diffs": 0,
+          "filterB": "{\"s1\":{\"ref\":{\"startRow\":10,\"startColumn\":2,\"endRow\":46,\"endColumn\":8},\"filterColumns\":[],\"cachedFilteredOut\":[]}}"
+        },
+        "plain": {
+          "diffs": 0,
+          "filterB": "{\"s1\":{\"ref\":{\"startRow\":10,\"startColumn\":2,\"endRow\":46,\"endColumn\":8},\"filterColumns\":[],\"cachedFilteredOut\":[]}}"
+        },
+        "syncoff": {
+          "diffs": 0,
+          "filterB": "{\"s1\":{\"ref\":{\"startRow\":10,\"startColumn\":2,\"endRow\":46,\"endColumn\":8},\"filterColumns\":[],\"cachedFilteredOut\":[]}}"
+        }
+      }
+    },
+    {
+      "step": "remove-rows-after-filter",
+      "okA": true,
+      "emittedIds": [
+        "sheet.mutation.remove-rows"
+      ],
+      "emittedParams": [
+        {
+          "id": "sheet.mutation.remove-rows",
+          "params": {
+            "unitId": "wb-a1b-mini",
+            "subUnitId": "s1",
+            "range": {
+              "startRow": 52,
+              "endRow": 55,
+              "startColumn": 0,
+              "endColumn": 11
+            },
+            "trigger": "sheet.command.remove-row-by-range"
+          }
+        }
+      ],
+      "filterA": "{\"s1\":{\"ref\":{\"startRow\":10,\"startColumn\":2,\"endRow\":50,\"endColumn\":8},\"filterColumns\":[],\"cachedFilteredOut\":[]}}",
+      "emittedBeforeCleared": "[\"sheet.mutation.set-filter-range\",\"formula.mutation.set-trigger-formula-calculation-start\"]",
+      "perMode": {
+        "collab": {
+          "diffs": 0,
+          "filterB": "{\"s1\":{\"ref\":{\"startRow\":10,\"startColumn\":2,\"endRow\":50,\"endColumn\":8},\"filterColumns\":[],\"cachedFilteredOut\":[]}}"
+        },
+        "plain": {
+          "diffs": 0,
+          "filterB": "{\"s1\":{\"ref\":{\"startRow\":10,\"startColumn\":2,\"endRow\":50,\"endColumn\":8},\"filterColumns\":[],\"cachedFilteredOut\":[]}}"
+        },
+        "syncoff": {
+          "diffs": 0,
+          "filterB": "{\"s1\":{\"ref\":{\"startRow\":10,\"startColumn\":2,\"endRow\":50,\"endColumn\":8},\"filterColumns\":[],\"cachedFilteredOut\":[]}}"
+        }
+      }
+    },
+    {
+      "step": "insert-rows-inside-filter",
+      "okA": true,
+      "emittedIds": [
+        "sheet.mutation.insert-row",
+        "sheet.mutation.set-filter-range"
+      ],
+      "emittedParams": [
+        {
+          "id": "sheet.mutation.insert-row",
+          "params": {
+            "unitId": "wb-a1b-mini",
+            "subUnitId": "s1",
+            "range": {
+              "startRow": 30,
+              "endRow": 31,
+              "startColumn": 0,
+              "endColumn": 11,
+              "rangeType": 1
+            },
+            "trigger": "sheet.command.insert-row-by-range"
+          }
+        },
+        {
+          "id": "sheet.mutation.set-filter-range",
+          "params": {
+            "unitId": "wb-a1b-mini",
+            "subUnitId": "s1",
+            "range": {
+              "startRow": 10,
+              "startColumn": 2,
+              "endRow": 52,
+              "endColumn": 8
+            },
+            "trigger": "sheet.command.insert-row-by-range",
+            "filteredOutRows": []
+          }
+        }
+      ],
+      "filterA": "{\"s1\":{\"ref\":{\"startRow\":10,\"startColumn\":2,\"endRow\":52,\"endColumn\":8},\"filterColumns\":[],\"cachedFilteredOut\":[]}}",
+      "emittedBeforeCleared": "[\"sheet.mutation.set-filter-range\",\"formula.mutation.set-trigger-formula-calculation-start\"]",
+      "perMode": {
+        "collab": {
+          "diffs": 0,
+          "filterB": "{\"s1\":{\"ref\":{\"startRow\":10,\"startColumn\":2,\"endRow\":52,\"endColumn\":8},\"filterColumns\":[],\"cachedFilteredOut\":[]}}"
+        },
+        "plain": {
+          "diffs": 0,
+          "filterB": "{\"s1\":{\"ref\":{\"startRow\":10,\"startColumn\":2,\"endRow\":52,\"endColumn\":8},\"filterColumns\":[],\"cachedFilteredOut\":[]}}"
+        },
+        "syncoff": {
+          "diffs": 0,
+          "filterB": "{\"s1\":{\"ref\":{\"startRow\":10,\"startColumn\":2,\"endRow\":52,\"endColumn\":8},\"filterColumns\":[],\"cachedFilteredOut\":[]}}"
+        }
+      }
+    },
+    {
+      "step": "remove-cols-inside-filter",
+      "okA": true,
+      "emittedIds": [
+        "sheet.mutation.remove-col",
+        "sheet.mutation.set-filter-range"
+      ],
+      "emittedParams": [
+        {
+          "id": "sheet.mutation.remove-col",
+          "params": {
+            "unitId": "wb-a1b-mini",
+            "subUnitId": "s1",
+            "range": {
+              "startRow": 0,
+              "startColumn": 4,
+              "endRow": 99,
+              "endColumn": 5
+            },
+            "trigger": "sheet.command.remove-col-by-range"
+          }
+        },
+        {
+          "id": "sheet.mutation.set-filter-range",
+          "params": {
+            "unitId": "wb-a1b-mini",
+            "subUnitId": "s1",
+            "range": {
+              "startRow": 10,
+              "startColumn": 2,
+              "endRow": 50,
+              "endColumn": 6
+            },
+            "trigger": "sheet.command.remove-col-by-range",
+            "filteredOutRows": []
+          }
+        }
+      ],
+      "filterA": "{\"s1\":{\"ref\":{\"startRow\":10,\"startColumn\":2,\"endRow\":50,\"endColumn\":6},\"filterColumns\":[],\"cachedFilteredOut\":[]}}",
+      "emittedBeforeCleared": "[\"sheet.mutation.set-filter-range\",\"formula.mutation.set-trigger-formula-calculation-start\"]",
+      "perMode": {
+        "collab": {
+          "diffs": 0,
+          "filterB": "{\"s1\":{\"ref\":{\"startRow\":10,\"startColumn\":2,\"endRow\":50,\"endColumn\":6},\"filterColumns\":[],\"cachedFilteredOut\":[]}}"
+        },
+        "plain": {
+          "diffs": 0,
+          "filterB": "{\"s1\":{\"ref\":{\"startRow\":10,\"startColumn\":2,\"endRow\":50,\"endColumn\":6},\"filterColumns\":[],\"cachedFilteredOut\":[]}}"
+        },
+        "syncoff": {
+          "diffs": 0,
+          "filterB": "{\"s1\":{\"ref\":{\"startRow\":10,\"startColumn\":2,\"endRow\":50,\"endColumn\":6},\"filterColumns\":[],\"cachedFilteredOut\":[]}}"
+        }
+      }
+    },
+    {
+      "step": "insert-cols-inside-filter",
+      "okA": true,
+      "emittedIds": [
+        "sheet.mutation.insert-col",
+        "sheet.mutation.set-filter-range"
+      ],
+      "emittedParams": [
+        {
+          "id": "sheet.mutation.insert-col",
+          "params": {
+            "unitId": "wb-a1b-mini",
+            "subUnitId": "s1",
+            "range": {
+              "startRow": 0,
+              "startColumn": 4,
+              "endRow": 99,
+              "endColumn": 5,
+              "rangeType": 2
+            },
+            "trigger": "sheet.command.insert-col-by-range"
+          }
+        },
+        {
+          "id": "sheet.mutation.set-filter-range",
+          "params": {
+            "unitId": "wb-a1b-mini",
+            "subUnitId": "s1",
+            "range": {
+              "startRow": 10,
+              "startColumn": 2,
+              "endRow": 50,
+              "endColumn": 10
+            },
+            "trigger": "sheet.command.insert-col-by-range",
+            "filteredOutRows": []
+          }
+        }
+      ],
+      "filterA": "{\"s1\":{\"ref\":{\"startRow\":10,\"startColumn\":2,\"endRow\":50,\"endColumn\":10},\"filterColumns\":[],\"cachedFilteredOut\":[]}}",
+      "emittedBeforeCleared": "[\"sheet.mutation.set-filter-range\",\"formula.mutation.set-trigger-formula-calculation-start\"]",
+      "perMode": {
+        "collab": {
+          "diffs": 0,
+          "filterB": "{\"s1\":{\"ref\":{\"startRow\":10,\"startColumn\":2,\"endRow\":50,\"endColumn\":10},\"filterColumns\":[],\"cachedFilteredOut\":[]}}"
+        },
+        "plain": {
+          "diffs": 0,
+          "filterB": "{\"s1\":{\"ref\":{\"startRow\":10,\"startColumn\":2,\"endRow\":50,\"endColumn\":10},\"filterColumns\":[],\"cachedFilteredOut\":[]}}"
+        },
+        "syncoff": {
+          "diffs": 0,
+          "filterB": "{\"s1\":{\"ref\":{\"startRow\":10,\"startColumn\":2,\"endRow\":50,\"endColumn\":10},\"filterColumns\":[],\"cachedFilteredOut\":[]}}"
+        }
+      }
+    },
+    {
+      "step": "write-below-filter",
+      "okA": true,
+      "emittedIds": [
+        "sheet.mutation.set-range-values"
+      ],
+      "emittedParams": [
+        {
+          "id": "sheet.mutation.set-range-values",
+          "params": {
+            "unitId": "wb-a1b-mini",
+            "subUnitId": "s1",
+            "cellValue": {
+              "51": {
+                "3": {
+                  "v": 7
+                },
+                "4": {
+                  "v": 7
+                },
+                "5": {
+                  "v": 7
+                }
+              },
+              "52": {
+                "3": {
+                  "v": 7
+                },
+                "4": {
+                  "v": 7
+                },
+                "5": {
+                  "v": 7
+                }
+              }
+            },
+            "trigger": "sheet.command.set-range-values"
+          }
+        }
+      ],
+      "filterA": "{\"s1\":{\"ref\":{\"startRow\":10,\"startColumn\":2,\"endRow\":59,\"endColumn\":8},\"filterColumns\":[],\"cachedFilteredOut\":[]}}",
+      "emittedBeforeCleared": "[\"sheet.mutation.set-filter-range\",\"formula.mutation.set-trigger-formula-calculation-start\"]",
+      "perMode": {
+        "collab": {
+          "diffs": 0,
+          "filterB": "{\"s1\":{\"ref\":{\"startRow\":10,\"startColumn\":2,\"endRow\":59,\"endColumn\":8},\"filterColumns\":[],\"cachedFilteredOut\":[]}}"
+        },
+        "plain": {
+          "diffs": 0,
+          "filterB": "{\"s1\":{\"ref\":{\"startRow\":10,\"startColumn\":2,\"endRow\":59,\"endColumn\":8},\"filterColumns\":[],\"cachedFilteredOut\":[]}}"
+        },
+        "syncoff": {
+          "diffs": 0,
+          "filterB": "{\"s1\":{\"ref\":{\"startRow\":10,\"startColumn\":2,\"endRow\":59,\"endColumn\":8},\"filterColumns\":[],\"cachedFilteredOut\":[]}}"
+        }
+      }
+    }
+  ]
+}

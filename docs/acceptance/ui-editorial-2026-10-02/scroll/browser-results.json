@@ -1,0 +1,215 @@
+{
+  "results": [
+    {
+      "name": "initial history follows latest",
+      "top": 4211,
+      "height": 665,
+      "total": 4876,
+      "gap": 0,
+      "anchor": "m-output-stp_JAM2--ERVfB5",
+      "offset": -438.875,
+      "outerTop": 0
+    },
+    {
+      "name": "streaming automatically follows",
+      "top": 4779,
+      "height": 665,
+      "total": 5444,
+      "gap": 0,
+      "anchor": "m-output-stp_5ixXhwOhKS8e",
+      "offset": -416.1875,
+      "outerTop": 0
+    },
+    {
+      "name": "upward wheel inside bottom threshold stays released",
+      "top": 4771,
+      "height": 665,
+      "total": 5660,
+      "gap": 224,
+      "anchor": "m-output-stp_5ixXhwOhKS8e",
+      "offset": -408.1875,
+      "outerTop": 0
+    },
+    {
+      "name": "explicit button resumes following",
+      "top": 5066,
+      "height": 665,
+      "total": 5731,
+      "gap": 0,
+      "anchor": "streaming",
+      "offset": -64.5,
+      "outerTop": 0
+    },
+    {
+      "name": "rapid upward wheels during stream",
+      "top": 4066,
+      "height": 665,
+      "total": 6090,
+      "gap": 1359,
+      "anchor": "m-output-stp_JAM2--ERVfB5",
+      "offset": -293.875,
+      "outerTop": 0
+    },
+    {
+      "name": "composer editing preserves history",
+      "top": 4066,
+      "height": 665,
+      "total": 6234,
+      "gap": 1503,
+      "anchor": "m-output-stp_JAM2--ERVfB5",
+      "offset": -293.875,
+      "outerTop": 0
+    },
+    {
+      "name": "composer arrow keys preserve history",
+      "top": 4066,
+      "height": 665,
+      "total": 6413,
+      "gap": 1682,
+      "anchor": "m-output-stp_JAM2--ERVfB5",
+      "offset": -293.875,
+      "outerTop": 0
+    },
+    {
+      "name": "viewport resize preserves visible message offset",
+      "top": 4066,
+      "height": 545,
+      "total": 6629,
+      "gap": 2018,
+      "anchor": "m-output-stp_JAM2--ERVfB5",
+      "offset": -293.875,
+      "outerTop": 0
+    },
+    {
+      "name": "keyboard PageUp stays released",
+      "top": 3561,
+      "height": 545,
+      "total": 6916,
+      "gap": 2810,
+      "anchor": "m-output-stp_c_7zUxm20_0t",
+      "offset": -379.5625,
+      "outerTop": 0
+    },
+    {
+      "name": "manual End at bottom resumes following",
+      "top": 6514,
+      "height": 545,
+      "total": 7059,
+      "gap": 0,
+      "anchor": "streaming",
+      "offset": -1512.5,
+      "outerTop": 0
+    },
+    {
+      "name": "native touch scroll stays released",
+      "top": 5639,
+      "height": 545,
+      "total": 7562,
+      "gap": 1378,
+      "anchor": "streaming",
+      "offset": -637.5,
+      "outerTop": 0
+    },
+    {
+      "name": "scrollbar drag stays released",
+      "top": 4964,
+      "height": 545,
+      "total": 7849,
+      "gap": 2340,
+      "anchor": "live-reasoning",
+      "offset": -10.5,
+      "outerTop": 0
+    },
+    {
+      "name": "message text selection stays released",
+      "top": 4964,
+      "height": 545,
+      "total": 8064,
+      "gap": 2555,
+      "anchor": "live-reasoning",
+      "offset": -10.5,
+      "outerTop": 0
+    },
+    {
+      "name": "manual downward wheel restores following",
+      "top": 7555,
+      "height": 545,
+      "total": 8100,
+      "gap": 0,
+      "anchor": "streaming",
+      "offset": -2553.5,
+      "outerTop": 0
+    },
+    {
+      "name": "historical reasoning disclosure stays readable",
+      "top": 0,
+      "height": 545,
+      "total": 8611,
+      "gap": 8066,
+      "anchor": "dsp_1ulNGdCk_3as",
+      "offset": 28,
+      "outerTop": 0
+    },
+    {
+      "name": "nested tool arguments scroll independently",
+      "top": 1871,
+      "height": 545,
+      "total": 9472,
+      "gap": 7056,
+      "anchor": "m-output-stp_rPPgGuq0bbom",
+      "offset": -387.78125,
+      "outerTop": 0
+    },
+    {
+      "name": "switching sessions restores reading position",
+      "top": 1683,
+      "height": 545,
+      "total": 9356,
+      "gap": 7128,
+      "anchor": "m-output-stp_rPPgGuq0bbom",
+      "offset": -387.625,
+      "outerTop": 0
+    },
+    {
+      "name": "stop and streaming finalization preserve reading position",
+      "top": 1683,
+      "height": 495,
+      "total": 5010,
+      "gap": 2832,
+      "anchor": "m-output-stp_rPPgGuq0bbom",
+      "offset": -387.625,
+      "outerTop": 0
+    },
+    {
+      "name": "follow after stream ends",
+      "top": 4515,
+      "height": 495,
+      "total": 5010,
+      "gap": 0,
+      "anchor": "m-output-stp_5ixXhwOhKS8e",
+      "offset": -152.1875,
+      "outerTop": 0
+    },
+    {
+      "name": "hidden panel remount restores reading position",
+      "top": 3715,
+      "height": 461,
+      "total": 5010,
+      "gap": 834,
+      "anchor": "dsp_lDRXKF2Mhwhn",
+      "offset": -28.875,
+      "outerTop": 0
+    },
+    {
+      "name": "narrow sheet chat tabs restore reading position",
+      "top": 3715,
+      "height": 401,
+      "total": 5010,
+      "gap": 894,
+      "anchor": "dsp_lDRXKF2Mhwhn",
+      "offset": -28.875,
+      "outerTop": 0
+    }
+  ],
+  "errors": []
+}

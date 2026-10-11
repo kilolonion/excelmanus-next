@@ -1,0 +1,43 @@
+{
+  "okCopy": true,
+  "rawBytes": 2331,
+  "newSheetId": "PkPU87rPmNMA4TU2FQqMF",
+  "results": {
+    "raw": {
+      "addedBytes": 0,
+      "diffs": 90,
+      "diffSample": [
+        "sheets.PkPU87rPmNMA4TU2FQqMF.cellData.0.0.s",
+        "sheets.PkPU87rPmNMA4TU2FQqMF.cellData.0.1.s",
+        "sheets.PkPU87rPmNMA4TU2FQqMF.cellData.0.2.s",
+        "sheets.PkPU87rPmNMA4TU2FQqMF.cellData.0.3.s",
+        "sheets.PkPU87rPmNMA4TU2FQqMF.cellData.0.4.s"
+      ],
+      "danglingAfterReplay": 3,
+      "danglingAfterPostMutation": 3,
+      "stylesCountB": 3
+    },
+    "styles-subset": {
+      "addedBytes": 97,
+      "diffs": 0,
+      "diffSample": [],
+      "danglingAfterReplay": 0,
+      "danglingAfterPostMutation": 0,
+      "stylesCountB": 6
+    },
+    "inline": {
+      "addedBytes": 960,
+      "diffs": 90,
+      "diffSample": [
+        "sheets.PkPU87rPmNMA4TU2FQqMF.cellData.0.0.s",
+        "sheets.PkPU87rPmNMA4TU2FQqMF.cellData.0.1.s",
+        "sheets.PkPU87rPmNMA4TU2FQqMF.cellData.0.2.s",
+        "sheets.PkPU87rPmNMA4TU2FQqMF.cellData.0.3.s",
+        "sheets.PkPU87rPmNMA4TU2FQqMF.cellData.0.4.s"
+      ],
+      "danglingAfterReplay": 0,
+      "danglingAfterPostMutation": 0,
+      "stylesCountB": 3
+    }
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "summary": {
+    "total": 5,
+    "passed": 5,
+    "failed": []
+  },
+  "cases": [
+    {
+      "id": "E01",
+      "expectCode": "OUT_OF_WORKSPACE",
+      "actual": "OUT_OF_WORKSPACE",
+      "fsCheck": true,
+      "outsideDirUnchanged": true,
+      "pass": true
+    },
+    {
+      "id": "E02",
+      "expectCode": "OUT_OF_WORKSPACE",
+      "actual": "OUT_OF_WORKSPACE",
+      "fsCheck": true,
+      "outsideDirUnchanged": true,
+      "pass": true
+    },
+    {
+      "id": "E03",
+      "expectCode": "OUT_OF_WORKSPACE",
+      "actual": "OUT_OF_WORKSPACE",
+      "fsCheck": true,
+      "outsideDirUnchanged": true,
+      "pass": true
+    },
+    {
+      "id": "E03b",
+      "expectCode": "OUT_OF_WORKSPACE",
+      "actual": "OUT_OF_WORKSPACE",
+      "fsCheck": true,
+      "outsideDirUnchanged": true,
+      "pass": true
+    },
+    {
+      "id": "E04",
+      "expectCode": "NO_ERROR",
+      "actual": "NO_ERROR",
+      "fsCheck": true,
+      "outsideDirUnchanged": true,
+      "pass": true
+    }
+  ]
+}

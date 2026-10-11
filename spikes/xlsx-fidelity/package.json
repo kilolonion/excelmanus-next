@@ -1,0 +1,29 @@
+{
+  "name": "@excelmanus-spike/xlsx-fidelity",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "gen": "node scripts/gen-all.ts",
+    "cases": "node src/run-cases.ts"
+  },
+  "dependencies": {
+    "@univerjs/core": "1.0.2",
+    "@univerjs/engine-formula": "1.0.2",
+    "@univerjs/preset-sheets-node-core": "1.0.2",
+    "@univerjs/presets": "1.0.2",
+    "@univerjs/sheets": "1.0.2",
+    "@univerjs/sheets-conditional-formatting": "1.0.2",
+    "@univerjs/sheets-data-validation": "1.0.2",
+    "@univerjs/sheets-filter": "1.0.2",
+    "@univerjs/sheets-formula": "1.0.2",
+    "@univerjs/sheets-numfmt": "1.0.2",
+    "@univerjs/sheets-sort": "1.0.2",
+    "@xlsx/xlsx-populate": "0.2.2",
+    "exceljs": "4.4.0",
+    "fast-xml-parser": "5.11.1",
+    "fflate": "0.7.5",
+    "rxjs": "7.8.2"
+  }
+}

@@ -1,0 +1,111 @@
+{
+  "_readme": "M0 AI SDK 单步循环判据（由项目负责人编写，执行者不得删改用例或放宽期望；认为期望有误时报告负责人）。依据 03 §5.2、04 §2/§8.4/§9/§10、09 §2。每个用例都要保存原始请求/响应（脱敏：Authorization 头与任何 sk- 开头的串替换为 <redacted>）作为回放夹具。provider=mimo 指 @ai-sdk/openai-compatible 指向 MIMO_BASE_URL/MIMO_MODEL；provider=mock 指 ai/test 的 MockLanguageModel（只替代模型输出，不替代我们的代码）。",
+  "gatewayContract": {
+    "note": "被测对象是 spike 内实现的 ModelGateway.step()（03 §5.2 窄接口）。运行时侧只见中立格式：ContextItem[] 输入、StepEvent 异步迭代输出。AI SDK 类型只允许出现在 gateway 适配文件中，harness 代码 import 了 'ai' 或 '@ai-sdk/*' 的类型即判失败（mock 模型构造除外，放在单独的 fixtures 文件）。",
+    "stepEventKinds": [
+      "text.delta",
+      "reasoning.delta",
+      "tool.args.delta",
+      "tool.call",
+      "finish",
+      "usage",
+      "error"
+    ],
+    "toolsHaveNoExecute": "传给 streamText 的 tools 均无 execute；每次 step 只调用一次 streamText，且 stopWhen/maxSteps 使其只生成一步（断言：一次 step 内底层 doStream 被调用恰好 1 次）"
+  },
+  "cases": [
+    {
+      "id": "A01",
+      "provider": "mimo",
+      "title": "流式纯文本",
+      "input": "用一句话介绍你自己",
+      "expect": "收到 ≥2 个 text.delta；finish.reason=stop；usage.inputTokens>0 且 outputTokens>0；首个 delta 到达时间与总耗时都记录"
+    },
+    {
+      "id": "A02",
+      "provider": "mimo",
+      "title": "思考内容流式输出",
+      "input": "9.11 和 9.9 哪个大？简要回答",
+      "expect": "收到 ≥1 个 reasoning.delta（该模型返回 reasoning_content）；reasoning 与 text 分开；若没有 reasoning.delta，记录原始 SSE 片段说明 openai-compatible 是否丢弃了 reasoning_content"
+    },
+    {
+      "id": "A03",
+      "provider": "mimo",
+      "title": "单步工具调用（无 execute）",
+      "tools": ["workbook_read(path:string, range:string)"],
+      "input": "读取 sales.xlsx 的 Sheet1!A1:C5",
+      "expect": "收到 tool.call，name=workbook_read，参数通过 JSON Schema 校验；finish.reason=tool-calls；网关没有执行任何工具、没有发起第二次请求"
+    },
+    {
+      "id": "A04",
+      "provider": "mimo",
+      "title": "带思考的多轮 + 工具结果回传（09 §2 回归重点）",
+      "flow": "第 1 步同 A03 得到 tool.call → harness 构造中立格式 tool.result（固定小表）追加到 history → 第 2 步请求模型基于结果作答",
+      "expect": "第 2 步请求体中：①助手消息含第 1 步的 tool_calls；②tool 消息的 tool_call_id 与之对应；③记录第 1 步的思考内容是否被回传（字段名与位置写进报告，不预设对错）；第 2 步回答引用了表中数据"
+    },
+    {
+      "id": "A05",
+      "provider": "mimo",
+      "title": "中断",
+      "input": "从 1 数到 300，每个数字一行",
+      "expect": "收到首个 text.delta 后 200ms 调用 AbortController.abort()；step() 迭代在 1s 内结束，最后一个事件为 error(kind=aborted) 或迭代直接终止（二选一，报告是哪种）；无未处理的 Promise 拒绝；随后再发起一次普通 step 成功"
+    },
+    {
+      "id": "A06",
+      "provider": "mimo",
+      "title": "认证失败分类",
+      "setup": "使用错误的 API Key",
+      "expect": "产生 error 事件，分类为 auth（不可重试）；错误信息中不含请求头与密钥"
+    },
+    {
+      "id": "A07",
+      "provider": "mimo",
+      "title": "模型不存在分类",
+      "setup": "model=nonexistent-model-xyz",
+      "expect": "error 分类为 model_not_found 或 invalid_request（不可重试）；报告原始状态码与错误体摘要"
+    },
+    {
+      "id": "M01",
+      "provider": "mock",
+      "title": "429 + Retry-After 分类",
+      "setup": "mock 在 doStream 抛出 APICallError(statusCode=429, responseHeaders retry-after: 2)",
+      "expect": "error 分类为 rate_limit，retryable=true，retryAfterMs=2000（重试本身由运行时做，网关只分类）"
+    },
+    {
+      "id": "M02",
+      "provider": "mock",
+      "title": "流中断",
+      "setup": "mock 流输出 3 个 text-delta 后以 error 部分结束",
+      "expect": "先收到 3 个 text.delta，再收到 error 分类为 stream_interrupted，retryable=true（对应 04 §8.4 attempt.discarded）"
+    },
+    {
+      "id": "M03",
+      "provider": "mock",
+      "title": "上下文超限分类",
+      "setup": "mock 抛出 400，错误体含 context_length_exceeded / maximum context length 字样",
+      "expect": "error 分类为 context_overflow（04 §9：压缩后重试 1 次）"
+    },
+    {
+      "id": "M04",
+      "provider": "mock",
+      "title": "5xx 与网络错误",
+      "setup": "分别抛 500 APICallError 与 TypeError('fetch failed')",
+      "expect": "两者分类为 server_error / network，retryable=true"
+    },
+    {
+      "id": "M05",
+      "provider": "mock",
+      "title": "中立格式往返",
+      "setup": "构造含 user 文本、assistant 文本+思考（带 providerMetadata）+tool_call、tool.result 的中立 history",
+      "expect": "网关转换为 AI SDK ModelMessage 后传入 mock；mock 收到的 prompt 与预期逐字段一致；思考的 providerMetadata 原样出现在对应位置（04 §10 原始格式附加数据）"
+    }
+  ],
+  "deferred": {
+    "note": "03 §5/M0 要求国际与国产各两个提供商。当前只有 MiMo 一个真实 Key。以下在拿到 Key 后按同一用例集补跑，本轮报告里标为未验证：",
+    "providers": [
+      "OpenAI（@ai-sdk/openai）",
+      "Anthropic（@ai-sdk/anthropic）",
+      "DeepSeek（@ai-sdk/deepseek）"
+    ]
+  }
+}

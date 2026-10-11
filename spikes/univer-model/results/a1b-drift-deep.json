@@ -1,0 +1,57 @@
+[
+  {
+    "firstDiffOpIndex": 31,
+    "opType": "remove-rows",
+    "commandId": "sheet.command.remove-row-by-range",
+    "opParams": {
+      "unitId": "wb-a1b-388",
+      "subUnitId": "s2",
+      "range": {
+        "startRow": 48,
+        "startColumn": 0,
+        "endRow": 49,
+        "endColumn": 11
+      }
+    },
+    "emittedMutations": [
+      {
+        "id": "sheet.mutation.remove-rows",
+        "paramsPreview": "{\"unitId\":\"wb-a1b-388\",\"subUnitId\":\"s2\",\"range\":{\"startRow\":48,\"endRow\":49,\"startColumn\":0,\"endColumn\":11},\"trigger\":\"sheet.command.remove-row-by-range\"}"
+      },
+      {
+        "id": "sheet.mutation.set-filter-range",
+        "paramsPreview": "{\"unitId\":\"wb-a1b-388\",\"subUnitId\":\"s2\",\"range\":{\"startRow\":45,\"startColumn\":8,\"endRow\":54,\"endColumn\":11},\"trigger\":\"sheet.command.remove-row-by-range\",\"filteredOutRows\":[]}"
+      },
+      {
+        "id": "sheet.mutation.set-range-values",
+        "paramsPreview": "{\"unitId\":\"wb-a1b-388\",\"subUnitId\":\"s2\",\"cellValue\":{\"0\":{\"0\":{\"f\":\"=SUM(A1:A10)\",\"si\":null,\"v\":null,\"t\":null},\"1\":{\"f\":\"=SUM(A1:A10)\",\"si\":null,\"v\":null,\"t\":null},\"2\":{\"f\":\"=A1+B1\",\"si\":null,\"v\":null,\"t\":null},\"11\":{\"f\":\"=A1+B1\",\"si\":null,\"v\":null,\"t\":null}},\"2\":{\"10\":{\"f\":\"=A3+B3\",\"si\":null,\"v\":nu"
+      },
+      {
+        "id": "sheet.mutation.set-range-values",
+        "paramsPreview": "{\"subUnitId\":\"s2\",\"unitId\":\"wb-a1b-388\",\"cellValue\":{\"0\":{\"0\":{\"f\":\"=SUM(A1:A10)\",\"si\":null},\"1\":{\"f\":\"=SUM(A1:A10)\",\"si\":null},\"2\":{\"f\":\"=A1+B1\",\"si\":null},\"11\":{\"f\":\"=A1+B1\",\"si\":null}},\"2\":{\"10\":{\"f\":\"=A3+B3\",\"si\":null}},\"4\":{\"9\":{\"f\":\"=A5+B5\",\"si\":null}},\"5\":{\"7\":{\"f\":\"=A6+B6\",\"si\":null}},\"10\":{"
+      },
+      {
+        "id": "formula.mutation.set-formula-data",
+        "paramsPreview": "{\"formulaData\":{\"wb-a1b-388\":{\"s2\":{\"0\":{\"0\":{\"f\":\"=SUM(A1:A10)\"},\"1\":{\"f\":\"=SUM(A1:A10)\"},\"2\":{\"f\":\"=A1+B1\"},\"11\":{\"f\":\"=A1+B1\"}},\"2\":{\"10\":{\"f\":\"=A3+B3\"}},\"4\":{\"9\":{\"f\":\"=A5+B5\"}},\"5\":{\"7\":{\"f\":\"=A6+B6\"}},\"10\":{\"9\":{\"f\":\"=A11+B11\"}},\"11\":{\"4\":{\"f\":\"=A12+B12\"}},\"14\":{\"6\":{\"f\":\"=A15+B15\"}},\"15\":{\"5\""
+      },
+      {
+        "id": "formula.mutation.set-array-formula-data",
+        "paramsPreview": "{\"arrayFormulaRange\":{},\"arrayFormulaCellData\":{},\"trigger\":\"sheet.command.remove-row-by-range\"}"
+      }
+    ],
+    "diffsSample": [
+      {
+        "path": "resources.10.data",
+        "a": "{\"s2\":{\"cachedFilteredOut\":[],\"filterColumns\":[],\"ref\":{\"endColumn\":11,\"endRow\":86,\"startColumn\":8,\"startRow\":45}}}",
+        "b": "{\"s2\":{\"cachedFilteredOut\":[],\"filterColumns\":[],\"ref\":{\"endColumn\":11,\"endRow\":90,\"startColumn\":8,\"startRow\":45}}}"
+      }
+    ],
+    "filterResourceA": "{\"s2\":{\"ref\":{\"startRow\":45,\"startColumn\":8,\"endRow\":86,\"endColumn\":11},\"filterColumns\":[],\"cachedFilteredOut\":[]}}",
+    "filterResourceB": "{\"s2\":{\"ref\":{\"startRow\":45,\"startColumn\":8,\"endRow\":90,\"endColumn\":11},\"filterColumns\":[],\"cachedFilteredOut\":[]}}",
+    "filterResourceBPrev": "{\"s2\":{\"ref\":{\"startRow\":45,\"startColumn\":8,\"endRow\":56,\"endColumn\":11},\"filterColumns\":[],\"cachedFilteredOut\":[]}}",
+    "afterReconcileSetFilterRange": {
+      "diffs": 0,
+      "sample": []
+    }
+  }
+]

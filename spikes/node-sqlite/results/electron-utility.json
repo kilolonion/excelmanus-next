@@ -1,0 +1,15 @@
+{
+  "env": {
+    "name": "electron-utility",
+    "requestedElectron": "44.4.3",
+    "electron": "44.4.3",
+    "node": "v24.21.0"
+  },
+  "skipped": true,
+  "reason": "utilityProcess.fork 抛错 \"utilityProcess cannot be created before app is ready\"——本环境下 Electron 44.4.3 的 app.isReady() 持续 75s 为 false、whenReady 不 resolve（复现：/tmp/eapp 最小入口，type=browser 正常、--no-sandbox/disable-gpu/打包目录形态均不触发 ready）。推测与本 shell 会话无 GUI 交互上下文有关，未验证真实桌面会话下行为。Electron 44 utilityProcess 内 node:sqlite 可用性因此未实测。",
+  "evidence": [
+    "electron-main.mjs: app.ready fired: false (process.type=browser, electron=44.4.3)",
+    "electron-utility.mjs: fork failed: utilityProcess cannot be created before app is ready.",
+    "isReady 轮询 0→75s 恒为 false"
+  ]
+}

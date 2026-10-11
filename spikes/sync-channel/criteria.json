@@ -1,0 +1,105 @@
+{
+  "_readme": "M0 同步通道原型判据（由项目负责人编写，执行者不得删改用例或放宽期望；认为期望有误时报告负责人）。依据 11 §3、03 §4.1/§13、10 §1/§3.2、01 §5.3、AGENTS.md 红线 3/10/13。所有用例在真实边界运行：真实 HTTP 服务监听 127.0.0.1 随机端口、真实 WebSocket 客户端（ws 库，不用进程内调用）、真实 SQLite 文件（node:sqlite，os.tmpdir 下）。不得在测试中替换原型自己的代码。",
+  "prototypeScope": {
+    "server": "POST /api/v1/sync/ticket（Bearer 设备令牌）→ 一次性票据；GET /api/v1/sync?ticket= 升级为 WebSocket；hello/ping/pong/sub/unsub/rec/delta/snapshot/sub.ok/sub.error；session:<id> 主题；一个演示用写入口 POST /api/v1/_spike/sessions/{id}/append（写一条 session_log 记录，同一事务更新 sessions.last_seq 投影，提交后才推送）与 POST /api/v1/_spike/sessions/{id}/delta（推送瞬时 delta，不入库）",
+    "tokens": "设备令牌在库中只存 SHA-256 哈希（devices.token_hash）；票据同样只存哈希或只存在内存，30 秒过期，使用一次即作废",
+    "client": "最小客户端：连接、订阅带游标、按 seq 幂等去重、断线指数退避重连并自动以最后 seq 续传；客户端状态由纯函数 reduce(state, msg) 维护"
+  },
+  "cases": [
+    {
+      "id": "S01",
+      "title": "只监听 127.0.0.1",
+      "expect": "server.address().address === '127.0.0.1'；用本机非回环地址（若存在）连接被拒绝或不可达"
+    },
+    {
+      "id": "S02",
+      "title": "票据需要设备令牌",
+      "expect": "无 Authorization / 错误令牌 → 401，错误体符合 {error:{code,message,requestId}}；正确令牌 → 200 {ticket, expiresAt}"
+    },
+    {
+      "id": "S03",
+      "title": "票据一次性",
+      "expect": "同一票据第二次升级被拒绝（HTTP 401，不完成升级）"
+    },
+    {
+      "id": "S04",
+      "title": "票据过期",
+      "expect": "把票据有效期配置为 300ms，等待 500ms 后升级被拒绝"
+    },
+    {
+      "id": "S05",
+      "title": "升级阶段校验 Origin",
+      "expect": "Origin 为外部站点（如 https://evil.example）→ 拒绝升级（403）；Origin 为服务自身来源（http://127.0.0.1:<port>）或缺省（非浏览器客户端）→ 允许。缺省是否允许写入报告并说明理由"
+    },
+    {
+      "id": "S06",
+      "title": "升级阶段校验 Host",
+      "expect": "Host 为 evil.example:<port>（DNS 重绑定）→ 拒绝；Host 为 127.0.0.1:<port> 或 localhost:<port> → 允许。同时对 REST 端点校验 Host（/sync/ticket 带 evil Host → 拒绝）"
+    },
+    {
+      "id": "S07",
+      "title": "令牌不出现在 URL 与库明文中",
+      "expect": "测试结束后扫描 SQLite 文件字节与服务端全部日志输出：不含设备令牌明文、不含票据明文"
+    },
+    {
+      "id": "C01",
+      "title": "hello 与心跳",
+      "expect": "连接后首条消息是 hello{protocolVersion(整数), connectionId}；客户端 ping 得到 pong；心跳间隔配置为 200ms/超时 400ms 时，客户端停止回应后服务端在 ≤ 600ms 内关闭连接"
+    },
+    {
+      "id": "C02",
+      "title": "订阅与实时推送",
+      "expect": "sub session:A（无游标）→ sub.ok{headCursor}；之后每次 append 都收到 rec，seq 连续递增"
+    },
+    {
+      "id": "C03",
+      "title": "事务提交后才推送",
+      "expect": "在 append 实现中注入一个事务内失败（配置开关，例如 record.data.__failInTxn=true 时在更新投影后抛错）：客户端收不到该 rec；session_log 与 sessions.last_seq 都没有这条的痕迹；随后正常 append 的 seq 与之前连续（无空洞）"
+    },
+    {
+      "id": "C04",
+      "title": "游标续传：会话主题",
+      "expect": "客户端处理到 seq=N 后断开；期间追加 50 条；以 cursor=N 重新订阅 → 按序收到 N+1..N+50，无重复无缺失，之后切换为实时"
+    },
+    {
+      "id": "C05",
+      "title": "续传数据来自数据库",
+      "expect": "服务端进程重启（同一 SQLite 文件，新进程）后，客户端以 cursor=N 订阅仍完整续传 → 证明不依赖内存缓冲。必须用两个独立进程，中间 SIGKILL 第一个"
+    },
+    {
+      "id": "C06",
+      "title": "delta 不入库、snapshot 衔接",
+      "expect": "推送若干 delta（text 增量，同一 agentId/stepId）；断开重连续传后，客户端先收到补发的 rec，再收到一条 snapshot{text=迄今累积文本}，之后的新 delta 继续到达；session_log 中没有任何 delta 记录"
+    },
+    {
+      "id": "C07",
+      "title": "客户端幂等",
+      "expect": "服务端故意重复发送 seq≤游标的 rec（测试开关），reduce 后状态不变；reduce 是纯函数（同输入同输出，不触碰外部状态）"
+    },
+    {
+      "id": "C08",
+      "title": "未知消息类型",
+      "expect": "服务端发送 type='future.thing' 的消息 → 客户端记录一条警告并忽略，不抛错，后续消息正常处理"
+    },
+    {
+      "id": "C09",
+      "title": "多主题与退订",
+      "expect": "同一连接订阅 session:A 与 session:B，两者 rec 互不串；unsub session:A 后不再收到 A 的 rec"
+    },
+    {
+      "id": "C10",
+      "title": "断网 10 秒恢复（验收场景 11 的原型版）",
+      "expect": "客户端与服务端之间放一个本机 TCP 代理；持续 append（每 100ms 一条）期间代理切断 10 秒再恢复；客户端自动重连并续传；最终客户端 seq 集合 = 服务端 session_log 全集，无重复无缺失；记录重连耗时"
+    },
+    {
+      "id": "C11",
+      "title": "消息契约",
+      "expect": "所有服务端→客户端消息用 Zod schema 校验（spike 内定义，字段 camelCase）；客户端→服务端非法消息（缺字段、未知 type）→ 服务端回 error 消息或关闭，不崩溃"
+    },
+    {
+      "id": "P01",
+      "title": "续传吞吐",
+      "expect": "库中 10,000 条记录（每条 data ≈ 1KB），cursor=0 订阅到全部收完的耗时与服务端事件循环最大停顿；停顿 > 100ms 视为失败（续传必须分批并让出事件循环）"
+    }
+  ]
+}

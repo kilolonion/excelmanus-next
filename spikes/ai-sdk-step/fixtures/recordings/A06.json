@@ -1,0 +1,26 @@
+[
+  {
+    "url": "https://api.xiaomimimo.com/v1/chat/completions",
+    "method": "POST",
+    "requestHeaders": {
+      "authorization": "<redacted>",
+      "content-type": "application/json",
+      "user-agent": "ai-sdk/openai-compatible/3.0.53 ai-sdk/provider-utils/5.0.45 runtime/node.js/24"
+    },
+    "requestBody": "{\"model\":\"mimo-v2.6-flash\",\"messages\":[{\"role\":\"system\",\"content\":\"You are a helpful assistant.\"},{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true,\"stream_options\":{\"include_usage\":true}}",
+    "status": 401,
+    "responseHeaders": {
+      "cache-control": "no-cache, no-store, must-revalidate",
+      "connection": "keep-alive",
+      "content-length": "165",
+      "content-type": "application/json",
+      "date": "Tue, 29 Sep 2026 14:09:44 GMT",
+      "expires": "0",
+      "pragma": "no-cache",
+      "server": "MiFE/3.4.34",
+      "vary": "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
+      "x-mife-upstream-status": "401"
+    },
+    "responseBody": "{\n    \"error\": {\n        \"message\": \"Invalid API Key\",\n        \"param\": \"Please provide valid API Key\",\n        \"code\": \"401\",\n        \"type\": \"invalid_key\"\n    }\n}\n"
+  }
+]

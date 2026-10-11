@@ -1,0 +1,448 @@
+/* 视觉体系（16 §2，ADR 0011）：Tailwind CSS 4 + 一套浅/深 token。
+   层顺序：theme < base（preflight + 基础）< univer < components < utilities。 */
+@layer theme, base, univer, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/preflight.css" layer(base);
+@import "@univerjs/preset-sheets-core/lib/index.css" layer(univer);
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
+@import "tw-animate-css";
+@import "./design-system.css";
+@source "./";
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+@keyframes change-feedback-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes change-feedback-check {
+  from {
+    transform: scale(0.8);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+@keyframes change-feedback-expire {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+.change-feedback {
+  animation: change-feedback-enter 240ms ease-out both;
+}
+.change-feedback-check {
+  animation: change-feedback-check 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.change-feedback-progress {
+  animation: change-feedback-expire linear forwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .change-feedback,
+  .change-feedback-check,
+  .change-feedback-progress {
+    animation: none;
+  }
+  .change-feedback-progress {
+    display: none;
+  }
+}
+
+:root {
+  --base-font: 14px;
+  --background: #ffffff;
+  --card: #ffffff;
+  --popover: #ffffff;
+  --muted: #f5f7f8;
+  --secondary: #f5f7f8;
+  --accent: #e6f3ee;
+  --foreground: #17211e;
+  --foreground-secondary: #495951;
+  --muted-foreground: #64746c;
+  --primary: #16735d;
+  --primary-foreground: #fafaf9;
+  --border: #e4ebe8;
+  --border-strong: #cbd8d2;
+  --input: #a8bbb1;
+  --ring: #16735d;
+  --read: #16735d;
+  --read-soft: #e8f5ef;
+  --read-ink: #125d4b;
+  --warn: #d97706;
+  --warn-soft: #fef3c7;
+  --warn-ink: #92400e;
+  --ok: #059669;
+  --ok-soft: #ecfdf5;
+  --ok-ink: #065f46;
+  --destructive: #dc2626;
+  --destructive-foreground: #ffffff;
+  --destructive-soft: #fef2f2;
+  --destructive-ink: #991b1b;
+  --elev-xs: 0 1px 3px rgb(28 25 23 / 4%);
+  --elev-card: 0 2px 8px -2px rgb(28 25 23 / 5%), 0 12px 28px -12px rgb(28 25 23 / 7%);
+  --elev-composer: 0 2px 5px rgb(28 25 23 / 3%), 0 12px 36px -10px rgb(28 25 23 / 9%);
+  --ease-studio: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --elev-popover: 0 12px 32px -4px rgb(28 25 23 / 8%), 0 0 0 1px rgb(28 25 23 / 6%);
+  --elev-dialog: 0 24px 64px -12px rgb(28 25 23 / 28%);
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --background: #111917;
+  --card: #18231f;
+  --popover: #202e28;
+  --muted: #202e28;
+  --secondary: #202e28;
+  --accent: #2b3e34;
+  --foreground: #f5f5f4;
+  --foreground-secondary: #d6d3d1;
+  --muted-foreground: #a8a29e;
+  --primary: #71d8b2;
+  --primary-foreground: #10251b;
+  --border: #2a3b32;
+  --border-strong: #425b4d;
+  --input: #787d6f;
+  --ring: #71d8b2;
+  --read: #71d8b2;
+  --read-soft: #163c2d;
+  --read-ink: #b0efd7;
+  --warn: #fbbf24;
+  --warn-soft: #3a2a0c;
+  --warn-ink: #fcd34d;
+  --ok: #34d399;
+  --ok-soft: #0b2e22;
+  --ok-ink: #6ee7b7;
+  --destructive: #f87171;
+  --destructive-foreground: #1c1917;
+  --destructive-soft: #3b1414;
+  --destructive-ink: #fca5a5;
+  --elev-xs: 0 1px 2px rgb(0 0 0 / 30%);
+  --elev-card: 0 2px 8px -2px rgb(0 0 0 / 25%), 0 12px 28px -12px rgb(0 0 0 / 30%);
+  --elev-composer: 0 2px 5px rgb(0 0 0 / 15%), 0 12px 36px -10px rgb(0 0 0 / 35%);
+  --elev-popover: 0 12px 32px -4px rgb(0 0 0 / 55%), 0 0 0 1px rgb(255 255 255 / 6%);
+  --elev-dialog: 0 24px 64px -12px rgb(0 0 0 / 70%);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-*: initial;
+  --color-black: #000;
+  --color-white: #fff;
+  --color-transparent: transparent;
+  --color-current: currentColor;
+  --color-background: var(--background);
+  --color-card: var(--card);
+  --color-popover: var(--popover);
+  --color-muted: var(--muted);
+  --color-secondary: var(--secondary);
+  --color-accent: var(--accent);
+  --color-foreground: var(--foreground);
+  --color-foreground-secondary: var(--foreground-secondary);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-read: var(--read);
+  --color-read-soft: var(--read-soft);
+  --color-read-ink: var(--read-ink);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-warn-ink: var(--warn-ink);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-ok-ink: var(--ok-ink);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-destructive-soft: var(--destructive-soft);
+  --color-destructive-ink: var(--destructive-ink);
+
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, "PingFang SC", monospace;
+
+  --text-*: initial;
+  --text-2xs: calc(var(--base-font) * 11 / 14);
+  --text-2xs--line-height: calc(14 / 11);
+  --text-xs: calc(var(--base-font) * 12 / 14);
+  --text-xs--line-height: calc(16 / 12);
+  --text-sm: calc(var(--base-font) * 13 / 14);
+  --text-sm--line-height: calc(18 / 13);
+  --text-base: var(--base-font);
+  --text-base--line-height: calc(20 / 14);
+  --text-md: calc(var(--base-font) * 15 / 14);
+  --text-md--line-height: calc(20 / 15);
+  --text-lg: calc(var(--base-font) * 18 / 14);
+  --text-lg--line-height: calc(24 / 18);
+  --text-xl: calc(var(--base-font) * 22 / 14);
+  --text-xl--line-height: calc(28 / 22);
+  --text-2xl: calc(var(--base-font) * 28 / 14);
+  --text-2xl--line-height: calc(36 / 28);
+  --text-3xl: calc(var(--base-font) * 32 / 14);
+  --text-3xl--line-height: calc(42 / 32);
+
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+
+  --shadow-*: initial;
+  --shadow-xs: var(--elev-xs);
+  --shadow-card: var(--elev-card);
+  --shadow-composer: var(--elev-composer);
+  --shadow-popover: var(--elev-popover);
+  --shadow-dialog: var(--elev-dialog);
+
+  --animate-collapsible-down: collapsible-down 160ms ease-out;
+  --animate-collapsible-up: collapsible-up 120ms ease-in;
+  --animate-surface-in: surface-in 320ms var(--ease-studio) both;
+}
+
+@keyframes surface-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes collapsible-down {
+  from {
+    height: 0;
+  }
+  to {
+    height: var(--radix-collapsible-content-height);
+  }
+}
+@keyframes collapsible-up {
+  from {
+    height: var(--radix-collapsible-content-height);
+  }
+  to {
+    height: 0;
+  }
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-size: var(--base-font);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--read) 22%, transparent);
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+  /* Univer 守卫（B5.2）：Univer 1.0.2 的样式按"无 preflight"编写，在其 DOM 内撤销 preflight。
+     Univer 深色模式会给 html 加 univer-dark，故排除 html/body，避免整页回到浏览器默认样式。 */
+  :is(.univer-host, :not(html, body):is([class*="univer-"], [id^="univer"])):not(
+    [data-em-overlay],
+    [data-em-overlay] *
+  ),
+  :is(.univer-host, :not(html, body):is([class*="univer-"], [id^="univer"]))
+    :is(*, ::before, ::after, ::placeholder):not([data-em-overlay], [data-em-overlay] *) {
+    all: revert-layer;
+  }
+}
+
+@layer components {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
+  }
+  body.resizing {
+    cursor: col-resize;
+    user-select: none;
+  }
+  body.resizing .univer-host {
+    pointer-events: none;
+  }
+
+  /* Markdown 正文（marked 生成的 HTML 无法加工具类） */
+  .md {
+    overflow-wrap: anywhere;
+  }
+  .md > :first-child {
+    margin-top: 0;
+  }
+  .md > :last-child {
+    margin-bottom: 0;
+  }
+  .md :is(p, ul, ol, blockquote, pre, table) {
+    margin: 0 0 10px;
+  }
+  .md :is(h1, h2, h3, h4) {
+    margin: 16px 0 6px;
+    font-size: var(--text-md);
+    line-height: 1.4;
+  }
+  .md h1 {
+    font-size: var(--text-lg);
+  }
+  .md ul {
+    list-style: disc;
+    padding-left: 22px;
+  }
+  .md ol {
+    list-style: decimal;
+    padding-left: 22px;
+  }
+  .md li + li {
+    margin-top: 2px;
+  }
+  .md li::marker {
+    color: var(--muted-foreground);
+  }
+  .md strong {
+    font-weight: 600;
+  }
+  .md a:not([href^="#range="]) {
+    color: var(--read-ink);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .md blockquote {
+    padding-left: 12px;
+    border-left: 3px solid var(--border-strong);
+    color: var(--foreground-secondary);
+  }
+  .md hr {
+    border-top: 1px solid var(--border);
+    margin: 14px 0;
+  }
+  .md code {
+    padding: 1px 5px;
+    border-radius: var(--radius-xs);
+    background: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+  }
+  .md pre {
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--muted);
+    overflow-x: auto;
+    line-height: 1.55;
+  }
+  .md pre code {
+    padding: 0;
+    background: none;
+  }
+  .md table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
+    font-size: var(--text-sm);
+    font-variant-numeric: tabular-nums;
+  }
+  .md :is(th, td) {
+    padding: 5px 10px;
+    border: 1px solid var(--border);
+    text-align: left;
+    white-space: nowrap;
+  }
+  .md th {
+    background: var(--muted);
+    font-weight: 600;
+  }
+  /* 正文区域引用：可点击定位，悬停预览（02 §4.1） */
+  .md a[href^="#range="] {
+    padding: 0 4px;
+    border: 1px dashed color-mix(in srgb, var(--read) 50%, transparent);
+    border-radius: var(--radius-xs);
+    background: var(--read-soft);
+    color: var(--read-ink);
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    font-variant-numeric: tabular-nums slashed-zero;
+    white-space: nowrap;
+  }
+  .md a[href^="#range="]:hover {
+    border-style: solid;
+  }
+}
+
+@layer utilities {
+  .reasoning-slider [data-orientation="horizontal"] {
+    height: 40px;
+    border-radius: 999px;
+    background: var(--muted);
+  }
+  .reasoning-slider [data-orientation="horizontal"] > span {
+    background: #387ef7;
+  }
+  .reasoning-slider :has(> [role="slider"]) {
+    z-index: 1;
+  }
+  .reasoning-slider [role="slider"] {
+    position: relative;
+    z-index: 1;
+    width: 40px;
+    height: 40px;
+    border-color: var(--border);
+    background: var(--card);
+  }
+  .reasoning-scale[data-unset] [data-orientation="horizontal"] > span {
+    background: transparent;
+  }
+  .reasoning-scale[data-unset] [role="slider"] {
+    opacity: 0.4;
+  }
+  .composer-submit svg.lucide-square {
+    width: 14px;
+    height: 14px;
+    fill: currentColor;
+    stroke-width: 0;
+  }
+}

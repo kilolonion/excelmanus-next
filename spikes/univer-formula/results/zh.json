@@ -1,0 +1,63 @@
+{
+  "meta": {
+    "test": "A2-zh",
+    "ts": "2026-09-29T06:13:32.937Z"
+  },
+  "results": {
+    "s1a": {
+      "formula": "=销售数据!A1*2",
+      "expect": 10,
+      "ok": true,
+      "wait": "done",
+      "v": 10,
+      "f": "=销售数据!A1*2",
+      "valueOk": true
+    },
+    "s1b": {
+      "formula": "='销售数据'!A1+1",
+      "expect": 6,
+      "ok": true,
+      "wait": "done",
+      "v": 6,
+      "f": "='销售数据'!A1+1",
+      "valueOk": true
+    },
+    "s2": {
+      "formula": "=销售数据!A1*税率",
+      "expect": 0.65,
+      "definedNameCmdOk": true,
+      "ok": true,
+      "wait": "done",
+      "v": 0.65,
+      "f": "=销售数据!A1*税率",
+      "valueOk": true
+    },
+    "s4": {
+      "formula": "=LEN(\"你好，世界\")",
+      "expect": 5,
+      "ok": true,
+      "wait": "done",
+      "v": 5,
+      "f": "=LEN(\"你好，世界\")",
+      "valueOk": true
+    },
+    "s3_zhFn": {
+      "formula": "=求和(Data!A1:A10)",
+      "expect": 55,
+      "ok": true,
+      "wait": "done",
+      "v": "#NAME?",
+      "f": "=求和(Data!A1:A10)",
+      "valueOk": false
+    },
+    "s3_enFnInZh": {
+      "formula": "=SUM(Data!A1:A10)",
+      "expect": 55,
+      "ok": true,
+      "wait": "done",
+      "v": 55,
+      "f": "=SUM(Data!A1:A10)",
+      "valueOk": true
+    }
+  }
+}

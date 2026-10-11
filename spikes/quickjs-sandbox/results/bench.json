@@ -1,0 +1,51 @@
+{
+  "platform": {
+    "os": "darwin",
+    "arch": "arm64",
+    "node": "v24.1.0"
+  },
+  "loop100k": {
+    "n": 15,
+    "min": 2.32,
+    "p50": 2.7,
+    "p95": 16.9,
+    "max": 16.9,
+    "criterionMs": 1000,
+    "pass": true
+  },
+  "transfer50kRows": {
+    "n": 15,
+    "min": 38.26,
+    "p50": 39.47,
+    "p95": 65.12,
+    "max": 65.12,
+    "hostSdkWaitMs": {
+      "n": 15,
+      "min": 2.53,
+      "p50": 3.01,
+      "p95": 6.97,
+      "max": 6.97
+    },
+    "criterionMs": 1000,
+    "pass": true,
+    "sumMatches": true
+  },
+  "coldStart": {
+    "criterionMs": 300,
+    "withPrewarmPool": {
+      "n": 20,
+      "min": 0.32,
+      "p50": 0.66,
+      "p95": 1.33,
+      "max": 8.26
+    },
+    "withoutPrewarmPool": {
+      "n": 10,
+      "min": 38.23,
+      "p50": 53.6,
+      "p95": 55.99,
+      "max": 55.99
+    },
+    "pass": true
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "before": {
+    "sheets": [
+      {
+        "name": "Copy",
+        "sheetId": "2",
+        "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id": "rId2"
+      },
+      {
+        "name": "Sheet1",
+        "sheetId": "1",
+        "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id": "rId1",
+        "state": "hidden"
+      }
+    ],
+    "filters": 1,
+    "links": 1,
+    "formulas": ["A2*2", "A2*2", "A3*2", "A4*2", "A5*2"]
+  },
+  "afterLibreOffice": {
+    "sheets": [
+      {
+        "name": "Copy",
+        "sheetId": "1",
+        "state": "visible",
+        "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id": "rId3"
+      },
+      {
+        "name": "Sheet1",
+        "sheetId": "2",
+        "state": "hidden",
+        "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id": "rId4"
+      }
+    ],
+    "filters": 1,
+    "links": 1,
+    "formulas": ["A2*2", "A3*2", "A4*2", "A5*2", "A2*2"]
+  },
+  "checkedAt": "2026-10-10T05:09:13.458901+00:00",
+  "browserVisualVerified": false
+}

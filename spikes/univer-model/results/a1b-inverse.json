@@ -1,0 +1,1732 @@
+{
+  "meta": {
+    "test": "A1b-inverse",
+    "perOpSeqs": 25,
+    "seqLevel": 300,
+    "baseSeed": 20260929,
+    "node": "v24.1.0",
+    "ts": "2026-09-29T05:24:51.244Z",
+    "elapsedMs": 77877
+  },
+  "perOp": {
+    "perOp": {
+      "clear-all": {
+        "total": 17,
+        "restored": 17,
+        "failedApply": 0,
+        "examples": []
+      },
+      "set-value-string": {
+        "total": 54,
+        "restored": 54,
+        "failedApply": 0,
+        "examples": []
+      },
+      "hide-rows": {
+        "total": 17,
+        "restored": 17,
+        "failedApply": 0,
+        "examples": []
+      },
+      "autofill": {
+        "total": 18,
+        "restored": 18,
+        "failedApply": 0,
+        "examples": []
+      },
+      "set-value-number": {
+        "total": 71,
+        "restored": 71,
+        "failedApply": 0,
+        "examples": []
+      },
+      "show-cols": {
+        "total": 26,
+        "restored": 26,
+        "failedApply": 0,
+        "examples": []
+      },
+      "set-value-boolean": {
+        "total": 18,
+        "restored": 18,
+        "failedApply": 0,
+        "examples": []
+      },
+      "copy-down": {
+        "total": 17,
+        "restored": 17,
+        "failedApply": 0,
+        "examples": []
+      },
+      "remove-filter": {
+        "total": 7,
+        "restored": 7,
+        "failedApply": 0,
+        "examples": []
+      },
+      "merge": {
+        "total": 22,
+        "restored": 22,
+        "failedApply": 0,
+        "examples": []
+      },
+      "move-rows": {
+        "total": 16,
+        "restored": 16,
+        "failedApply": 0,
+        "examples": []
+      },
+      "set-value-empty": {
+        "total": 28,
+        "restored": 28,
+        "failedApply": 0,
+        "examples": []
+      },
+      "move-sheet": {
+        "total": 15,
+        "restored": 15,
+        "failedApply": 0,
+        "examples": []
+      },
+      "set-formula": {
+        "total": 25,
+        "restored": 25,
+        "failedApply": 0,
+        "examples": []
+      },
+      "rename-sheet": {
+        "total": 23,
+        "restored": 23,
+        "failedApply": 0,
+        "examples": []
+      },
+      "move-range": {
+        "total": 21,
+        "restored": 21,
+        "failedApply": 0,
+        "examples": []
+      },
+      "set-filter-criteria": {
+        "total": 22,
+        "restored": 22,
+        "failedApply": 0,
+        "examples": []
+      },
+      "clear-format": {
+        "total": 19,
+        "restored": 19,
+        "failedApply": 0,
+        "examples": []
+      },
+      "add-cf": {
+        "total": 19,
+        "restored": 19,
+        "failedApply": 0,
+        "examples": []
+      },
+      "clear-dv": {
+        "total": 11,
+        "restored": 11,
+        "failedApply": 0,
+        "examples": []
+      },
+      "clear-content": {
+        "total": 34,
+        "restored": 34,
+        "failedApply": 0,
+        "examples": []
+      },
+      "unmerge": {
+        "total": 20,
+        "restored": 20,
+        "failedApply": 0,
+        "examples": []
+      },
+      "move-cols": {
+        "total": 21,
+        "restored": 21,
+        "failedApply": 0,
+        "examples": []
+      },
+      "insert-sheet": {
+        "total": 20,
+        "restored": 20,
+        "failedApply": 0,
+        "examples": []
+      },
+      "hide-cols": {
+        "total": 17,
+        "restored": 17,
+        "failedApply": 0,
+        "examples": []
+      },
+      "delete-cf": {
+        "total": 21,
+        "restored": 21,
+        "failedApply": 0,
+        "examples": []
+      },
+      "insert-cols": {
+        "total": 27,
+        "restored": 27,
+        "failedApply": 0,
+        "examples": []
+      },
+      "sort-range": {
+        "total": 13,
+        "restored": 13,
+        "failedApply": 0,
+        "examples": []
+      },
+      "remove-cols": {
+        "total": 34,
+        "restored": 34,
+        "failedApply": 0,
+        "examples": []
+      },
+      "insert-rows": {
+        "total": 23,
+        "restored": 23,
+        "failedApply": 0,
+        "examples": []
+      },
+      "copy-sheet": {
+        "total": 9,
+        "restored": 9,
+        "failedApply": 0,
+        "examples": []
+      },
+      "set-style": {
+        "total": 47,
+        "restored": 47,
+        "failedApply": 0,
+        "examples": []
+      },
+      "set-frozen": {
+        "total": 12,
+        "restored": 12,
+        "failedApply": 0,
+        "examples": []
+      },
+      "remove-rows": {
+        "total": 23,
+        "restored": 23,
+        "failedApply": 0,
+        "examples": []
+      },
+      "set-row-height": {
+        "total": 21,
+        "restored": 21,
+        "failedApply": 0,
+        "examples": []
+      },
+      "set-filter": {
+        "total": 13,
+        "restored": 13,
+        "failedApply": 0,
+        "examples": []
+      },
+      "set-col-width": {
+        "total": 11,
+        "restored": 11,
+        "failedApply": 0,
+        "examples": []
+      },
+      "show-rows": {
+        "total": 16,
+        "restored": 16,
+        "failedApply": 0,
+        "examples": []
+      },
+      "cancel-frozen": {
+        "total": 13,
+        "restored": 13,
+        "failedApply": 0,
+        "examples": []
+      },
+      "remove-sheet": {
+        "total": 9,
+        "restored": 3,
+        "failedApply": 0,
+        "examples": [
+          "seq5 op17 inv=2 applyFail=0 diffs=sheetOrder.length|sheetOrder.1|sheetOrder.2",
+          "seq7 op2 inv=3 applyFail=0 diffs=sheetOrder.length|sheetOrder.0|sheetOrder.1",
+          "seq8 op0 inv=3 applyFail=0 diffs=sheetOrder.length|sheetOrder.0|sheetOrder.1"
+        ]
+      },
+      "add-dv": {
+        "total": 18,
+        "restored": 18,
+        "failedApply": 0,
+        "examples": []
+      }
+    },
+    "opsTotal": 888,
+    "captureMsTotal": 1473.9508809999918,
+    "applyMsTotal": 1020.1785470000024,
+    "inverseBytesTotal": 1712447,
+    "preimageBytesTotal": 1606244
+  },
+  "seqLevel": {
+    "restored": 240,
+    "restoredCovered": 65,
+    "coveredSeqs": 65,
+    "SEQ_LEVEL": 300,
+    "totalOps": 10437,
+    "captureMsTotal": 16196.030517000043,
+    "applyMsTotal": 37838.346503999936,
+    "inverseBytesTotal": 19900079,
+    "failures": [
+      {
+        "seq": 5,
+        "seed": 20260934,
+        "diffCount": 3,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 2
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "remove-sheet",
+          "set-value-empty",
+          "insert-sheet",
+          "set-col-width",
+          "remove-cols",
+          "clear-all",
+          "remove-cols",
+          "move-cols",
+          "unmerge",
+          "set-value-number"
+        ]
+      },
+      {
+        "seq": 7,
+        "seed": 20260936,
+        "diffCount": 7,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 1
+          },
+          {
+            "path": "sheetOrder.0",
+            "a": "s1",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          },
+          {
+            "path": "sheets.s1.cellData.52.6",
+            "a": {
+              "v": 0,
+              "t": 3
+            }
+          }
+        ],
+        "opTypes": [
+          "remove-rows",
+          "copy-down",
+          "set-value-number",
+          "set-value-string",
+          "autofill",
+          "set-filter-criteria",
+          "set-formula",
+          "show-cols",
+          "remove-rows",
+          "clear-content"
+        ]
+      },
+      {
+        "seq": 8,
+        "seed": 20260937,
+        "diffCount": 4,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 1
+          },
+          {
+            "path": "sheetOrder.0",
+            "a": "s1",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "insert-rows",
+          "set-style",
+          "rename-sheet",
+          "show-cols",
+          "hide-rows",
+          "add-cf",
+          "delete-cf",
+          "set-value-string",
+          "copy-down",
+          "hide-rows"
+        ]
+      },
+      {
+        "seq": 9,
+        "seed": 20260938,
+        "diffCount": 2,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 2
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "hide-cols",
+          "unmerge",
+          "move-cols",
+          "remove-cols",
+          "add-dv",
+          "clear-content",
+          "set-value-string",
+          "set-frozen",
+          "set-style",
+          "set-style"
+        ]
+      },
+      {
+        "seq": 15,
+        "seed": 20260944,
+        "diffCount": 2,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 2
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "rename-sheet",
+          "clear-all",
+          "hide-rows",
+          "clear-dv",
+          "set-value-string",
+          "set-value-number",
+          "move-sheet",
+          "remove-sheet",
+          "hide-cols",
+          "copy-down"
+        ]
+      },
+      {
+        "seq": 19,
+        "seed": 20260948,
+        "diffCount": 9,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 1
+          },
+          {
+            "path": "sheetOrder.0",
+            "a": "s1",
+            "b": "s2"
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          },
+          {
+            "path": "sheets.s1.cellData.18.2.f",
+            "a": "=A19+B19",
+            "b": "=A18+B18"
+          }
+        ],
+        "opTypes": [
+          "set-value-number",
+          "remove-cols",
+          "show-cols",
+          "remove-cols",
+          "set-style",
+          "clear-content",
+          "add-dv",
+          "autofill",
+          "set-value-number",
+          "show-cols"
+        ]
+      },
+      {
+        "seq": 22,
+        "seed": 20260951,
+        "diffCount": 4,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 1
+          },
+          {
+            "path": "sheetOrder.0",
+            "a": "s1",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "show-rows",
+          "set-value-string",
+          "set-formula",
+          "show-cols",
+          "copy-down",
+          "set-frozen",
+          "insert-sheet",
+          "cancel-frozen",
+          "merge",
+          "set-value-empty"
+        ]
+      },
+      {
+        "seq": 28,
+        "seed": 20260957,
+        "diffCount": 4,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 1
+          },
+          {
+            "path": "sheetOrder.0",
+            "a": "s1",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "set-value-number",
+          "show-cols",
+          "set-col-width",
+          "autofill",
+          "move-range",
+          "merge",
+          "insert-rows",
+          "hide-cols",
+          "remove-filter",
+          "remove-rows"
+        ]
+      },
+      {
+        "seq": 31,
+        "seed": 20260960,
+        "diffCount": 2,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 2
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "set-value-string",
+          "remove-sheet",
+          "set-formula",
+          "set-frozen",
+          "cancel-frozen",
+          "move-range",
+          "move-range",
+          "set-value-number",
+          "set-col-width",
+          "merge"
+        ]
+      },
+      {
+        "seq": 35,
+        "seed": 20260964,
+        "diffCount": 2,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 2
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "remove-cols",
+          "clear-format",
+          "add-dv",
+          "delete-cf",
+          "merge",
+          "copy-sheet",
+          "delete-cf",
+          "show-rows",
+          "insert-cols",
+          "move-range"
+        ]
+      },
+      {
+        "seq": 39,
+        "seed": 20260968,
+        "diffCount": 4,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 1
+          },
+          {
+            "path": "sheetOrder.0",
+            "a": "s1",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "insert-rows",
+          "set-value-boolean",
+          "set-style",
+          "remove-sheet",
+          "set-formula",
+          "set-value-string",
+          "set-value-number",
+          "set-value-number",
+          "insert-rows",
+          "move-range"
+        ]
+      },
+      {
+        "seq": 43,
+        "seed": 20260972,
+        "diffCount": 3,
+        "failedApply": 2,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 2
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "add-cf",
+          "set-formula",
+          "add-cf",
+          "copy-sheet",
+          "set-formula",
+          "remove-sheet",
+          "remove-rows",
+          "clear-dv",
+          "unmerge",
+          "insert-sheet"
+        ]
+      },
+      {
+        "seq": 55,
+        "seed": 20260984,
+        "diffCount": 2,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 2
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "hide-rows",
+          "move-range",
+          "hide-cols",
+          "set-style",
+          "move-cols",
+          "set-value-string",
+          "set-filter",
+          "insert-cols",
+          "set-col-width",
+          "set-formula"
+        ]
+      },
+      {
+        "seq": 69,
+        "seed": 20260998,
+        "diffCount": 3,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 2
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "clear-dv",
+          "merge",
+          "add-dv",
+          "set-row-height",
+          "remove-filter",
+          "insert-rows",
+          "add-dv",
+          "clear-content",
+          "set-value-number",
+          "move-range"
+        ]
+      },
+      {
+        "seq": 70,
+        "seed": 20260999,
+        "diffCount": 3,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 2
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "set-formula",
+          "rename-sheet",
+          "unmerge",
+          "remove-sheet",
+          "insert-rows",
+          "move-range",
+          "set-style",
+          "set-formula",
+          "set-formula",
+          "remove-filter"
+        ]
+      },
+      {
+        "seq": 73,
+        "seed": 20261002,
+        "diffCount": 3,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 2
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "add-cf",
+          "move-range",
+          "move-sheet",
+          "set-value-empty",
+          "merge",
+          "show-cols",
+          "set-row-height",
+          "set-formula",
+          "insert-cols",
+          "remove-sheet"
+        ]
+      },
+      {
+        "seq": 76,
+        "seed": 20261005,
+        "diffCount": 6,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 1
+          },
+          {
+            "path": "sheetOrder.0",
+            "a": "s1",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          },
+          {
+            "path": "sheets.s1.cellData.73.8.f",
+            "a": "=A74+B74",
+            "b": "=A76+B76"
+          }
+        ],
+        "opTypes": [
+          "set-col-width",
+          "set-filter",
+          "move-range",
+          "hide-rows",
+          "unmerge",
+          "autofill",
+          "insert-cols",
+          "remove-sheet",
+          "clear-content",
+          "set-col-width"
+        ]
+      },
+      {
+        "seq": 83,
+        "seed": 20261012,
+        "diffCount": 3,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 2
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "set-value-empty",
+          "unmerge",
+          "set-value-string",
+          "show-rows",
+          "unmerge",
+          "show-cols",
+          "set-value-string",
+          "set-value-number",
+          "set-value-string",
+          "autofill"
+        ]
+      },
+      {
+        "seq": 90,
+        "seed": 20261019,
+        "diffCount": 4,
+        "failedApply": 1,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 1
+          },
+          {
+            "path": "sheetOrder.0",
+            "a": "s1",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "show-cols",
+          "set-style",
+          "set-value-boolean",
+          "merge",
+          "remove-sheet",
+          "copy-down",
+          "move-cols",
+          "set-style",
+          "set-value-boolean",
+          "clear-format"
+        ]
+      },
+      {
+        "seq": 93,
+        "seed": 20261022,
+        "diffCount": 3,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 2
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "merge",
+          "show-rows",
+          "show-rows",
+          "set-value-boolean",
+          "move-rows",
+          "move-range",
+          "clear-dv",
+          "move-range",
+          "remove-sheet",
+          "clear-format"
+        ]
+      },
+      {
+        "seq": 96,
+        "seed": 20261025,
+        "diffCount": 3,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 2
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "clear-content",
+          "set-filter-criteria",
+          "remove-sheet",
+          "move-cols",
+          "set-value-string",
+          "clear-format",
+          "set-filter",
+          "add-dv",
+          "set-value-number",
+          "insert-rows"
+        ]
+      },
+      {
+        "seq": 97,
+        "seed": 20261026,
+        "diffCount": 3,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 2
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "set-frozen",
+          "move-cols",
+          "set-value-empty",
+          "add-cf",
+          "cancel-frozen",
+          "set-filter",
+          "rename-sheet",
+          "unmerge",
+          "set-value-string",
+          "copy-sheet"
+        ]
+      },
+      {
+        "seq": 100,
+        "seed": 20261029,
+        "diffCount": 4,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 1
+          },
+          {
+            "path": "sheetOrder.0",
+            "a": "s1",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "cancel-frozen",
+          "set-col-width",
+          "set-value-string",
+          "insert-cols",
+          "move-range",
+          "clear-content",
+          "set-value-string",
+          "set-formula",
+          "move-range",
+          "show-rows"
+        ]
+      },
+      {
+        "seq": 102,
+        "seed": 20261031,
+        "diffCount": 3,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 2
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "set-value-string",
+          "set-value-boolean",
+          "cancel-frozen",
+          "remove-rows",
+          "set-value-number",
+          "move-cols",
+          "move-sheet",
+          "clear-content",
+          "set-formula",
+          "remove-rows"
+        ]
+      },
+      {
+        "seq": 105,
+        "seed": 20261034,
+        "diffCount": 3,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 2
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "remove-sheet",
+          "remove-sheet",
+          "show-rows",
+          "remove-filter",
+          "set-value-number",
+          "sort-range",
+          "set-filter-criteria",
+          "set-value-empty",
+          "set-style",
+          "unmerge"
+        ]
+      },
+      {
+        "seq": 117,
+        "seed": 20261046,
+        "diffCount": 3,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 2
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "remove-rows",
+          "merge",
+          "set-value-string",
+          "set-value-empty",
+          "set-style",
+          "set-formula",
+          "insert-cols",
+          "add-dv",
+          "remove-sheet",
+          "set-formula"
+        ]
+      },
+      {
+        "seq": 120,
+        "seed": 20261049,
+        "diffCount": 4,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 1
+          },
+          {
+            "path": "sheetOrder.0",
+            "a": "s1",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "set-value-string",
+          "unmerge",
+          "set-formula",
+          "add-dv",
+          "hide-cols",
+          "set-value-number",
+          "delete-cf",
+          "set-value-number",
+          "clear-format",
+          "hide-rows"
+        ]
+      },
+      {
+        "seq": 121,
+        "seed": 20261050,
+        "diffCount": 4,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 1
+          },
+          {
+            "path": "sheetOrder.0",
+            "a": "s1",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "add-cf",
+          "merge",
+          "clear-content",
+          "show-cols",
+          "autofill",
+          "rename-sheet",
+          "set-formula",
+          "remove-sheet",
+          "set-style",
+          "clear-dv"
+        ]
+      },
+      {
+        "seq": 125,
+        "seed": 20261054,
+        "diffCount": 3,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 2
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "set-value-string",
+          "set-value-empty",
+          "move-sheet",
+          "merge",
+          "merge",
+          "hide-rows",
+          "remove-cols",
+          "set-style",
+          "rename-sheet",
+          "show-rows"
+        ]
+      },
+      {
+        "seq": 133,
+        "seed": 20261062,
+        "diffCount": 3,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 2
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "copy-sheet",
+          "hide-cols",
+          "remove-rows",
+          "set-row-height",
+          "cancel-frozen",
+          "set-value-string",
+          "remove-rows",
+          "set-value-number",
+          "clear-all",
+          "set-col-width"
+        ]
+      },
+      {
+        "seq": 136,
+        "seed": 20261065,
+        "diffCount": 4,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 1
+          },
+          {
+            "path": "sheetOrder.0",
+            "a": "s1",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "show-rows",
+          "clear-content",
+          "set-style",
+          "set-row-height",
+          "clear-all",
+          "insert-cols",
+          "insert-cols",
+          "add-dv",
+          "remove-sheet",
+          "set-formula"
+        ]
+      },
+      {
+        "seq": 147,
+        "seed": 20261076,
+        "diffCount": 3,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 2
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "set-value-string",
+          "clear-content",
+          "hide-rows",
+          "set-value-number",
+          "remove-rows",
+          "set-row-height",
+          "sort-range",
+          "set-style",
+          "clear-content",
+          "insert-cols"
+        ]
+      },
+      {
+        "seq": 158,
+        "seed": 20261087,
+        "diffCount": 2,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 2
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "set-row-height",
+          "remove-sheet",
+          "set-value-empty",
+          "delete-cf",
+          "delete-cf",
+          "autofill",
+          "hide-cols",
+          "cancel-frozen",
+          "show-rows",
+          "set-col-width"
+        ]
+      },
+      {
+        "seq": 160,
+        "seed": 20261089,
+        "diffCount": 3,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 2
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "show-rows",
+          "rename-sheet",
+          "move-rows",
+          "delete-cf",
+          "insert-sheet",
+          "set-value-number",
+          "remove-sheet",
+          "set-filter-criteria",
+          "remove-rows",
+          "set-value-boolean"
+        ]
+      },
+      {
+        "seq": 164,
+        "seed": 20261093,
+        "diffCount": 2,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 2
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "move-sheet",
+          "add-cf",
+          "merge",
+          "set-filter-criteria",
+          "set-style",
+          "set-filter-criteria",
+          "autofill",
+          "rename-sheet",
+          "add-dv",
+          "move-sheet"
+        ]
+      },
+      {
+        "seq": 166,
+        "seed": 20261095,
+        "diffCount": 2,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 2
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "unmerge",
+          "set-formula",
+          "remove-rows",
+          "insert-rows",
+          "set-style",
+          "rename-sheet",
+          "set-value-boolean",
+          "clear-content",
+          "set-value-string",
+          "insert-sheet"
+        ]
+      },
+      {
+        "seq": 169,
+        "seed": 20261098,
+        "diffCount": 4,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 1
+          },
+          {
+            "path": "sheetOrder.0",
+            "a": "s1",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "move-rows",
+          "move-range",
+          "add-cf",
+          "set-value-number",
+          "add-cf",
+          "rename-sheet",
+          "set-style",
+          "add-cf",
+          "remove-rows",
+          "show-rows"
+        ]
+      },
+      {
+        "seq": 176,
+        "seed": 20261105,
+        "diffCount": 4,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 1
+          },
+          {
+            "path": "sheetOrder.0",
+            "a": "s1",
+            "b": "s2"
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "set-style",
+          "set-value-number",
+          "set-filter-criteria",
+          "move-rows",
+          "insert-sheet",
+          "set-value-number",
+          "sort-range",
+          "move-cols",
+          "merge",
+          "remove-sheet"
+        ]
+      },
+      {
+        "seq": 181,
+        "seed": 20261110,
+        "diffCount": 2,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 2
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "set-col-width",
+          "cancel-frozen",
+          "set-value-number",
+          "set-value-empty",
+          "clear-content",
+          "set-value-string",
+          "remove-sheet",
+          "set-value-string",
+          "set-value-empty",
+          "set-filter-criteria"
+        ]
+      },
+      {
+        "seq": 184,
+        "seed": 20261113,
+        "diffCount": 3,
+        "failedApply": 0,
+        "diffs": [
+          {
+            "path": "sheetOrder.length",
+            "a": 3,
+            "b": 2
+          },
+          {
+            "path": "sheetOrder.1",
+            "a": "s2",
+            "b": "s3"
+          },
+          {
+            "path": "sheetOrder.2",
+            "a": "s3"
+          }
+        ],
+        "opTypes": [
+          "insert-sheet",
+          "set-formula",
+          "remove-rows",
+          "insert-rows",
+          "set-formula",
+          "set-col-width",
+          "insert-sheet",
+          "clear-all",
+          "move-cols",
+          "set-value-empty"
+        ]
+      }
+    ]
+  },
+  "snapshotRollback": {
+    "50k×20": {
+      "saveMs": {
+        "n": 3,
+        "min": 126,
+        "p50": 127,
+        "p95": 128,
+        "p99": 128,
+        "max": 128,
+        "mean": 127
+      },
+      "createMs": {
+        "n": 3,
+        "min": 475,
+        "p50": 483,
+        "p95": 511,
+        "p99": 511,
+        "max": 511,
+        "mean": 489.67
+      },
+      "rollbackMs": {
+        "n": 3,
+        "min": 603,
+        "p50": 611,
+        "p95": 637,
+        "p99": 637,
+        "max": 637,
+        "mean": 617
+      },
+      "trials": 3
+    },
+    "200k×30": {
+      "saveMs": {
+        "n": 3,
+        "min": 743,
+        "p50": 817,
+        "p95": 995,
+        "p99": 995,
+        "max": 995,
+        "mean": 851.67
+      },
+      "createMs": {
+        "n": 3,
+        "min": 2803,
+        "p50": 2827,
+        "p95": 2841,
+        "p99": 2841,
+        "max": 2841,
+        "mean": 2823.67
+      },
+      "rollbackMs": {
+        "n": 3,
+        "min": 3584,
+        "p50": 3644,
+        "p95": 3798,
+        "p99": 3798,
+        "max": 3798,
+        "mean": 3675.33
+      },
+      "trials": 3
+    }
+  }
+}

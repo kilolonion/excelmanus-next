@@ -1,0 +1,389 @@
+{
+  "_readme": "M0-C 沙箱逃逸与滥用判据（由项目负责人编写，执行者不得删改用例或放宽期望；认为期望有误时报告负责人）。code 是异步函数体，由 return 给出结果。SDK 桩：files.readText/writeText/find/manage、wb.read/analyze/edit/export、console.log，路径校验必须由被测的真实宿主实现完成（不是桩里写死）。expect 取值：result=返回值严格等于；resultIn=返回值属于集合；terminated=必须被强制终止（timeout|memory|output），并且终止耗时不超过 timeoutMs+500ms；limited=以任一列出的受限方式结束（脚本报错或被终止均可，但必须是列出的原因类别）；scriptFailsOrSafe=脚本抛错或返回都可以，只检查公共后置条件。所有用例结束后都必须检查公共后置条件（commonPostconditions）。",
+  "commonPostconditions": [
+    "结果/标准输出/错误信息中不含宿主金丝雀秘密（harness 在宿主环境变量与宿主内存中放置随机秘密串）",
+    "宿主 Object.prototype / Array.prototype / Function.prototype / JSON / Promise 的自有属性名集合与行为标记未变（用例前后快照对比）",
+    "harness 的哨兵目录中没有新增文件；测试工作区之外没有任何文件被创建、修改或读取（用 fs 审计或哨兵校验和）",
+    "harness 监听的本机哨兵端口没有收到任何连接",
+    "宿主进程存活且随后运行一个平凡脚本 `return 1+1` 在 1 秒内得到 2",
+    "宿主 RSS 相对用例前的增长不超过 512 MB"
+  ],
+  "globalsAllowlistNote": "用例 G10 用：沙箱全局属性名必须是 ES 内建 + 我们显式注入的 files/wb/console 三个名字的子集；出现其他名字即失败。ES 内建清单由 harness 从一个空 QuickJS 上下文枚举得到（不是手写）。",
+  "cases": [
+    {
+      "id": "G01",
+      "category": "宿主对象访问",
+      "code": "return typeof process",
+      "expect": { "result": "undefined" }
+    },
+    {
+      "id": "G02",
+      "category": "宿主对象访问",
+      "code": "return typeof require",
+      "expect": { "result": "undefined" }
+    },
+    {
+      "id": "G03",
+      "category": "宿主对象访问",
+      "code": "return [typeof module, typeof exports, typeof Buffer, typeof __dirname, typeof __filename].join(',')",
+      "expect": { "result": "undefined,undefined,undefined,undefined,undefined" }
+    },
+    {
+      "id": "G04",
+      "category": "宿主对象访问",
+      "code": "return [typeof fetch, typeof XMLHttpRequest, typeof WebSocket, typeof EventSource, typeof navigator].join(',')",
+      "expect": { "result": "undefined,undefined,undefined,undefined,undefined" }
+    },
+    {
+      "id": "G05",
+      "category": "宿主对象访问",
+      "code": "return [typeof Deno, typeof Bun, typeof window, typeof document, typeof self, typeof WebAssembly, typeof SharedArrayBuffer, typeof Atomics].join(',')",
+      "expect": {
+        "result": "undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined"
+      }
+    },
+    {
+      "id": "G06",
+      "category": "宿主对象访问",
+      "code": "return (0,eval)('typeof process') + ',' + eval('typeof require')",
+      "expect": { "result": "undefined,undefined" }
+    },
+    {
+      "id": "G07",
+      "category": "宿主对象访问",
+      "code": "return (function(){}).constructor('return typeof process')()",
+      "expect": { "result": "undefined" }
+    },
+    {
+      "id": "G08",
+      "category": "宿主对象访问",
+      "code": "return this.constructor.constructor('return typeof process + typeof require')()",
+      "expect": { "result": "undefinedundefined" }
+    },
+    {
+      "id": "G09",
+      "category": "宿主对象访问",
+      "code": "try { const m = await import('node:fs'); return typeof m.readFileSync } catch (e) { return 'BLOCKED' }",
+      "expect": { "result": "BLOCKED" }
+    },
+    {
+      "id": "G10",
+      "category": "宿主对象访问",
+      "code": "return Object.getOwnPropertyNames(globalThis).sort()",
+      "expect": { "kind": "globalsSubsetOfAllowlist" }
+    },
+    {
+      "id": "G11",
+      "category": "宿主对象访问",
+      "code": "try { const f = new Function('return import(\"child_process\")'); await f(); return 'LOADED' } catch (e) { return 'BLOCKED' }",
+      "expect": { "result": "BLOCKED" }
+    },
+    {
+      "id": "G12",
+      "category": "信息泄露",
+      "code": "const s = String(new Error('x').stack); return /\\/Users\\/|\\/home\\/|[A-Z]:\\\\|node_modules|quickjs|excelmanus/i.test(s) ? 'LEAK:' + s : 'CLEAN'",
+      "expect": { "result": "CLEAN" }
+    },
+    {
+      "id": "G13",
+      "category": "信息泄露",
+      "code": "let out = []; try { out.push(String(Error.captureStackTrace)); Error.prepareStackTrace = () => 'pwned'; out.push(String(new Error('y').stack)) } catch (e) { out.push('E') } return out.join('|').includes('pwned') ? 'AFFECTED' : 'SAFE'",
+      "expect": { "resultIn": ["SAFE"] }
+    },
+    {
+      "id": "P01",
+      "category": "原型污染",
+      "code": "Object.prototype.polluted = 'yes'; Array.prototype.push = function () { throw new Error('evil') }; JSON.stringify = () => 'evil'; return 'done'",
+      "expect": { "kind": "scriptFailsOrSafe" },
+      "note": "重点是公共后置条件：宿主原型链与内建行为不受影响"
+    },
+    {
+      "id": "P02",
+      "category": "原型污染",
+      "code": "const r = await wb.read({ path: 'a.xlsx', mode: 'overview' }); Object.getPrototypeOf(r).hacked = 1; Object.getPrototypeOf(r.data || {}).hacked2 = 1; return 'done'",
+      "expect": { "kind": "scriptFailsOrSafe" },
+      "note": "SDK 返回值必须是沙箱内创建的纯数据副本；宿主对象原型不可被触达"
+    },
+    {
+      "id": "P03",
+      "category": "原型污染",
+      "code": "const a = await wb.read({ path: 'a.xlsx', mode: 'overview' }); a.data.rows[0][0] = 'TAMPERED'; const b = await wb.read({ path: 'a.xlsx', mode: 'overview' }); return b.data.rows[0][0]",
+      "expect": { "resultIn": [1, "1"] },
+      "note": "宿主桩每次返回同一份缓存对象；脚本修改第一次结果不得影响第二次"
+    },
+    {
+      "id": "R01",
+      "category": "返回值滥用",
+      "code": "return { toJSON() { while (true) {} } }",
+      "timeoutMs": 1500,
+      "expect": { "terminated": "timeout" }
+    },
+    {
+      "id": "R02",
+      "category": "返回值滥用",
+      "code": "const o = {}; o.self = o; return o",
+      "expect": { "limited": ["scriptError"] }
+    },
+    {
+      "id": "R03",
+      "category": "返回值滥用",
+      "code": "return 'x'.repeat(50 * 1024 * 1024)",
+      "expect": { "limited": ["output", "memory", "scriptError"] },
+      "note": "返回值上限 1 MB"
+    },
+    {
+      "id": "R04",
+      "category": "返回值滥用",
+      "code": "return [function () {}, Symbol('s'), 10n]",
+      "expect": { "kind": "scriptFailsOrSafe" },
+      "note": "不可序列化返回值必须被规整或报错，不得让宿主抛出未捕获异常"
+    },
+    {
+      "id": "R05",
+      "category": "返回值滥用",
+      "code": "return new Proxy({}, { get() { while (true) {} }, ownKeys() { while (true) {} } })",
+      "timeoutMs": 1500,
+      "expect": { "terminated": "timeout" }
+    },
+    {
+      "id": "X01",
+      "category": "资源耗尽",
+      "code": "while (true) {}",
+      "timeoutMs": 1000,
+      "expect": { "terminated": "timeout" }
+    },
+    {
+      "id": "X02",
+      "category": "资源耗尽",
+      "code": "function f() { return f() + 1 } return f()",
+      "timeoutMs": 3000,
+      "expect": { "limited": ["scriptError", "timeout", "memory"] }
+    },
+    {
+      "id": "X03",
+      "category": "资源耗尽",
+      "code": "return new Array(1e9).fill(0).length",
+      "timeoutMs": 5000,
+      "expect": { "limited": ["memory", "scriptError", "timeout"] }
+    },
+    {
+      "id": "X04",
+      "category": "资源耗尽",
+      "code": "const a = []; while (true) a.push(new Array(1e6).fill(1))",
+      "timeoutMs": 10000,
+      "expect": { "limited": ["memory", "timeout"] }
+    },
+    {
+      "id": "X05",
+      "category": "资源耗尽",
+      "code": "let s = 'x'; while (true) s += s",
+      "timeoutMs": 10000,
+      "expect": { "limited": ["memory", "scriptError", "timeout"] }
+    },
+    {
+      "id": "X06",
+      "category": "资源耗尽",
+      "code": "for (let i = 0; i < 1e8; i++) Promise.resolve().then(() => {}); return 'queued'",
+      "timeoutMs": 3000,
+      "expect": { "limited": ["timeout", "memory", "scriptError"] }
+    },
+    {
+      "id": "X07",
+      "category": "资源耗尽",
+      "code": "async function f() { while (true) { await null } } await f()",
+      "timeoutMs": 1500,
+      "expect": { "terminated": "timeout" }
+    },
+    {
+      "id": "X08",
+      "category": "资源耗尽",
+      "code": "return /(a+)+$/.test('a'.repeat(45) + 'b')",
+      "timeoutMs": 2000,
+      "expect": { "terminated": "timeout" },
+      "note": "正则回溯也必须能被强制终止（若解释器中断回调覆盖不到，则靠 worker.terminate()）"
+    },
+    {
+      "id": "X09",
+      "category": "资源耗尽",
+      "code": "for (;;) console.log('x'.repeat(1e6))",
+      "timeoutMs": 5000,
+      "expect": { "limited": ["output", "timeout", "memory"] },
+      "note": "标准输出保留上限 200 行/64 KB，宿主内存不得随输出无限增长"
+    },
+    {
+      "id": "X10",
+      "category": "资源耗尽",
+      "code": "return JSON.parse('['.repeat(2e6) + ']'.repeat(2e6)).length",
+      "timeoutMs": 5000,
+      "expect": { "limited": ["scriptError", "memory", "timeout"] }
+    },
+    {
+      "id": "X11",
+      "category": "资源耗尽",
+      "code": "const a = Array.from({ length: 5e6 }, (_, i) => (i * 7919) % 1000003); a.sort((x, y) => { while (Math.random() > 0) { if (x !== y) break } return x - y }); return a.length",
+      "timeoutMs": 3000,
+      "expect": { "limited": ["timeout", "memory", "scriptError"] }
+    },
+    {
+      "id": "S01",
+      "category": "SDK 边界",
+      "code": "try { await files.readText('../../etc/passwd'); return 'NO_ERROR' } catch (e) { return e.code }",
+      "expect": { "result": "OUT_OF_WORKSPACE" }
+    },
+    {
+      "id": "S02",
+      "category": "SDK 边界",
+      "code": "try { await files.readText('/etc/passwd'); return 'NO_ERROR' } catch (e) { return e.code }",
+      "expect": { "result": "OUT_OF_WORKSPACE" }
+    },
+    {
+      "id": "S03",
+      "category": "SDK 边界",
+      "code": "try { await files.readText('sub/../../secret.txt'); return 'NO_ERROR' } catch (e) { return e.code }",
+      "expect": { "result": "OUT_OF_WORKSPACE" }
+    },
+    {
+      "id": "S04",
+      "category": "SDK 边界",
+      "code": "try { const t = await files.readText('link-to-outside/secret.txt'); return 'READ:' + String(t).slice(0, 40) } catch (e) { return e.code }",
+      "expect": { "result": "OUT_OF_WORKSPACE" },
+      "fixtures": [
+        "工作区内放一个指向工作区外目录的符号链接 link-to-outside，目标目录里有 secret.txt（内容含金丝雀秘密）"
+      ]
+    },
+    {
+      "id": "S05",
+      "category": "SDK 边界",
+      "code": "try { await files.readText('.excelmanus/backups/x.xlsx'); return 'NO_ERROR' } catch (e) { return e.code }",
+      "expect": { "resultIn": ["OUT_OF_WORKSPACE", "NOT_FOUND"] },
+      "fixtures": ["工作区内真实存在 .excelmanus/backups/x.xlsx"]
+    },
+    {
+      "id": "S06",
+      "category": "SDK 边界",
+      "code": "const bad = ['..\\\\..\\\\x', 'C:\\\\Windows\\\\win.ini', '%2e%2e/%2e%2e/x', '..\\u2215..\\u2215x', 'a\\u0000/../../x', '\\\\\\\\server\\\\share\\\\x', 'file:///etc/passwd']; const out = []; for (const p of bad) { try { await files.readText(p); out.push('NO_ERROR') } catch (e) { out.push(e.code) } } return out.every(c => c === 'OUT_OF_WORKSPACE' || c === 'NOT_FOUND' || c === 'INVALID_ARGUMENT') ? 'ALL_BLOCKED' : out.join(',')",
+      "expect": { "result": "ALL_BLOCKED" }
+    },
+    {
+      "id": "S07",
+      "category": "SDK 边界",
+      "code": "try { await files.writeText('../escaped.txt', 'x'); return 'NO_ERROR' } catch (e) { return e.code }",
+      "expect": { "result": "OUT_OF_WORKSPACE" }
+    },
+    {
+      "id": "S08",
+      "category": "SDK 边界",
+      "code": "try { await files.writeText('big.txt', 'x'.repeat(40 * 1024 * 1024)); return 'NO_ERROR' } catch (e) { return e.code }",
+      "expect": { "resultIn": ["LIMIT_EXCEEDED"] },
+      "note": "单次 SDK 调用数据上限 32 MB"
+    },
+    {
+      "id": "S09",
+      "category": "SDK 边界",
+      "code": "const ps = []; for (let i = 0; i < 1e6; i++) ps.push(wb.read({ path: 'a.xlsx', mode: 'overview' })); await Promise.all(ps); return 'done'",
+      "timeoutMs": 5000,
+      "expect": { "limited": ["timeout", "scriptError", "memory"] },
+      "note": "在途 SDK 调用数必须有上限；宿主侧待处理队列不得无限增长"
+    },
+    {
+      "id": "S10",
+      "category": "SDK 边界",
+      "code": "const evil = { get path() { while (true) {} }, mode: 'overview' }; await wb.read(evil); return 'done'",
+      "timeoutMs": 1500,
+      "expect": { "terminated": "timeout" },
+      "note": "序列化参数时执行的 getter 也在沙箱内、受中断限制"
+    },
+    {
+      "id": "S11",
+      "category": "SDK 边界",
+      "code": "try { const r = await files.manage({ ops: [{ op: 'delete', path: 'a.xlsx' }] }); return 'NO_ERROR:' + JSON.stringify(r) } catch (e) { return e.code }",
+      "expect": { "resultIn": ["INVALID_ARGUMENT", "UNSUPPORTED_FEATURE"] },
+      "note": "SDK 中删除不可用"
+    },
+    {
+      "id": "S12",
+      "category": "SDK 边界",
+      "code": "return [typeof askUser, typeof ask_user, typeof agent_send, typeof agent, typeof memory, typeof mcp, typeof runScript, typeof run_script, typeof skill].join(',')",
+      "expect": {
+        "result": "undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined"
+      }
+    },
+    {
+      "id": "S13",
+      "category": "SDK 边界",
+      "code": "return { files: Object.getOwnPropertyNames(files).sort(), wb: Object.getOwnPropertyNames(wb).sort(), fp: Object.getOwnPropertyNames(Object.getPrototypeOf(files)).sort() }",
+      "expect": {
+        "kind": "sdkSurfaceExact",
+        "files": ["find", "manage", "readText", "writeText"],
+        "wb": ["analyze", "edit", "export", "read"]
+      },
+      "note": "SDK 暴露面必须恰好是白名单，不得有额外方法/原型上的宿主函数"
+    },
+    {
+      "id": "S14",
+      "category": "SDK 边界",
+      "code": "try { await wb.edit({ path: '../outside.xlsx', create: true, ops: [] }); return 'NO_ERROR' } catch (e) { return e.code }",
+      "expect": { "result": "OUT_OF_WORKSPACE" }
+    },
+    {
+      "id": "S15",
+      "category": "SDK 边界",
+      "code": "const r = await wb.read({ path: 'a.xlsx', mode: 'overview' }); return [r.constructor === Object, Object.getPrototypeOf(r) === Object.prototype, typeof r.then].join(',')",
+      "expect": { "result": "true,true,undefined" },
+      "note": "返回值是沙箱内的纯对象"
+    },
+    {
+      "id": "T01",
+      "category": "终止与隔离",
+      "code": "await wb.read({ path: 'slow.xlsx', mode: 'overview' }); return 'done'",
+      "timeoutMs": 800,
+      "expect": { "terminated": "timeout" },
+      "fixtures": [
+        "宿主桩对 slow.xlsx 的读取延迟 30 秒；终止后宿主侧该在途操作必须被取消（有取消信号被触发的证据），且 harness 随后能立刻运行下一个脚本"
+      ]
+    },
+    {
+      "id": "T02",
+      "category": "终止与隔离",
+      "code": "globalThis.__leak = 'from-run-A'; return 'A'",
+      "expect": { "result": "A" },
+      "followUpCode": "return typeof globalThis.__leak",
+      "followUpExpect": "undefined",
+      "note": "脚本之间不得共享全局状态（每次运行新上下文）"
+    },
+    {
+      "id": "T03",
+      "category": "终止与隔离",
+      "kind": "concurrent",
+      "codes": [
+        "globalThis.__x = 'A'; await wb.read({ path: 'a.xlsx', mode: 'overview' }); return globalThis.__x",
+        "globalThis.__x = 'B'; await wb.read({ path: 'a.xlsx', mode: 'overview' }); return globalThis.__x"
+      ],
+      "expect": { "results": ["A", "B"] },
+      "note": "两个脚本并发运行互相隔离"
+    },
+    {
+      "id": "T04",
+      "category": "终止与隔离",
+      "kind": "repeat",
+      "repeat": 100,
+      "code": "return (await wb.read({ path: 'a.xlsx', mode: 'overview' })).status",
+      "expect": { "kind": "rssGrowthBounded", "maxGrowthMB": 100 },
+      "note": "连续 100 次运行（其中穿插 20 次超时终止与 20 次脚本抛错）后 RSS 增长不超过 100 MB，无 worker 泄漏（活跃 worker 数回到预热池大小）"
+    }
+  ],
+  "performanceCriteria": {
+    "loop100k": {
+      "code": "let s = 0; for (let i = 0; i < 100000; i++) s += i % 7; return s",
+      "maxMs": 1000
+    },
+    "transfer50kRows": {
+      "note": "一次 SDK 调用从宿主传给脚本 5 万行 × 6 列数据并在脚本里求和一列，往返 ≤ 1000 ms",
+      "maxMs": 1000
+    },
+    "coldStart": {
+      "note": "创建 worker + 初始化 QuickJS + 运行 return 1，≤ 300 ms（可用预热池，须同时报告不用预热池的数字）",
+      "maxMs": 300
+    }
+  }
+}

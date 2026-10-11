@@ -1,0 +1,30 @@
+{
+  "name": "@excelmanus-spike/univer-formula",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "cases": "node src/run-cases.ts",
+    "unsupported": "node src/unsupported.ts",
+    "zh": "node src/zh-scenarios.ts",
+    "bench": "node --expose-gc src/recalc-bench.ts",
+    "lo": "node src/lo-compare.ts"
+  },
+  "dependencies": {
+    "@univerjs/core": "1.0.2",
+    "@univerjs/engine-formula": "1.0.2",
+    "@univerjs/preset-sheets-node-core": "1.0.2",
+    "@univerjs/presets": "1.0.2",
+    "@univerjs/sheets": "1.0.2",
+    "@univerjs/sheets-formula": "1.0.2",
+    "@univerjs/sheets-numfmt": "1.0.2",
+    "rxjs": "7.8.2"
+  },
+  "devDependencies": {
+    "exceljs": "^4.4.0"
+  }
+}

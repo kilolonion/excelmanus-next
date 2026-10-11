@@ -1,0 +1,16 @@
+export const BORDER_STYLES = [
+  "none",
+  "thin",
+  "hair",
+  "dotted",
+  "dashed",
+  "dashDot",
+  "dashDotDot",
+  "double",
+  "medium",
+  "mediumDashed",
+  "mediumDashDot",
+  "mediumDashDotDot",
+  "slantDashDot",
+  "thick",
+] as const;

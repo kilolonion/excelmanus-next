@@ -1,0 +1,1902 @@
+{
+  "version": "LibreOffice 26.2.1.2 8399f6259d8c87f40e7255cdb3c9b958f5e08948",
+  "rows": [
+    {
+      "i": 0,
+      "fn": "SUM",
+      "formula": "=SUM(Data!A1:A10)",
+      "expect": 55,
+      "lo": {
+        "vtype": "float",
+        "value": 55,
+        "display": "55"
+      },
+      "univer": 55
+    },
+    {
+      "i": 1,
+      "fn": "SUMIF",
+      "formula": "=SUMIF(Data!C1:C10,\"apple\",Data!B1:B10)",
+      "expect": 220,
+      "lo": {
+        "vtype": "float",
+        "value": 220,
+        "display": "220"
+      },
+      "univer": 220
+    },
+    {
+      "i": 2,
+      "fn": "SUMIFS",
+      "formula": "=SUMIFS(Data!B1:B10,Data!C1:C10,\"banana\",Data!A1:A10,\">2\")",
+      "expect": 130,
+      "lo": {
+        "vtype": "float",
+        "value": 130,
+        "display": "130"
+      },
+      "univer": 130
+    },
+    {
+      "i": 3,
+      "fn": "SUMPRODUCT",
+      "formula": "=SUMPRODUCT(Data!A1:A10,Data!B1:B10)",
+      "expect": 3850,
+      "lo": {
+        "vtype": "float",
+        "value": 3850,
+        "display": "3850"
+      },
+      "univer": 3850
+    },
+    {
+      "i": 4,
+      "fn": "AVERAGE",
+      "formula": "=AVERAGE(Data!A1:A10)",
+      "expect": 5.5,
+      "lo": {
+        "vtype": "float",
+        "value": 5.5,
+        "display": "5.5"
+      },
+      "univer": 5.5
+    },
+    {
+      "i": 5,
+      "fn": "AVERAGEIF",
+      "formula": "=AVERAGEIF(Data!C1:C10,\"cherry\",Data!B1:B10)",
+      "expect": 60,
+      "lo": {
+        "vtype": "float",
+        "value": 60,
+        "display": "60"
+      },
+      "univer": 60
+    },
+    {
+      "i": 6,
+      "fn": "AVERAGEIFS",
+      "formula": "=AVERAGEIFS(Data!B1:B10,Data!C1:C10,\"apple\",Data!A1:A10,\"<=7\")",
+      "expect": 40,
+      "lo": {
+        "vtype": "float",
+        "value": 40,
+        "display": "40"
+      },
+      "univer": 40
+    },
+    {
+      "i": 7,
+      "fn": "COUNT",
+      "formula": "=COUNT(Data!A1:A10,Data!C1:C3)",
+      "expect": 10,
+      "lo": {
+        "vtype": "float",
+        "value": 10,
+        "display": "10"
+      },
+      "univer": 10
+    },
+    {
+      "i": 8,
+      "fn": "COUNTA",
+      "formula": "=COUNTA(Data!A1:C10)",
+      "expect": 30,
+      "lo": {
+        "vtype": "float",
+        "value": 30,
+        "display": "30"
+      },
+      "univer": 30
+    },
+    {
+      "i": 9,
+      "fn": "COUNTBLANK",
+      "formula": "=COUNTBLANK(Data!E1:E10)",
+      "expect": 10,
+      "lo": {
+        "vtype": "float",
+        "value": 10,
+        "display": "10"
+      },
+      "univer": 10
+    },
+    {
+      "i": 10,
+      "fn": "COUNTIF",
+      "formula": "=COUNTIF(Data!C1:C10,\"apple\")",
+      "expect": 4,
+      "lo": {
+        "vtype": "float",
+        "value": 4,
+        "display": "4"
+      },
+      "univer": 4
+    },
+    {
+      "i": 11,
+      "fn": "COUNTIFS",
+      "formula": "=COUNTIFS(Data!C1:C10,\"banana\",Data!A1:A10,\">=5\")",
+      "expect": 2,
+      "lo": {
+        "vtype": "float",
+        "value": 2,
+        "display": "2"
+      },
+      "univer": 2
+    },
+    {
+      "i": 12,
+      "fn": "MAX",
+      "formula": "=MAX(Data!A1:A10)",
+      "expect": 10,
+      "lo": {
+        "vtype": "float",
+        "value": 10,
+        "display": "10"
+      },
+      "univer": 10
+    },
+    {
+      "i": 13,
+      "fn": "MAXIFS",
+      "formula": "=MAXIFS(Data!B1:B10,Data!C1:C10,\"banana\")",
+      "expect": 80,
+      "lo": {
+        "vtype": "float",
+        "value": 80,
+        "display": "80"
+      },
+      "univer": 80
+    },
+    {
+      "i": 14,
+      "fn": "MIN",
+      "formula": "=MIN(Data!B1:B10)",
+      "expect": 10,
+      "lo": {
+        "vtype": "float",
+        "value": 10,
+        "display": "10"
+      },
+      "univer": 10
+    },
+    {
+      "i": 15,
+      "fn": "MINIFS",
+      "formula": "=MINIFS(Data!B1:B10,Data!C1:C10,\"cherry\")",
+      "expect": 30,
+      "lo": {
+        "vtype": "float",
+        "value": 30,
+        "display": "30"
+      },
+      "univer": 30
+    },
+    {
+      "i": 16,
+      "fn": "ROUND",
+      "formula": "=ROUND(2.567,2)",
+      "expect": 2.57,
+      "lo": {
+        "vtype": "float",
+        "value": 2.57,
+        "display": "2.57"
+      },
+      "univer": 2.57
+    },
+    {
+      "i": 17,
+      "fn": "ROUNDUP",
+      "formula": "=ROUNDUP(2.561,2)",
+      "expect": 2.57,
+      "lo": {
+        "vtype": "float",
+        "value": 2.57,
+        "display": "2.57"
+      },
+      "univer": 2.57
+    },
+    {
+      "i": 18,
+      "fn": "ROUNDDOWN",
+      "formula": "=ROUNDDOWN(2.569,2)",
+      "expect": 2.56,
+      "lo": {
+        "vtype": "float",
+        "value": 2.56,
+        "display": "2.56"
+      },
+      "univer": 2.56
+    },
+    {
+      "i": 19,
+      "fn": "INT",
+      "formula": "=INT(-2.5)",
+      "expect": -3,
+      "lo": {
+        "vtype": "float",
+        "value": -3,
+        "display": "-3"
+      },
+      "univer": -3
+    },
+    {
+      "i": 20,
+      "fn": "MOD",
+      "formula": "=MOD(-7,3)",
+      "expect": 2,
+      "lo": {
+        "vtype": "float",
+        "value": 2,
+        "display": "2"
+      },
+      "univer": 2
+    },
+    {
+      "i": 21,
+      "fn": "ABS",
+      "formula": "=ABS(-3.5)",
+      "expect": 3.5,
+      "lo": {
+        "vtype": "float",
+        "value": 3.5,
+        "display": "3.5"
+      },
+      "univer": 3.5
+    },
+    {
+      "i": 22,
+      "fn": "CEILING",
+      "formula": "=CEILING(2.1,0.5)",
+      "expect": 2.5,
+      "lo": {
+        "vtype": "float",
+        "value": 2.5,
+        "display": "2.5"
+      },
+      "univer": 2.5
+    },
+    {
+      "i": 23,
+      "fn": "FLOOR",
+      "formula": "=FLOOR(2.9,0.5)",
+      "expect": 2.5,
+      "lo": {
+        "vtype": "float",
+        "value": 2.5,
+        "display": "2.5"
+      },
+      "univer": 2.5
+    },
+    {
+      "i": 24,
+      "fn": "POWER",
+      "formula": "=POWER(2,10)",
+      "expect": 1024,
+      "lo": {
+        "vtype": "float",
+        "value": 1024,
+        "display": "1024"
+      },
+      "univer": 1024
+    },
+    {
+      "i": 25,
+      "fn": "SQRT",
+      "formula": "=SQRT(144)",
+      "expect": 12,
+      "lo": {
+        "vtype": "float",
+        "value": 12,
+        "display": "12"
+      },
+      "univer": 12
+    },
+    {
+      "i": 26,
+      "fn": "PRODUCT",
+      "formula": "=PRODUCT(Data!A1:A5)",
+      "expect": 120,
+      "lo": {
+        "vtype": "float",
+        "value": 120,
+        "display": "120"
+      },
+      "univer": 120
+    },
+    {
+      "i": 27,
+      "fn": "RAND",
+      "formula": "=RAND()",
+      "expect": "[0,1)",
+      "lo": {
+        "vtype": "float",
+        "value": 0.631204232502809,
+        "display": "0.631204232502809"
+      },
+      "univer": 0.12583723361497734
+    },
+    {
+      "i": 28,
+      "fn": "RANDBETWEEN",
+      "formula": "=RANDBETWEEN(5,10)",
+      "expect": "[5,10.5)",
+      "lo": {
+        "vtype": "float",
+        "value": 8,
+        "display": "8"
+      },
+      "univer": 5
+    },
+    {
+      "i": 29,
+      "fn": "SIGN",
+      "formula": "=SIGN(-9)",
+      "expect": -1,
+      "lo": {
+        "vtype": "float",
+        "value": -1,
+        "display": "-1"
+      },
+      "univer": -1
+    },
+    {
+      "i": 30,
+      "fn": "TRUNC",
+      "formula": "=TRUNC(-8.9)",
+      "expect": -8,
+      "lo": {
+        "vtype": "float",
+        "value": -8,
+        "display": "-8"
+      },
+      "univer": -8
+    },
+    {
+      "i": 31,
+      "fn": "LN",
+      "formula": "=LN(EXP(1))",
+      "expect": 1,
+      "lo": {
+        "vtype": "float",
+        "value": 1,
+        "display": "1"
+      },
+      "univer": 1
+    },
+    {
+      "i": 32,
+      "fn": "LOG",
+      "formula": "=LOG(8,2)",
+      "expect": 3,
+      "lo": {
+        "vtype": "float",
+        "value": 3,
+        "display": "3"
+      },
+      "univer": 3
+    },
+    {
+      "i": 33,
+      "fn": "LOG10",
+      "formula": "=LOG10(1000)",
+      "expect": 3,
+      "lo": {
+        "vtype": "float",
+        "value": 3,
+        "display": "3"
+      },
+      "univer": 3
+    },
+    {
+      "i": 34,
+      "fn": "EXP",
+      "formula": "=EXP(0)",
+      "expect": 1,
+      "lo": {
+        "vtype": "float",
+        "value": 1,
+        "display": "1"
+      },
+      "univer": 1
+    },
+    {
+      "i": 35,
+      "fn": "SUBTOTAL",
+      "formula": "=SUBTOTAL(9,Data!A1:A10)",
+      "expect": 55,
+      "lo": {
+        "vtype": "float",
+        "value": 55,
+        "display": "55"
+      },
+      "univer": 55
+    },
+    {
+      "i": 36,
+      "fn": "AGGREGATE",
+      "formula": "=AGGREGATE(9,6,Data!A1:A10)",
+      "expect": 55,
+      "lo": {
+        "vtype": "float",
+        "value": 55,
+        "display": "55"
+      },
+      "univer": 55
+    },
+    {
+      "i": 37,
+      "fn": "MEDIAN",
+      "formula": "=MEDIAN(Data!B1:B10)",
+      "expect": 55,
+      "lo": {
+        "vtype": "float",
+        "value": 55,
+        "display": "55"
+      },
+      "univer": 55
+    },
+    {
+      "i": 38,
+      "fn": "MODE",
+      "formula": "=MODE(1,2,2,3,3,3)",
+      "expect": 3,
+      "lo": {
+        "vtype": "float",
+        "value": 3,
+        "display": "3"
+      },
+      "univer": 3
+    },
+    {
+      "i": 39,
+      "fn": "LARGE",
+      "formula": "=LARGE(Data!B1:B10,2)",
+      "expect": 90,
+      "lo": {
+        "vtype": "float",
+        "value": 90,
+        "display": "90"
+      },
+      "univer": 90
+    },
+    {
+      "i": 40,
+      "fn": "SMALL",
+      "formula": "=SMALL(Data!B1:B10,3)",
+      "expect": 30,
+      "lo": {
+        "vtype": "float",
+        "value": 30,
+        "display": "30"
+      },
+      "univer": 30
+    },
+    {
+      "i": 41,
+      "fn": "RANK",
+      "formula": "=RANK(30,Data!B1:B10)",
+      "expect": 8,
+      "lo": {
+        "vtype": "float",
+        "value": 8,
+        "display": "8"
+      },
+      "univer": 8
+    },
+    {
+      "i": 42,
+      "fn": "STDEV",
+      "formula": "=STDEV(Data!A1:A10)",
+      "expect": 3.0276503540974917,
+      "lo": {
+        "vtype": "float",
+        "value": 3.02765035409749,
+        "display": "3.02765035409749"
+      },
+      "univer": 3.0276503540974917
+    },
+    {
+      "i": 43,
+      "fn": "STDEV.S",
+      "formula": "=STDEV.S(Data!A1:A10)",
+      "expect": 3.0276503540974917,
+      "lo": {
+        "vtype": "float",
+        "value": 3.02765035409749,
+        "display": "3.02765035409749"
+      },
+      "univer": 3.0276503540974917
+    },
+    {
+      "i": 44,
+      "fn": "VAR",
+      "formula": "=VAR(Data!A1:A10)",
+      "expect": 9.166666666666666,
+      "lo": {
+        "vtype": "float",
+        "value": 9.16666666666667,
+        "display": "9.16666666666667"
+      },
+      "univer": 9.166666666666666
+    },
+    {
+      "i": 45,
+      "fn": "VAR.S",
+      "formula": "=VAR.S(Data!A1:A10)",
+      "expect": 9.166666666666666,
+      "lo": {
+        "vtype": "float",
+        "value": 9.16666666666667,
+        "display": "9.16666666666667"
+      },
+      "univer": 9.166666666666666
+    },
+    {
+      "i": 46,
+      "fn": "PERCENTILE",
+      "formula": "=PERCENTILE(Data!A1:A10,0.5)",
+      "expect": 5.5,
+      "lo": {
+        "vtype": "float",
+        "value": 5.5,
+        "display": "5.5"
+      },
+      "univer": 5.5
+    },
+    {
+      "i": 47,
+      "fn": "QUARTILE",
+      "formula": "=QUARTILE(Data!A1:A10,1)",
+      "expect": 3.25,
+      "lo": {
+        "vtype": "float",
+        "value": 3.25,
+        "display": "3.25"
+      },
+      "univer": 3.25
+    },
+    {
+      "i": 48,
+      "fn": "CORREL",
+      "formula": "=CORREL(Data!A1:A10,Data!B1:B10)",
+      "expect": 1,
+      "lo": {
+        "vtype": "float",
+        "value": 1,
+        "display": "1"
+      },
+      "univer": 1
+    },
+    {
+      "i": 49,
+      "fn": "SLOPE",
+      "formula": "=SLOPE(Data!B1:B10,Data!A1:A10)",
+      "expect": 10,
+      "lo": {
+        "vtype": "float",
+        "value": 10,
+        "display": "10"
+      },
+      "univer": 10
+    },
+    {
+      "i": 50,
+      "fn": "INTERCEPT",
+      "formula": "=INTERCEPT(Data!B1:B10,Data!A1:A10)",
+      "expect": 0,
+      "lo": {
+        "vtype": "float",
+        "value": 0,
+        "display": "0"
+      },
+      "univer": 0
+    },
+    {
+      "i": 51,
+      "fn": "MROUND",
+      "formula": "=MROUND(10,3)",
+      "expect": 9,
+      "lo": {
+        "vtype": "float",
+        "value": 9,
+        "display": "9"
+      },
+      "univer": 9
+    },
+    {
+      "i": 52,
+      "fn": "QUOTIENT",
+      "formula": "=QUOTIENT(17,5)",
+      "expect": 3,
+      "lo": {
+        "vtype": "float",
+        "value": 3,
+        "display": "3"
+      },
+      "univer": 3
+    },
+    {
+      "i": 53,
+      "fn": "GCD",
+      "formula": "=GCD(12,18)",
+      "expect": 6,
+      "lo": {
+        "vtype": "float",
+        "value": 6,
+        "display": "6"
+      },
+      "univer": 6
+    },
+    {
+      "i": 54,
+      "fn": "LCM",
+      "formula": "=LCM(4,6)",
+      "expect": 12,
+      "lo": {
+        "vtype": "float",
+        "value": 12,
+        "display": "12"
+      },
+      "univer": 12
+    },
+    {
+      "i": 55,
+      "fn": "FACT",
+      "formula": "=FACT(5)",
+      "expect": 120,
+      "lo": {
+        "vtype": "float",
+        "value": 120,
+        "display": "120"
+      },
+      "univer": 120
+    },
+    {
+      "i": 56,
+      "fn": "PI",
+      "formula": "=PI()",
+      "expect": 3.141592653589793,
+      "lo": {
+        "vtype": "float",
+        "value": 3.14159265358979,
+        "display": "3.14159265358979"
+      },
+      "univer": 3.141592653589793
+    },
+    {
+      "i": 57,
+      "fn": "IF",
+      "formula": "=IF(Data!A1>0,\"pos\",\"neg\")",
+      "expect": "pos",
+      "lo": {
+        "vtype": "string",
+        "value": "pos",
+        "display": "pos"
+      },
+      "univer": "pos"
+    },
+    {
+      "i": 58,
+      "fn": "IFS",
+      "formula": "=IFS(Data!A1>5,\"big\",Data!A1>0,\"small\")",
+      "expect": "small",
+      "lo": {
+        "vtype": "string",
+        "value": "small",
+        "display": "small"
+      },
+      "univer": "small"
+    },
+    {
+      "i": 59,
+      "fn": "IFERROR",
+      "formula": "=IFERROR(1/0,\"err\")",
+      "expect": "err",
+      "lo": {
+        "vtype": "string",
+        "value": "err",
+        "display": "err"
+      },
+      "univer": "err"
+    },
+    {
+      "i": 60,
+      "fn": "IFNA",
+      "formula": "=IFNA(NA(),\"na\")",
+      "expect": "na",
+      "lo": {
+        "vtype": "string",
+        "value": "na",
+        "display": "na"
+      },
+      "univer": "na"
+    },
+    {
+      "i": 61,
+      "fn": "AND",
+      "formula": "=AND(TRUE,1>0)",
+      "expect": true,
+      "lo": {
+        "vtype": "boolean",
+        "value": true,
+        "display": "TRUE"
+      },
+      "univer": 1
+    },
+    {
+      "i": 62,
+      "fn": "OR",
+      "formula": "=OR(FALSE,1>2)",
+      "expect": false,
+      "lo": {
+        "vtype": "boolean",
+        "value": false,
+        "display": "FALSE"
+      },
+      "univer": 0
+    },
+    {
+      "i": 63,
+      "fn": "NOT",
+      "formula": "=NOT(FALSE)",
+      "expect": true,
+      "lo": {
+        "vtype": "boolean",
+        "value": true,
+        "display": "TRUE"
+      },
+      "univer": 1
+    },
+    {
+      "i": 64,
+      "fn": "XOR",
+      "formula": "=XOR(TRUE,TRUE)",
+      "expect": false,
+      "lo": {
+        "vtype": "boolean",
+        "value": false,
+        "display": "FALSE"
+      },
+      "univer": 0
+    },
+    {
+      "i": 65,
+      "fn": "TRUE",
+      "formula": "=TRUE()",
+      "expect": true,
+      "lo": {
+        "vtype": "boolean",
+        "value": true,
+        "display": "TRUE"
+      },
+      "univer": 1
+    },
+    {
+      "i": 66,
+      "fn": "FALSE",
+      "formula": "=FALSE()",
+      "expect": false,
+      "lo": {
+        "vtype": "boolean",
+        "value": false,
+        "display": "FALSE"
+      },
+      "univer": 0
+    },
+    {
+      "i": 67,
+      "fn": "SWITCH",
+      "formula": "=SWITCH(2,1,\"a\",2,\"b\",\"z\")",
+      "expect": "b",
+      "lo": {
+        "vtype": "string",
+        "value": "b",
+        "display": "b"
+      },
+      "univer": "b"
+    },
+    {
+      "i": 68,
+      "fn": "VLOOKUP",
+      "formula": "=VLOOKUP(3,Data!A1:C10,3,FALSE)",
+      "expect": "cherry",
+      "lo": {
+        "vtype": "string",
+        "value": "cherry",
+        "display": "cherry"
+      },
+      "univer": "cherry"
+    },
+    {
+      "i": 69,
+      "fn": "HLOOKUP",
+      "formula": "=HLOOKUP(\"y\",Data!G1:I2,2,FALSE)",
+      "expect": 2,
+      "lo": {
+        "vtype": "float",
+        "value": 2,
+        "display": "2"
+      },
+      "univer": 2
+    },
+    {
+      "i": 70,
+      "fn": "XLOOKUP",
+      "formula": "=XLOOKUP(\"cherry\",Data!C1:C10,Data!B1:B10)",
+      "expect": 30,
+      "lo": {
+        "vtype": "float",
+        "value": 30,
+        "display": "30"
+      },
+      "univer": 30
+    },
+    {
+      "i": 71,
+      "fn": "LOOKUP",
+      "formula": "=LOOKUP(4.5,Data!A1:A10,Data!B1:B10)",
+      "expect": 40,
+      "lo": {
+        "vtype": "float",
+        "value": 40,
+        "display": "40"
+      },
+      "univer": 40
+    },
+    {
+      "i": 72,
+      "fn": "INDEX",
+      "formula": "=INDEX(Data!B1:B10,4)",
+      "expect": 40,
+      "lo": {
+        "vtype": "float",
+        "value": 40,
+        "display": "40"
+      },
+      "univer": 40
+    },
+    {
+      "i": 73,
+      "fn": "MATCH",
+      "formula": "=MATCH(\"cherry\",Data!C1:C10,0)",
+      "expect": 3,
+      "lo": {
+        "vtype": "float",
+        "value": 3,
+        "display": "3"
+      },
+      "univer": 3
+    },
+    {
+      "i": 74,
+      "fn": "XMATCH",
+      "formula": "=XMATCH(\"banana\",Data!C1:C10)",
+      "expect": 2,
+      "lo": {
+        "vtype": "float",
+        "value": 2,
+        "display": "2"
+      },
+      "univer": 2
+    },
+    {
+      "i": 75,
+      "fn": "OFFSET",
+      "formula": "=OFFSET(Data!A1,2,1)",
+      "expect": 30,
+      "lo": {
+        "vtype": "float",
+        "value": 30,
+        "display": "30"
+      },
+      "univer": 30
+    },
+    {
+      "i": 76,
+      "fn": "INDIRECT",
+      "formula": "=INDIRECT(\"Data!B5\")",
+      "expect": 50,
+      "lo": {
+        "vtype": "float",
+        "value": 50,
+        "display": "50"
+      },
+      "univer": 50
+    },
+    {
+      "i": 77,
+      "fn": "CHOOSE",
+      "formula": "=CHOOSE(2,\"a\",\"b\",\"c\")",
+      "expect": "b",
+      "lo": {
+        "vtype": "string",
+        "value": "b",
+        "display": "b"
+      },
+      "univer": "b"
+    },
+    {
+      "i": 78,
+      "fn": "ROW",
+      "formula": "=ROW(Data!B7)",
+      "expect": 7,
+      "lo": {
+        "vtype": "float",
+        "value": 7,
+        "display": "7"
+      },
+      "univer": 7
+    },
+    {
+      "i": 79,
+      "fn": "ROWS",
+      "formula": "=ROWS(Data!A1:A10)",
+      "expect": 10,
+      "lo": {
+        "vtype": "float",
+        "value": 10,
+        "display": "10"
+      },
+      "univer": 10
+    },
+    {
+      "i": 80,
+      "fn": "COLUMN",
+      "formula": "=COLUMN(Data!C1)",
+      "expect": 3,
+      "lo": {
+        "vtype": "float",
+        "value": 3,
+        "display": "3"
+      },
+      "univer": 3
+    },
+    {
+      "i": 81,
+      "fn": "COLUMNS",
+      "formula": "=COLUMNS(Data!A1:C1)",
+      "expect": 3,
+      "lo": {
+        "vtype": "float",
+        "value": 3,
+        "display": "3"
+      },
+      "univer": 3
+    },
+    {
+      "i": 82,
+      "fn": "ADDRESS",
+      "formula": "=ADDRESS(2,3)",
+      "expect": "$C$2",
+      "lo": {
+        "vtype": "string",
+        "value": "$C$2",
+        "display": "$C$2"
+      },
+      "univer": "$C$2"
+    },
+    {
+      "i": 83,
+      "fn": "TRANSPOSE",
+      "formula": "=INDEX(TRANSPOSE(Data!A1:A3),1,2)",
+      "expect": 2,
+      "lo": {
+        "vtype": "float",
+        "value": 2,
+        "display": "2"
+      },
+      "univer": 2
+    },
+    {
+      "i": 84,
+      "fn": "FILTER",
+      "formula": "=SUM(FILTER(Data!B1:B10,Data!A1:A10>8))",
+      "expect": 190,
+      "lo": {
+        "vtype": "float",
+        "value": 190,
+        "display": "190"
+      },
+      "univer": 190
+    },
+    {
+      "i": 85,
+      "fn": "SORT",
+      "formula": "=INDEX(SORT(Data!A1:A10,1,-1),1)",
+      "expect": 10,
+      "lo": {
+        "vtype": "float",
+        "value": 10,
+        "display": "10"
+      },
+      "univer": 10
+    },
+    {
+      "i": 86,
+      "fn": "UNIQUE",
+      "formula": "=ROWS(UNIQUE(Data!C1:C10))",
+      "expect": 3,
+      "lo": {
+        "vtype": "string",
+        "value": "",
+        "display": "#NAME?"
+      },
+      "univer": 3
+    },
+    {
+      "i": 87,
+      "fn": "SEQUENCE",
+      "formula": "=SUM(SEQUENCE(4))",
+      "expect": 10,
+      "lo": {
+        "vtype": "string",
+        "value": "",
+        "display": "#NAME?"
+      },
+      "univer": 10
+    },
+    {
+      "i": 88,
+      "fn": "CONCAT",
+      "formula": "=CONCAT(\"a\",\"b\",\"c\")",
+      "expect": "abc",
+      "lo": {
+        "vtype": "string",
+        "value": "abc",
+        "display": "abc"
+      },
+      "univer": "abc"
+    },
+    {
+      "i": 89,
+      "fn": "CONCATENATE",
+      "formula": "=CONCATENATE(\"x\",1,\"y\")",
+      "expect": "x1y",
+      "lo": {
+        "vtype": "string",
+        "value": "x1y",
+        "display": "x1y"
+      },
+      "univer": "x1y"
+    },
+    {
+      "i": 90,
+      "fn": "TEXTJOIN",
+      "formula": "=TEXTJOIN(\",\",TRUE,Data!C1:C3)",
+      "expect": "apple,banana,cherry",
+      "lo": {
+        "vtype": "string",
+        "value": "apple,banana,cherry",
+        "display": "apple,banana,cherry"
+      },
+      "univer": "apple,banana,cherry"
+    },
+    {
+      "i": 91,
+      "fn": "LEFT",
+      "formula": "=LEFT(\"Excel\",2)",
+      "expect": "Ex",
+      "lo": {
+        "vtype": "string",
+        "value": "Ex",
+        "display": "Ex"
+      },
+      "univer": "Ex"
+    },
+    {
+      "i": 92,
+      "fn": "RIGHT",
+      "formula": "=RIGHT(\"Excel\",3)",
+      "expect": "cel",
+      "lo": {
+        "vtype": "string",
+        "value": "cel",
+        "display": "cel"
+      },
+      "univer": "cel"
+    },
+    {
+      "i": 93,
+      "fn": "MID",
+      "formula": "=MID(\"Excel\",2,3)",
+      "expect": "xce",
+      "lo": {
+        "vtype": "string",
+        "value": "xce",
+        "display": "xce"
+      },
+      "univer": "xce"
+    },
+    {
+      "i": 94,
+      "fn": "LEN",
+      "formula": "=LEN(\"你好abc\")",
+      "expect": 5,
+      "lo": {
+        "vtype": "float",
+        "value": 5,
+        "display": "5"
+      },
+      "univer": 5
+    },
+    {
+      "i": 95,
+      "fn": "FIND",
+      "formula": "=FIND(\"c\",\"abcabc\",4)",
+      "expect": 6,
+      "lo": {
+        "vtype": "float",
+        "value": 6,
+        "display": "6"
+      },
+      "univer": 6
+    },
+    {
+      "i": 96,
+      "fn": "SEARCH",
+      "formula": "=SEARCH(\"C\",\"abcabc\")",
+      "expect": 3,
+      "lo": {
+        "vtype": "float",
+        "value": 3,
+        "display": "3"
+      },
+      "univer": 3
+    },
+    {
+      "i": 97,
+      "fn": "SUBSTITUTE",
+      "formula": "=SUBSTITUTE(\"a-b-c\",\"-\",\"+\")",
+      "expect": "a+b+c",
+      "lo": {
+        "vtype": "string",
+        "value": "a+b+c",
+        "display": "a+b+c"
+      },
+      "univer": "a+b+c"
+    },
+    {
+      "i": 98,
+      "fn": "REPLACE",
+      "formula": "=REPLACE(\"abcdef\",2,3,\"X\")",
+      "expect": "aXef",
+      "lo": {
+        "vtype": "string",
+        "value": "aXef",
+        "display": "aXef"
+      },
+      "univer": "aXef"
+    },
+    {
+      "i": 99,
+      "fn": "TRIM",
+      "formula": "=TRIM(\"  a   b  \")",
+      "expect": "a b",
+      "lo": {
+        "vtype": "string",
+        "value": "a b",
+        "display": "a b"
+      },
+      "univer": "a b"
+    },
+    {
+      "i": 100,
+      "fn": "UPPER",
+      "formula": "=UPPER(\"abC\")",
+      "expect": "ABC",
+      "lo": {
+        "vtype": "string",
+        "value": "ABC",
+        "display": "ABC"
+      },
+      "univer": "ABC"
+    },
+    {
+      "i": 101,
+      "fn": "LOWER",
+      "formula": "=LOWER(\"AbC\")",
+      "expect": "abc",
+      "lo": {
+        "vtype": "string",
+        "value": "abc",
+        "display": "abc"
+      },
+      "univer": "abc"
+    },
+    {
+      "i": 102,
+      "fn": "PROPER",
+      "formula": "=PROPER(\"hello wORLD\")",
+      "expect": "Hello World",
+      "lo": {
+        "vtype": "string",
+        "value": "Hello World",
+        "display": "Hello World"
+      },
+      "univer": "Hello World"
+    },
+    {
+      "i": 103,
+      "fn": "TEXT",
+      "formula": "=TEXT(1234.567,\"#,##0.00\")",
+      "expect": "1,234.57",
+      "lo": {
+        "vtype": "string",
+        "value": "1,234.57",
+        "display": "1,234.57"
+      },
+      "univer": "1,234.57"
+    },
+    {
+      "i": 104,
+      "fn": "VALUE",
+      "formula": "=VALUE(\"12.5\")",
+      "expect": 12.5,
+      "lo": {
+        "vtype": "float",
+        "value": 12.5,
+        "display": "12.5"
+      },
+      "univer": 12.5
+    },
+    {
+      "i": 105,
+      "fn": "REPT",
+      "formula": "=REPT(\"ab\",3)",
+      "expect": "ababab",
+      "lo": {
+        "vtype": "string",
+        "value": "ababab",
+        "display": "ababab"
+      },
+      "univer": "ababab"
+    },
+    {
+      "i": 106,
+      "fn": "EXACT",
+      "formula": "=EXACT(\"a\",\"A\")",
+      "expect": false,
+      "lo": {
+        "vtype": "boolean",
+        "value": false,
+        "display": "FALSE"
+      },
+      "univer": 0
+    },
+    {
+      "i": 107,
+      "fn": "CLEAN",
+      "formula": "=CLEAN(\"a\"&CHAR(7)&\"b\")",
+      "expect": "ab",
+      "lo": {
+        "vtype": "string",
+        "value": "ab",
+        "display": "ab"
+      },
+      "univer": "ab"
+    },
+    {
+      "i": 108,
+      "fn": "CHAR",
+      "formula": "=CHAR(65)",
+      "expect": "A",
+      "lo": {
+        "vtype": "string",
+        "value": "A",
+        "display": "A"
+      },
+      "univer": "A"
+    },
+    {
+      "i": 109,
+      "fn": "CODE",
+      "formula": "=CODE(\"A\")",
+      "expect": 65,
+      "lo": {
+        "vtype": "float",
+        "value": 65,
+        "display": "65"
+      },
+      "univer": 65
+    },
+    {
+      "i": 110,
+      "fn": "NUMBERVALUE",
+      "formula": "=NUMBERVALUE(\"1.234,5\",\",\",\".\")",
+      "expect": 1234.5,
+      "lo": {
+        "vtype": "float",
+        "value": 1234.5,
+        "display": "1234.5"
+      },
+      "univer": 1234.5
+    },
+    {
+      "i": 111,
+      "fn": "FIXED",
+      "formula": "=FIXED(1234.567,1)",
+      "expect": "1,234.6",
+      "lo": {
+        "vtype": "string",
+        "value": "1,234.6",
+        "display": "1,234.6"
+      },
+      "univer": "1,234.6"
+    },
+    {
+      "i": 112,
+      "fn": "T",
+      "formula": "=T(\"abc\")",
+      "expect": "abc",
+      "lo": {
+        "vtype": "string",
+        "value": "abc",
+        "display": "abc"
+      },
+      "univer": "abc"
+    },
+    {
+      "i": 113,
+      "fn": "TODAY",
+      "formula": "=TODAY()",
+      "expect": "[45000,80000)",
+      "lo": {
+        "vtype": "date",
+        "value": 46294,
+        "display": "26年9月29日"
+      },
+      "univer": 46294
+    },
+    {
+      "i": 114,
+      "fn": "NOW",
+      "formula": "=NOW()",
+      "expect": "[45000,80000)",
+      "lo": {
+        "vtype": "date",
+        "value": 46294,
+        "display": "2026/09/29 13:46:29"
+      },
+      "univer": 46294.56997685185
+    },
+    {
+      "i": 115,
+      "fn": "DATE",
+      "formula": "=DATE(2024,2,29)",
+      "expect": 45351,
+      "lo": {
+        "vtype": "date",
+        "value": 45351,
+        "display": "24年2月29日"
+      },
+      "univer": 45351
+    },
+    {
+      "i": 116,
+      "fn": "YEAR",
+      "formula": "=YEAR(DATE(2024,2,29))",
+      "expect": 2024,
+      "lo": {
+        "vtype": "float",
+        "value": 2024,
+        "display": "2024"
+      },
+      "univer": 2024
+    },
+    {
+      "i": 117,
+      "fn": "MONTH",
+      "formula": "=MONTH(DATE(2024,2,29))",
+      "expect": 2,
+      "lo": {
+        "vtype": "float",
+        "value": 2,
+        "display": "2"
+      },
+      "univer": 2
+    },
+    {
+      "i": 118,
+      "fn": "DAY",
+      "formula": "=DAY(DATE(2024,2,29))",
+      "expect": 29,
+      "lo": {
+        "vtype": "float",
+        "value": 29,
+        "display": "29"
+      },
+      "univer": 29
+    },
+    {
+      "i": 119,
+      "fn": "HOUR",
+      "formula": "=HOUR(TIME(13,45,30))",
+      "expect": 13,
+      "lo": {
+        "vtype": "float",
+        "value": 13,
+        "display": "13"
+      },
+      "univer": 13
+    },
+    {
+      "i": 120,
+      "fn": "MINUTE",
+      "formula": "=MINUTE(TIME(13,45,30))",
+      "expect": 45,
+      "lo": {
+        "vtype": "float",
+        "value": 45,
+        "display": "45"
+      },
+      "univer": 45
+    },
+    {
+      "i": 121,
+      "fn": "SECOND",
+      "formula": "=SECOND(TIME(13,45,30))",
+      "expect": 30,
+      "lo": {
+        "vtype": "float",
+        "value": 30,
+        "display": "30"
+      },
+      "univer": 30
+    },
+    {
+      "i": 122,
+      "fn": "WEEKDAY",
+      "formula": "=WEEKDAY(DATE(2024,2,29))",
+      "expect": 5,
+      "lo": {
+        "vtype": "float",
+        "value": 5,
+        "display": "5"
+      },
+      "univer": 5
+    },
+    {
+      "i": 123,
+      "fn": "WEEKNUM",
+      "formula": "=WEEKNUM(DATE(2024,2,29))",
+      "expect": 9,
+      "lo": {
+        "vtype": "float",
+        "value": 9,
+        "display": "9"
+      },
+      "univer": 9
+    },
+    {
+      "i": 124,
+      "fn": "EDATE",
+      "formula": "=EDATE(DATE(2024,1,31),1)",
+      "expect": 45351,
+      "lo": {
+        "vtype": "float",
+        "value": 45351,
+        "display": "45351"
+      },
+      "univer": 45351
+    },
+    {
+      "i": 125,
+      "fn": "EOMONTH",
+      "formula": "=EOMONTH(DATE(2024,1,15),1)",
+      "expect": 45351,
+      "lo": {
+        "vtype": "float",
+        "value": 45351,
+        "display": "45351"
+      },
+      "univer": 45351
+    },
+    {
+      "i": 126,
+      "fn": "DATEDIF",
+      "formula": "=DATEDIF(DATE(2024,1,1),DATE(2024,3,15),\"m\")",
+      "expect": 2,
+      "lo": {
+        "vtype": "float",
+        "value": 2,
+        "display": "2"
+      },
+      "univer": 2
+    },
+    {
+      "i": 127,
+      "fn": "DAYS",
+      "formula": "=DAYS(DATE(2024,3,1),DATE(2024,2,1))",
+      "expect": 29,
+      "lo": {
+        "vtype": "float",
+        "value": 29,
+        "display": "29"
+      },
+      "univer": 29
+    },
+    {
+      "i": 128,
+      "fn": "NETWORKDAYS",
+      "formula": "=NETWORKDAYS(DATE(2024,1,1),DATE(2024,1,7))",
+      "expect": 5,
+      "lo": {
+        "vtype": "float",
+        "value": 5,
+        "display": "5"
+      },
+      "univer": 5
+    },
+    {
+      "i": 129,
+      "fn": "WORKDAY",
+      "formula": "=WORKDAY(DATE(2024,1,5),1)",
+      "expect": 45299,
+      "lo": {
+        "vtype": "float",
+        "value": 45299,
+        "display": "45299"
+      },
+      "univer": 45299
+    },
+    {
+      "i": 130,
+      "fn": "TIME",
+      "formula": "=TIME(12,0,0)",
+      "expect": 0.5,
+      "lo": {
+        "vtype": "time",
+        "value": 0.5,
+        "display": "12:00:00"
+      },
+      "univer": 0.5
+    },
+    {
+      "i": 131,
+      "fn": "DATEVALUE",
+      "formula": "=DATEVALUE(\"2024-02-29\")",
+      "expect": 45351,
+      "lo": {
+        "vtype": "float",
+        "value": 45351,
+        "display": "45351"
+      },
+      "univer": 45351
+    },
+    {
+      "i": 132,
+      "fn": "TIMEVALUE",
+      "formula": "=TIMEVALUE(\"06:00\")",
+      "expect": 0.25,
+      "lo": {
+        "vtype": "float",
+        "value": 0.25,
+        "display": "0.25"
+      },
+      "univer": 0.25
+    },
+    {
+      "i": 133,
+      "fn": "YEARFRAC",
+      "formula": "=YEARFRAC(DATE(2024,1,1),DATE(2024,7,1))",
+      "expect": 0.5,
+      "lo": {
+        "vtype": "float",
+        "value": 0.5,
+        "display": "0.5"
+      },
+      "univer": 0.5
+    },
+    {
+      "i": 134,
+      "fn": "ISNUMBER",
+      "formula": "=ISNUMBER(Data!A1)",
+      "expect": true,
+      "lo": {
+        "vtype": "boolean",
+        "value": true,
+        "display": "TRUE"
+      },
+      "univer": 1
+    },
+    {
+      "i": 135,
+      "fn": "ISTEXT",
+      "formula": "=ISTEXT(Data!C1)",
+      "expect": true,
+      "lo": {
+        "vtype": "boolean",
+        "value": true,
+        "display": "TRUE"
+      },
+      "univer": 1
+    },
+    {
+      "i": 136,
+      "fn": "ISBLANK",
+      "formula": "=ISBLANK(Data!Z99)",
+      "expect": true,
+      "lo": {
+        "vtype": "boolean",
+        "value": true,
+        "display": "TRUE"
+      },
+      "univer": 1
+    },
+    {
+      "i": 137,
+      "fn": "ISERROR",
+      "formula": "=ISERROR(1/0)",
+      "expect": true,
+      "lo": {
+        "vtype": "boolean",
+        "value": true,
+        "display": "TRUE"
+      },
+      "univer": 1
+    },
+    {
+      "i": 138,
+      "fn": "ISERR",
+      "formula": "=ISERR(NA())",
+      "expect": false,
+      "lo": {
+        "vtype": "boolean",
+        "value": false,
+        "display": "FALSE"
+      },
+      "univer": 0
+    },
+    {
+      "i": 139,
+      "fn": "ISNA",
+      "formula": "=ISNA(NA())",
+      "expect": true,
+      "lo": {
+        "vtype": "boolean",
+        "value": true,
+        "display": "TRUE"
+      },
+      "univer": 1
+    },
+    {
+      "i": 140,
+      "fn": "ISLOGICAL",
+      "formula": "=ISLOGICAL(TRUE)",
+      "expect": true,
+      "lo": {
+        "vtype": "boolean",
+        "value": true,
+        "display": "TRUE"
+      },
+      "univer": 1
+    },
+    {
+      "i": 141,
+      "fn": "ISEVEN",
+      "formula": "=ISEVEN(4)",
+      "expect": true,
+      "lo": {
+        "vtype": "boolean",
+        "value": true,
+        "display": "TRUE"
+      },
+      "univer": 1
+    },
+    {
+      "i": 142,
+      "fn": "ISODD",
+      "formula": "=ISODD(4)",
+      "expect": false,
+      "lo": {
+        "vtype": "boolean",
+        "value": false,
+        "display": "FALSE"
+      },
+      "univer": 0
+    },
+    {
+      "i": 143,
+      "fn": "N",
+      "formula": "=N(TRUE)",
+      "expect": 1,
+      "lo": {
+        "vtype": "float",
+        "value": 1,
+        "display": "1"
+      },
+      "univer": 1
+    },
+    {
+      "i": 144,
+      "fn": "NA",
+      "formula": "=NA()",
+      "expect": "#N/A",
+      "lo": {
+        "vtype": "string",
+        "value": "",
+        "display": "#N/A"
+      },
+      "univer": "#N/A"
+    },
+    {
+      "i": 145,
+      "fn": "PMT",
+      "formula": "=PMT(0.05/12,60,-10000)",
+      "expect": 188.7123356,
+      "lo": {
+        "vtype": "currency",
+        "value": 188.712336440109,
+        "display": "￥188.71"
+      },
+      "univer": 188.7123364401099
+    },
+    {
+      "i": 146,
+      "fn": "FV",
+      "formula": "=FV(0.05,10,-100)",
+      "expect": 1257.789254554,
+      "lo": {
+        "vtype": "currency",
+        "value": 1257.78925355488,
+        "display": "￥1,257.79"
+      },
+      "univer": 1257.789253554884
+    },
+    {
+      "i": 147,
+      "fn": "PV",
+      "formula": "=PV(0.05,10,-100)",
+      "expect": 772.173492918,
+      "lo": {
+        "vtype": "currency",
+        "value": 772.173492918482,
+        "display": "￥772.17"
+      },
+      "univer": 772.1734929184817
+    },
+    {
+      "i": 148,
+      "fn": "NPV",
+      "formula": "=NPV(0.1,100,100,100)",
+      "expect": 248.685199098,
+      "lo": {
+        "vtype": "currency",
+        "value": 248.685199098422,
+        "display": "￥248.69"
+      },
+      "univer": 248.68519909842223
+    },
+    {
+      "i": 149,
+      "fn": "IRR",
+      "formula": "=IRR(Data!K1:K3)",
+      "expect": 0.130662386,
+      "lo": {
+        "vtype": "percentage",
+        "value": 0.130662386291807,
+        "display": "13.07%"
+      },
+      "univer": 0.13066238629180751
+    }
+  ],
+  "errRows": [
+    {
+      "id": "div0",
+      "formula": "=1/0",
+      "expect": "#DIV/0!",
+      "lo": {
+        "vtype": "string",
+        "value": "",
+        "display": "#DIV/0!"
+      },
+      "univer": "#DIV/0!",
+      "loMatch": true,
+      "univerMatch": true
+    },
+    {
+      "id": "valueErr",
+      "formula": "=VALUE(\"abc\")",
+      "expect": "#VALUE!",
+      "lo": {
+        "vtype": "string",
+        "value": "",
+        "display": "Err:502"
+      },
+      "univer": "#VALUE!",
+      "loMatch": false,
+      "univerMatch": true
+    },
+    {
+      "id": "unknownFn",
+      "formula": "=NOSUCHFUNCTION(1)",
+      "expect": "#NAME?",
+      "lo": {
+        "vtype": "string",
+        "value": "",
+        "display": "#NAME?"
+      },
+      "univer": "#NAME?",
+      "loMatch": true,
+      "univerMatch": true
+    },
+    {
+      "id": "missingSheet",
+      "formula": "=Data!A1+Missing!A1",
+      "expect": "#REF!",
+      "lo": {
+        "vtype": "string",
+        "value": "",
+        "display": "#NAME?"
+      },
+      "univer": "#NAME?",
+      "loMatch": false,
+      "univerMatch": false
+    }
+  ],
+  "disagreeLo": [
+    {
+      "i": 86,
+      "fn": "UNIQUE",
+      "expect": 3,
+      "lo": {
+        "vtype": "string",
+        "value": "",
+        "display": "#NAME?"
+      },
+      "univer": 3
+    },
+    {
+      "i": 87,
+      "fn": "SEQUENCE",
+      "expect": 10,
+      "lo": {
+        "vtype": "string",
+        "value": "",
+        "display": "#NAME?"
+      },
+      "univer": 10
+    }
+  ],
+  "disagreeUniver": [],
+  "boolnumRows": [
+    "AND",
+    "OR",
+    "NOT",
+    "XOR",
+    "TRUE",
+    "FALSE",
+    "EXACT",
+    "ISNUMBER",
+    "ISTEXT",
+    "ISBLANK",
+    "ISERROR",
+    "ISERR",
+    "ISNA",
+    "ISLOGICAL",
+    "ISEVEN",
+    "ISODD"
+  ]
+}

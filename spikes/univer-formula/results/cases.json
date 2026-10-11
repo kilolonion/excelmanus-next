@@ -1,0 +1,2877 @@
+{
+  "meta": {
+    "test": "A2-2a-cases",
+    "node": "v24.1.0",
+    "ts": "2026-09-29T10:27:14.225Z"
+  },
+  "p1": {
+    "pass": 150,
+    "total": 150,
+    "wait": {
+      "outcome": "done",
+      "ms": 82.68204100000003
+    },
+    "sessionState": {
+      "id": 1,
+      "initialized": true,
+      "started": true,
+      "progress": {
+        "totalFormulasToCalculate": 154,
+        "completedFormulasCount": 1,
+        "totalArrayFormulasToCalculate": 0,
+        "completedArrayFormulasCount": 0,
+        "stage": 8,
+        "formulaCycleIndex": 0
+      },
+      "stopped": false,
+      "completed": true,
+      "resultEmitted": true,
+      "resultApplied": true
+    },
+    "byType": {
+      "num": {
+        "pass": 103,
+        "total": 103
+      },
+      "numRange": {
+        "pass": 4,
+        "total": 4
+      },
+      "str": {
+        "pass": 26,
+        "total": 26
+      },
+      "bool": {
+        "pass": 16,
+        "total": 16
+      },
+      "err": {
+        "pass": 1,
+        "total": 1
+      }
+    },
+    "results": [
+      {
+        "i": 0,
+        "fn": "SUM",
+        "formula": "=SUM(Data!A1:A10)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 55
+      },
+      {
+        "i": 1,
+        "fn": "SUMIF",
+        "formula": "=SUMIF(Data!C1:C10,\"apple\",Data!B1:B10)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 220
+      },
+      {
+        "i": 2,
+        "fn": "SUMIFS",
+        "formula": "=SUMIFS(Data!B1:B10,Data!C1:C10,\"banana\",Data!A1:A10,\">2\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": 130
+      },
+      {
+        "i": 3,
+        "fn": "SUMPRODUCT",
+        "formula": "=SUMPRODUCT(Data!A1:A10,Data!B1:B10)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3850
+      },
+      {
+        "i": 4,
+        "fn": "AVERAGE",
+        "formula": "=AVERAGE(Data!A1:A10)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 5.5
+      },
+      {
+        "i": 5,
+        "fn": "AVERAGEIF",
+        "formula": "=AVERAGEIF(Data!C1:C10,\"cherry\",Data!B1:B10)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 60
+      },
+      {
+        "i": 6,
+        "fn": "AVERAGEIFS",
+        "formula": "=AVERAGEIFS(Data!B1:B10,Data!C1:C10,\"apple\",Data!A1:A10,\"<=7\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": 40
+      },
+      {
+        "i": 7,
+        "fn": "COUNT",
+        "formula": "=COUNT(Data!A1:A10,Data!C1:C3)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 10
+      },
+      {
+        "i": 8,
+        "fn": "COUNTA",
+        "formula": "=COUNTA(Data!A1:C10)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 30
+      },
+      {
+        "i": 9,
+        "fn": "COUNTBLANK",
+        "formula": "=COUNTBLANK(Data!E1:E10)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 10
+      },
+      {
+        "i": 10,
+        "fn": "COUNTIF",
+        "formula": "=COUNTIF(Data!C1:C10,\"apple\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": 4
+      },
+      {
+        "i": 11,
+        "fn": "COUNTIFS",
+        "formula": "=COUNTIFS(Data!C1:C10,\"banana\",Data!A1:A10,\">=5\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": 2
+      },
+      {
+        "i": 12,
+        "fn": "MAX",
+        "formula": "=MAX(Data!A1:A10)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 10
+      },
+      {
+        "i": 13,
+        "fn": "MAXIFS",
+        "formula": "=MAXIFS(Data!B1:B10,Data!C1:C10,\"banana\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": 80
+      },
+      {
+        "i": 14,
+        "fn": "MIN",
+        "formula": "=MIN(Data!B1:B10)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 10
+      },
+      {
+        "i": 15,
+        "fn": "MINIFS",
+        "formula": "=MINIFS(Data!B1:B10,Data!C1:C10,\"cherry\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": 30
+      },
+      {
+        "i": 16,
+        "fn": "ROUND",
+        "formula": "=ROUND(2.567,2)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 2.57
+      },
+      {
+        "i": 17,
+        "fn": "ROUNDUP",
+        "formula": "=ROUNDUP(2.561,2)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 2.57
+      },
+      {
+        "i": 18,
+        "fn": "ROUNDDOWN",
+        "formula": "=ROUNDDOWN(2.569,2)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 2.56
+      },
+      {
+        "i": 19,
+        "fn": "INT",
+        "formula": "=INT(-2.5)",
+        "pass": true,
+        "cls": "ok",
+        "actual": -3
+      },
+      {
+        "i": 20,
+        "fn": "MOD",
+        "formula": "=MOD(-7,3)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 2
+      },
+      {
+        "i": 21,
+        "fn": "ABS",
+        "formula": "=ABS(-3.5)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3.5
+      },
+      {
+        "i": 22,
+        "fn": "CEILING",
+        "formula": "=CEILING(2.1,0.5)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 2.5
+      },
+      {
+        "i": 23,
+        "fn": "FLOOR",
+        "formula": "=FLOOR(2.9,0.5)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 2.5
+      },
+      {
+        "i": 24,
+        "fn": "POWER",
+        "formula": "=POWER(2,10)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1024
+      },
+      {
+        "i": 25,
+        "fn": "SQRT",
+        "formula": "=SQRT(144)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 12
+      },
+      {
+        "i": 26,
+        "fn": "PRODUCT",
+        "formula": "=PRODUCT(Data!A1:A5)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 120
+      },
+      {
+        "i": 27,
+        "fn": "RAND",
+        "formula": "=RAND()",
+        "pass": true,
+        "cls": "ok",
+        "actual": 0.10932060126548693
+      },
+      {
+        "i": 28,
+        "fn": "RANDBETWEEN",
+        "formula": "=RANDBETWEEN(5,10)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 10
+      },
+      {
+        "i": 29,
+        "fn": "SIGN",
+        "formula": "=SIGN(-9)",
+        "pass": true,
+        "cls": "ok",
+        "actual": -1
+      },
+      {
+        "i": 30,
+        "fn": "TRUNC",
+        "formula": "=TRUNC(-8.9)",
+        "pass": true,
+        "cls": "ok",
+        "actual": -8
+      },
+      {
+        "i": 31,
+        "fn": "LN",
+        "formula": "=LN(EXP(1))",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1
+      },
+      {
+        "i": 32,
+        "fn": "LOG",
+        "formula": "=LOG(8,2)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3
+      },
+      {
+        "i": 33,
+        "fn": "LOG10",
+        "formula": "=LOG10(1000)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3
+      },
+      {
+        "i": 34,
+        "fn": "EXP",
+        "formula": "=EXP(0)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1
+      },
+      {
+        "i": 35,
+        "fn": "SUBTOTAL",
+        "formula": "=SUBTOTAL(9,Data!A1:A10)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 55
+      },
+      {
+        "i": 36,
+        "fn": "AGGREGATE",
+        "formula": "=AGGREGATE(9,6,Data!A1:A10)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 55
+      },
+      {
+        "i": 37,
+        "fn": "MEDIAN",
+        "formula": "=MEDIAN(Data!B1:B10)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 55
+      },
+      {
+        "i": 38,
+        "fn": "MODE",
+        "formula": "=MODE(1,2,2,3,3,3)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3
+      },
+      {
+        "i": 39,
+        "fn": "LARGE",
+        "formula": "=LARGE(Data!B1:B10,2)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 90
+      },
+      {
+        "i": 40,
+        "fn": "SMALL",
+        "formula": "=SMALL(Data!B1:B10,3)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 30
+      },
+      {
+        "i": 41,
+        "fn": "RANK",
+        "formula": "=RANK(30,Data!B1:B10)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 8
+      },
+      {
+        "i": 42,
+        "fn": "STDEV",
+        "formula": "=STDEV(Data!A1:A10)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3.0276503540974917
+      },
+      {
+        "i": 43,
+        "fn": "STDEV.S",
+        "formula": "=STDEV.S(Data!A1:A10)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3.0276503540974917
+      },
+      {
+        "i": 44,
+        "fn": "VAR",
+        "formula": "=VAR(Data!A1:A10)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 9.166666666666666
+      },
+      {
+        "i": 45,
+        "fn": "VAR.S",
+        "formula": "=VAR.S(Data!A1:A10)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 9.166666666666666
+      },
+      {
+        "i": 46,
+        "fn": "PERCENTILE",
+        "formula": "=PERCENTILE(Data!A1:A10,0.5)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 5.5
+      },
+      {
+        "i": 47,
+        "fn": "QUARTILE",
+        "formula": "=QUARTILE(Data!A1:A10,1)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3.25
+      },
+      {
+        "i": 48,
+        "fn": "CORREL",
+        "formula": "=CORREL(Data!A1:A10,Data!B1:B10)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1
+      },
+      {
+        "i": 49,
+        "fn": "SLOPE",
+        "formula": "=SLOPE(Data!B1:B10,Data!A1:A10)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 10
+      },
+      {
+        "i": 50,
+        "fn": "INTERCEPT",
+        "formula": "=INTERCEPT(Data!B1:B10,Data!A1:A10)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 0
+      },
+      {
+        "i": 51,
+        "fn": "MROUND",
+        "formula": "=MROUND(10,3)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 9
+      },
+      {
+        "i": 52,
+        "fn": "QUOTIENT",
+        "formula": "=QUOTIENT(17,5)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3
+      },
+      {
+        "i": 53,
+        "fn": "GCD",
+        "formula": "=GCD(12,18)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 6
+      },
+      {
+        "i": 54,
+        "fn": "LCM",
+        "formula": "=LCM(4,6)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 12
+      },
+      {
+        "i": 55,
+        "fn": "FACT",
+        "formula": "=FACT(5)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 120
+      },
+      {
+        "i": 56,
+        "fn": "PI",
+        "formula": "=PI()",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3.141592653589793
+      },
+      {
+        "i": 57,
+        "fn": "IF",
+        "formula": "=IF(Data!A1>0,\"pos\",\"neg\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": "pos"
+      },
+      {
+        "i": 58,
+        "fn": "IFS",
+        "formula": "=IFS(Data!A1>5,\"big\",Data!A1>0,\"small\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": "small"
+      },
+      {
+        "i": 59,
+        "fn": "IFERROR",
+        "formula": "=IFERROR(1/0,\"err\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": "err"
+      },
+      {
+        "i": 60,
+        "fn": "IFNA",
+        "formula": "=IFNA(NA(),\"na\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": "na"
+      },
+      {
+        "i": 61,
+        "fn": "AND",
+        "formula": "=AND(TRUE,1>0)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1,
+        "t": 3
+      },
+      {
+        "i": 62,
+        "fn": "OR",
+        "formula": "=OR(FALSE,1>2)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 0,
+        "t": 3
+      },
+      {
+        "i": 63,
+        "fn": "NOT",
+        "formula": "=NOT(FALSE)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1,
+        "t": 3
+      },
+      {
+        "i": 64,
+        "fn": "XOR",
+        "formula": "=XOR(TRUE,TRUE)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 0,
+        "t": 3
+      },
+      {
+        "i": 65,
+        "fn": "TRUE",
+        "formula": "=TRUE()",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1,
+        "t": 3
+      },
+      {
+        "i": 66,
+        "fn": "FALSE",
+        "formula": "=FALSE()",
+        "pass": true,
+        "cls": "ok",
+        "actual": 0,
+        "t": 3
+      },
+      {
+        "i": 67,
+        "fn": "SWITCH",
+        "formula": "=SWITCH(2,1,\"a\",2,\"b\",\"z\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": "b"
+      },
+      {
+        "i": 68,
+        "fn": "VLOOKUP",
+        "formula": "=VLOOKUP(3,Data!A1:C10,3,FALSE)",
+        "pass": true,
+        "cls": "ok",
+        "actual": "cherry"
+      },
+      {
+        "i": 69,
+        "fn": "HLOOKUP",
+        "formula": "=HLOOKUP(\"y\",Data!G1:I2,2,FALSE)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 2
+      },
+      {
+        "i": 70,
+        "fn": "XLOOKUP",
+        "formula": "=XLOOKUP(\"cherry\",Data!C1:C10,Data!B1:B10)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 30
+      },
+      {
+        "i": 71,
+        "fn": "LOOKUP",
+        "formula": "=LOOKUP(4.5,Data!A1:A10,Data!B1:B10)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 40
+      },
+      {
+        "i": 72,
+        "fn": "INDEX",
+        "formula": "=INDEX(Data!B1:B10,4)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 40
+      },
+      {
+        "i": 73,
+        "fn": "MATCH",
+        "formula": "=MATCH(\"cherry\",Data!C1:C10,0)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3
+      },
+      {
+        "i": 74,
+        "fn": "XMATCH",
+        "formula": "=XMATCH(\"banana\",Data!C1:C10)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 2
+      },
+      {
+        "i": 75,
+        "fn": "OFFSET",
+        "formula": "=OFFSET(Data!A1,2,1)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 30
+      },
+      {
+        "i": 76,
+        "fn": "INDIRECT",
+        "formula": "=INDIRECT(\"Data!B5\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": 50
+      },
+      {
+        "i": 77,
+        "fn": "CHOOSE",
+        "formula": "=CHOOSE(2,\"a\",\"b\",\"c\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": "b"
+      },
+      {
+        "i": 78,
+        "fn": "ROW",
+        "formula": "=ROW(Data!B7)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 7
+      },
+      {
+        "i": 79,
+        "fn": "ROWS",
+        "formula": "=ROWS(Data!A1:A10)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 10
+      },
+      {
+        "i": 80,
+        "fn": "COLUMN",
+        "formula": "=COLUMN(Data!C1)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3
+      },
+      {
+        "i": 81,
+        "fn": "COLUMNS",
+        "formula": "=COLUMNS(Data!A1:C1)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3
+      },
+      {
+        "i": 82,
+        "fn": "ADDRESS",
+        "formula": "=ADDRESS(2,3)",
+        "pass": true,
+        "cls": "ok",
+        "actual": "$C$2"
+      },
+      {
+        "i": 83,
+        "fn": "TRANSPOSE",
+        "formula": "=INDEX(TRANSPOSE(Data!A1:A3),1,2)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 2
+      },
+      {
+        "i": 84,
+        "fn": "FILTER",
+        "formula": "=SUM(FILTER(Data!B1:B10,Data!A1:A10>8))",
+        "pass": true,
+        "cls": "ok",
+        "actual": 190
+      },
+      {
+        "i": 85,
+        "fn": "SORT",
+        "formula": "=INDEX(SORT(Data!A1:A10,1,-1),1)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 10
+      },
+      {
+        "i": 86,
+        "fn": "UNIQUE",
+        "formula": "=ROWS(UNIQUE(Data!C1:C10))",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3
+      },
+      {
+        "i": 87,
+        "fn": "SEQUENCE",
+        "formula": "=SUM(SEQUENCE(4))",
+        "pass": true,
+        "cls": "ok",
+        "actual": 10
+      },
+      {
+        "i": 88,
+        "fn": "CONCAT",
+        "formula": "=CONCAT(\"a\",\"b\",\"c\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": "abc"
+      },
+      {
+        "i": 89,
+        "fn": "CONCATENATE",
+        "formula": "=CONCATENATE(\"x\",1,\"y\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": "x1y"
+      },
+      {
+        "i": 90,
+        "fn": "TEXTJOIN",
+        "formula": "=TEXTJOIN(\",\",TRUE,Data!C1:C3)",
+        "pass": true,
+        "cls": "ok",
+        "actual": "apple,banana,cherry"
+      },
+      {
+        "i": 91,
+        "fn": "LEFT",
+        "formula": "=LEFT(\"Excel\",2)",
+        "pass": true,
+        "cls": "ok",
+        "actual": "Ex"
+      },
+      {
+        "i": 92,
+        "fn": "RIGHT",
+        "formula": "=RIGHT(\"Excel\",3)",
+        "pass": true,
+        "cls": "ok",
+        "actual": "cel"
+      },
+      {
+        "i": 93,
+        "fn": "MID",
+        "formula": "=MID(\"Excel\",2,3)",
+        "pass": true,
+        "cls": "ok",
+        "actual": "xce"
+      },
+      {
+        "i": 94,
+        "fn": "LEN",
+        "formula": "=LEN(\"你好abc\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": 5
+      },
+      {
+        "i": 95,
+        "fn": "FIND",
+        "formula": "=FIND(\"c\",\"abcabc\",4)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 6
+      },
+      {
+        "i": 96,
+        "fn": "SEARCH",
+        "formula": "=SEARCH(\"C\",\"abcabc\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3
+      },
+      {
+        "i": 97,
+        "fn": "SUBSTITUTE",
+        "formula": "=SUBSTITUTE(\"a-b-c\",\"-\",\"+\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": "a+b+c"
+      },
+      {
+        "i": 98,
+        "fn": "REPLACE",
+        "formula": "=REPLACE(\"abcdef\",2,3,\"X\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": "aXef"
+      },
+      {
+        "i": 99,
+        "fn": "TRIM",
+        "formula": "=TRIM(\"  a   b  \")",
+        "pass": true,
+        "cls": "ok",
+        "actual": "a b"
+      },
+      {
+        "i": 100,
+        "fn": "UPPER",
+        "formula": "=UPPER(\"abC\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": "ABC"
+      },
+      {
+        "i": 101,
+        "fn": "LOWER",
+        "formula": "=LOWER(\"AbC\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": "abc"
+      },
+      {
+        "i": 102,
+        "fn": "PROPER",
+        "formula": "=PROPER(\"hello wORLD\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": "Hello World"
+      },
+      {
+        "i": 103,
+        "fn": "TEXT",
+        "formula": "=TEXT(1234.567,\"#,##0.00\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": "1,234.57"
+      },
+      {
+        "i": 104,
+        "fn": "VALUE",
+        "formula": "=VALUE(\"12.5\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": 12.5
+      },
+      {
+        "i": 105,
+        "fn": "REPT",
+        "formula": "=REPT(\"ab\",3)",
+        "pass": true,
+        "cls": "ok",
+        "actual": "ababab"
+      },
+      {
+        "i": 106,
+        "fn": "EXACT",
+        "formula": "=EXACT(\"a\",\"A\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": 0,
+        "t": 3
+      },
+      {
+        "i": 107,
+        "fn": "CLEAN",
+        "formula": "=CLEAN(\"a\"&CHAR(7)&\"b\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": "ab"
+      },
+      {
+        "i": 108,
+        "fn": "CHAR",
+        "formula": "=CHAR(65)",
+        "pass": true,
+        "cls": "ok",
+        "actual": "A"
+      },
+      {
+        "i": 109,
+        "fn": "CODE",
+        "formula": "=CODE(\"A\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": 65
+      },
+      {
+        "i": 110,
+        "fn": "NUMBERVALUE",
+        "formula": "=NUMBERVALUE(\"1.234,5\",\",\",\".\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1234.5
+      },
+      {
+        "i": 111,
+        "fn": "FIXED",
+        "formula": "=FIXED(1234.567,1)",
+        "pass": true,
+        "cls": "ok",
+        "actual": "1,234.6"
+      },
+      {
+        "i": 112,
+        "fn": "T",
+        "formula": "=T(\"abc\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": "abc"
+      },
+      {
+        "i": 113,
+        "fn": "TODAY",
+        "formula": "=TODAY()",
+        "pass": true,
+        "cls": "ok",
+        "actual": 46294
+      },
+      {
+        "i": 114,
+        "fn": "NOW",
+        "formula": "=NOW()",
+        "pass": true,
+        "cls": "ok",
+        "actual": 46294.76888888889
+      },
+      {
+        "i": 115,
+        "fn": "DATE",
+        "formula": "=DATE(2024,2,29)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 45351
+      },
+      {
+        "i": 116,
+        "fn": "YEAR",
+        "formula": "=YEAR(DATE(2024,2,29))",
+        "pass": true,
+        "cls": "ok",
+        "actual": 2024
+      },
+      {
+        "i": 117,
+        "fn": "MONTH",
+        "formula": "=MONTH(DATE(2024,2,29))",
+        "pass": true,
+        "cls": "ok",
+        "actual": 2
+      },
+      {
+        "i": 118,
+        "fn": "DAY",
+        "formula": "=DAY(DATE(2024,2,29))",
+        "pass": true,
+        "cls": "ok",
+        "actual": 29
+      },
+      {
+        "i": 119,
+        "fn": "HOUR",
+        "formula": "=HOUR(TIME(13,45,30))",
+        "pass": true,
+        "cls": "ok",
+        "actual": 13
+      },
+      {
+        "i": 120,
+        "fn": "MINUTE",
+        "formula": "=MINUTE(TIME(13,45,30))",
+        "pass": true,
+        "cls": "ok",
+        "actual": 45
+      },
+      {
+        "i": 121,
+        "fn": "SECOND",
+        "formula": "=SECOND(TIME(13,45,30))",
+        "pass": true,
+        "cls": "ok",
+        "actual": 30
+      },
+      {
+        "i": 122,
+        "fn": "WEEKDAY",
+        "formula": "=WEEKDAY(DATE(2024,2,29))",
+        "pass": true,
+        "cls": "ok",
+        "actual": 5
+      },
+      {
+        "i": 123,
+        "fn": "WEEKNUM",
+        "formula": "=WEEKNUM(DATE(2024,2,29))",
+        "pass": true,
+        "cls": "ok",
+        "actual": 9
+      },
+      {
+        "i": 124,
+        "fn": "EDATE",
+        "formula": "=EDATE(DATE(2024,1,31),1)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 45351
+      },
+      {
+        "i": 125,
+        "fn": "EOMONTH",
+        "formula": "=EOMONTH(DATE(2024,1,15),1)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 45351
+      },
+      {
+        "i": 126,
+        "fn": "DATEDIF",
+        "formula": "=DATEDIF(DATE(2024,1,1),DATE(2024,3,15),\"m\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": 2
+      },
+      {
+        "i": 127,
+        "fn": "DAYS",
+        "formula": "=DAYS(DATE(2024,3,1),DATE(2024,2,1))",
+        "pass": true,
+        "cls": "ok",
+        "actual": 29
+      },
+      {
+        "i": 128,
+        "fn": "NETWORKDAYS",
+        "formula": "=NETWORKDAYS(DATE(2024,1,1),DATE(2024,1,7))",
+        "pass": true,
+        "cls": "ok",
+        "actual": 5
+      },
+      {
+        "i": 129,
+        "fn": "WORKDAY",
+        "formula": "=WORKDAY(DATE(2024,1,5),1)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 45299
+      },
+      {
+        "i": 130,
+        "fn": "TIME",
+        "formula": "=TIME(12,0,0)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 0.5
+      },
+      {
+        "i": 131,
+        "fn": "DATEVALUE",
+        "formula": "=DATEVALUE(\"2024-02-29\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": 45351
+      },
+      {
+        "i": 132,
+        "fn": "TIMEVALUE",
+        "formula": "=TIMEVALUE(\"06:00\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": 0.25
+      },
+      {
+        "i": 133,
+        "fn": "YEARFRAC",
+        "formula": "=YEARFRAC(DATE(2024,1,1),DATE(2024,7,1))",
+        "pass": true,
+        "cls": "ok",
+        "actual": 0.5
+      },
+      {
+        "i": 134,
+        "fn": "ISNUMBER",
+        "formula": "=ISNUMBER(Data!A1)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1,
+        "t": 3
+      },
+      {
+        "i": 135,
+        "fn": "ISTEXT",
+        "formula": "=ISTEXT(Data!C1)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1,
+        "t": 3
+      },
+      {
+        "i": 136,
+        "fn": "ISBLANK",
+        "formula": "=ISBLANK(Data!Z99)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1,
+        "t": 3
+      },
+      {
+        "i": 137,
+        "fn": "ISERROR",
+        "formula": "=ISERROR(1/0)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1,
+        "t": 3
+      },
+      {
+        "i": 138,
+        "fn": "ISERR",
+        "formula": "=ISERR(NA())",
+        "pass": true,
+        "cls": "ok",
+        "actual": 0,
+        "t": 3
+      },
+      {
+        "i": 139,
+        "fn": "ISNA",
+        "formula": "=ISNA(NA())",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1,
+        "t": 3
+      },
+      {
+        "i": 140,
+        "fn": "ISLOGICAL",
+        "formula": "=ISLOGICAL(TRUE)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1,
+        "t": 3
+      },
+      {
+        "i": 141,
+        "fn": "ISEVEN",
+        "formula": "=ISEVEN(4)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1,
+        "t": 3
+      },
+      {
+        "i": 142,
+        "fn": "ISODD",
+        "formula": "=ISODD(4)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 0,
+        "t": 3
+      },
+      {
+        "i": 143,
+        "fn": "N",
+        "formula": "=N(TRUE)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1
+      },
+      {
+        "i": 144,
+        "fn": "NA",
+        "formula": "=NA()",
+        "pass": true,
+        "cls": "ok",
+        "actual": "#N/A"
+      },
+      {
+        "i": 145,
+        "fn": "PMT",
+        "formula": "=PMT(0.05/12,60,-10000)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 188.7123364401099
+      },
+      {
+        "i": 146,
+        "fn": "FV",
+        "formula": "=FV(0.05,10,-100)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1257.789253554884
+      },
+      {
+        "i": 147,
+        "fn": "PV",
+        "formula": "=PV(0.05,10,-100)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 772.1734929184817
+      },
+      {
+        "i": 148,
+        "fn": "NPV",
+        "formula": "=NPV(0.1,100,100,100)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 248.68519909842223
+      },
+      {
+        "i": 149,
+        "fn": "IRR",
+        "formula": "=IRR(Data!K1:K3)",
+        "pass": true,
+        "cls": "ok",
+        "actual": 0.13066238629180751
+      }
+    ],
+    "errorCases": [
+      {
+        "id": "div0",
+        "formula": "=1/0",
+        "pass": true,
+        "cls": "ok",
+        "actual": "#DIV/0!"
+      },
+      {
+        "id": "valueErr",
+        "formula": "=VALUE(\"abc\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": "#VALUE!"
+      },
+      {
+        "id": "unknownFn",
+        "formula": "=NOSUCHFUNCTION(1)",
+        "pass": true,
+        "cls": "ok",
+        "actual": "#NAME?"
+      },
+      {
+        "id": "missingSheet",
+        "formula": "=Data!A1+Missing!A1",
+        "pass": false,
+        "cls": "错误文本不符",
+        "actual": "#NAME?"
+      }
+    ]
+  },
+  "p2": {
+    "pass": 150,
+    "total": 150,
+    "waits": [],
+    "byType": {
+      "num": {
+        "pass": 103,
+        "total": 103
+      },
+      "numRange": {
+        "pass": 4,
+        "total": 4
+      },
+      "str": {
+        "pass": 26,
+        "total": 26
+      },
+      "bool": {
+        "pass": 16,
+        "total": 16
+      },
+      "err": {
+        "pass": 1,
+        "total": 1
+      }
+    },
+    "results": [
+      {
+        "i": 0,
+        "fn": "SUM",
+        "formula": "=SUM(Data!A1:A10)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 55
+      },
+      {
+        "i": 1,
+        "fn": "SUMIF",
+        "formula": "=SUMIF(Data!C1:C10,\"apple\",Data!B1:B10)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 220
+      },
+      {
+        "i": 2,
+        "fn": "SUMIFS",
+        "formula": "=SUMIFS(Data!B1:B10,Data!C1:C10,\"banana\",Data!A1:A10,\">2\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 130
+      },
+      {
+        "i": 3,
+        "fn": "SUMPRODUCT",
+        "formula": "=SUMPRODUCT(Data!A1:A10,Data!B1:B10)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3850
+      },
+      {
+        "i": 4,
+        "fn": "AVERAGE",
+        "formula": "=AVERAGE(Data!A1:A10)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 5.5
+      },
+      {
+        "i": 5,
+        "fn": "AVERAGEIF",
+        "formula": "=AVERAGEIF(Data!C1:C10,\"cherry\",Data!B1:B10)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 60
+      },
+      {
+        "i": 6,
+        "fn": "AVERAGEIFS",
+        "formula": "=AVERAGEIFS(Data!B1:B10,Data!C1:C10,\"apple\",Data!A1:A10,\"<=7\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 40
+      },
+      {
+        "i": 7,
+        "fn": "COUNT",
+        "formula": "=COUNT(Data!A1:A10,Data!C1:C3)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 10
+      },
+      {
+        "i": 8,
+        "fn": "COUNTA",
+        "formula": "=COUNTA(Data!A1:C10)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 30
+      },
+      {
+        "i": 9,
+        "fn": "COUNTBLANK",
+        "formula": "=COUNTBLANK(Data!E1:E10)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 10
+      },
+      {
+        "i": 10,
+        "fn": "COUNTIF",
+        "formula": "=COUNTIF(Data!C1:C10,\"apple\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 4
+      },
+      {
+        "i": 11,
+        "fn": "COUNTIFS",
+        "formula": "=COUNTIFS(Data!C1:C10,\"banana\",Data!A1:A10,\">=5\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 2
+      },
+      {
+        "i": 12,
+        "fn": "MAX",
+        "formula": "=MAX(Data!A1:A10)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 10
+      },
+      {
+        "i": 13,
+        "fn": "MAXIFS",
+        "formula": "=MAXIFS(Data!B1:B10,Data!C1:C10,\"banana\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 80
+      },
+      {
+        "i": 14,
+        "fn": "MIN",
+        "formula": "=MIN(Data!B1:B10)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 10
+      },
+      {
+        "i": 15,
+        "fn": "MINIFS",
+        "formula": "=MINIFS(Data!B1:B10,Data!C1:C10,\"cherry\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 30
+      },
+      {
+        "i": 16,
+        "fn": "ROUND",
+        "formula": "=ROUND(2.567,2)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 2.57
+      },
+      {
+        "i": 17,
+        "fn": "ROUNDUP",
+        "formula": "=ROUNDUP(2.561,2)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 2.57
+      },
+      {
+        "i": 18,
+        "fn": "ROUNDDOWN",
+        "formula": "=ROUNDDOWN(2.569,2)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 2.56
+      },
+      {
+        "i": 19,
+        "fn": "INT",
+        "formula": "=INT(-2.5)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": -3
+      },
+      {
+        "i": 20,
+        "fn": "MOD",
+        "formula": "=MOD(-7,3)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 2
+      },
+      {
+        "i": 21,
+        "fn": "ABS",
+        "formula": "=ABS(-3.5)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3.5
+      },
+      {
+        "i": 22,
+        "fn": "CEILING",
+        "formula": "=CEILING(2.1,0.5)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 2.5
+      },
+      {
+        "i": 23,
+        "fn": "FLOOR",
+        "formula": "=FLOOR(2.9,0.5)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 2.5
+      },
+      {
+        "i": 24,
+        "fn": "POWER",
+        "formula": "=POWER(2,10)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1024
+      },
+      {
+        "i": 25,
+        "fn": "SQRT",
+        "formula": "=SQRT(144)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 12
+      },
+      {
+        "i": 26,
+        "fn": "PRODUCT",
+        "formula": "=PRODUCT(Data!A1:A5)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 120
+      },
+      {
+        "i": 27,
+        "fn": "RAND",
+        "formula": "=RAND()",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 0.12647306026125782
+      },
+      {
+        "i": 28,
+        "fn": "RANDBETWEEN",
+        "formula": "=RANDBETWEEN(5,10)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 5
+      },
+      {
+        "i": 29,
+        "fn": "SIGN",
+        "formula": "=SIGN(-9)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": -1
+      },
+      {
+        "i": 30,
+        "fn": "TRUNC",
+        "formula": "=TRUNC(-8.9)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": -8
+      },
+      {
+        "i": 31,
+        "fn": "LN",
+        "formula": "=LN(EXP(1))",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1
+      },
+      {
+        "i": 32,
+        "fn": "LOG",
+        "formula": "=LOG(8,2)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3
+      },
+      {
+        "i": 33,
+        "fn": "LOG10",
+        "formula": "=LOG10(1000)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3
+      },
+      {
+        "i": 34,
+        "fn": "EXP",
+        "formula": "=EXP(0)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1
+      },
+      {
+        "i": 35,
+        "fn": "SUBTOTAL",
+        "formula": "=SUBTOTAL(9,Data!A1:A10)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 55
+      },
+      {
+        "i": 36,
+        "fn": "AGGREGATE",
+        "formula": "=AGGREGATE(9,6,Data!A1:A10)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 55
+      },
+      {
+        "i": 37,
+        "fn": "MEDIAN",
+        "formula": "=MEDIAN(Data!B1:B10)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 55
+      },
+      {
+        "i": 38,
+        "fn": "MODE",
+        "formula": "=MODE(1,2,2,3,3,3)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3
+      },
+      {
+        "i": 39,
+        "fn": "LARGE",
+        "formula": "=LARGE(Data!B1:B10,2)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 90
+      },
+      {
+        "i": 40,
+        "fn": "SMALL",
+        "formula": "=SMALL(Data!B1:B10,3)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 30
+      },
+      {
+        "i": 41,
+        "fn": "RANK",
+        "formula": "=RANK(30,Data!B1:B10)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 8
+      },
+      {
+        "i": 42,
+        "fn": "STDEV",
+        "formula": "=STDEV(Data!A1:A10)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3.0276503540974917
+      },
+      {
+        "i": 43,
+        "fn": "STDEV.S",
+        "formula": "=STDEV.S(Data!A1:A10)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3.0276503540974917
+      },
+      {
+        "i": 44,
+        "fn": "VAR",
+        "formula": "=VAR(Data!A1:A10)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 9.166666666666666
+      },
+      {
+        "i": 45,
+        "fn": "VAR.S",
+        "formula": "=VAR.S(Data!A1:A10)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 9.166666666666666
+      },
+      {
+        "i": 46,
+        "fn": "PERCENTILE",
+        "formula": "=PERCENTILE(Data!A1:A10,0.5)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 5.5
+      },
+      {
+        "i": 47,
+        "fn": "QUARTILE",
+        "formula": "=QUARTILE(Data!A1:A10,1)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3.25
+      },
+      {
+        "i": 48,
+        "fn": "CORREL",
+        "formula": "=CORREL(Data!A1:A10,Data!B1:B10)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1
+      },
+      {
+        "i": 49,
+        "fn": "SLOPE",
+        "formula": "=SLOPE(Data!B1:B10,Data!A1:A10)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 10
+      },
+      {
+        "i": 50,
+        "fn": "INTERCEPT",
+        "formula": "=INTERCEPT(Data!B1:B10,Data!A1:A10)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 0
+      },
+      {
+        "i": 51,
+        "fn": "MROUND",
+        "formula": "=MROUND(10,3)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 9
+      },
+      {
+        "i": 52,
+        "fn": "QUOTIENT",
+        "formula": "=QUOTIENT(17,5)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3
+      },
+      {
+        "i": 53,
+        "fn": "GCD",
+        "formula": "=GCD(12,18)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 6
+      },
+      {
+        "i": 54,
+        "fn": "LCM",
+        "formula": "=LCM(4,6)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 12
+      },
+      {
+        "i": 55,
+        "fn": "FACT",
+        "formula": "=FACT(5)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 120
+      },
+      {
+        "i": 56,
+        "fn": "PI",
+        "formula": "=PI()",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3.141592653589793
+      },
+      {
+        "i": 57,
+        "fn": "IF",
+        "formula": "=IF(Data!A1>0,\"pos\",\"neg\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": "pos"
+      },
+      {
+        "i": 58,
+        "fn": "IFS",
+        "formula": "=IFS(Data!A1>5,\"big\",Data!A1>0,\"small\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": "small"
+      },
+      {
+        "i": 59,
+        "fn": "IFERROR",
+        "formula": "=IFERROR(1/0,\"err\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": "err"
+      },
+      {
+        "i": 60,
+        "fn": "IFNA",
+        "formula": "=IFNA(NA(),\"na\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": "na"
+      },
+      {
+        "i": 61,
+        "fn": "AND",
+        "formula": "=AND(TRUE,1>0)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1,
+        "t": 3
+      },
+      {
+        "i": 62,
+        "fn": "OR",
+        "formula": "=OR(FALSE,1>2)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 0,
+        "t": 3
+      },
+      {
+        "i": 63,
+        "fn": "NOT",
+        "formula": "=NOT(FALSE)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1,
+        "t": 3
+      },
+      {
+        "i": 64,
+        "fn": "XOR",
+        "formula": "=XOR(TRUE,TRUE)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 0,
+        "t": 3
+      },
+      {
+        "i": 65,
+        "fn": "TRUE",
+        "formula": "=TRUE()",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1,
+        "t": 3
+      },
+      {
+        "i": 66,
+        "fn": "FALSE",
+        "formula": "=FALSE()",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 0,
+        "t": 3
+      },
+      {
+        "i": 67,
+        "fn": "SWITCH",
+        "formula": "=SWITCH(2,1,\"a\",2,\"b\",\"z\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": "b"
+      },
+      {
+        "i": 68,
+        "fn": "VLOOKUP",
+        "formula": "=VLOOKUP(3,Data!A1:C10,3,FALSE)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": "cherry"
+      },
+      {
+        "i": 69,
+        "fn": "HLOOKUP",
+        "formula": "=HLOOKUP(\"y\",Data!G1:I2,2,FALSE)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 2
+      },
+      {
+        "i": 70,
+        "fn": "XLOOKUP",
+        "formula": "=XLOOKUP(\"cherry\",Data!C1:C10,Data!B1:B10)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 30
+      },
+      {
+        "i": 71,
+        "fn": "LOOKUP",
+        "formula": "=LOOKUP(4.5,Data!A1:A10,Data!B1:B10)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 40
+      },
+      {
+        "i": 72,
+        "fn": "INDEX",
+        "formula": "=INDEX(Data!B1:B10,4)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 40
+      },
+      {
+        "i": 73,
+        "fn": "MATCH",
+        "formula": "=MATCH(\"cherry\",Data!C1:C10,0)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3
+      },
+      {
+        "i": 74,
+        "fn": "XMATCH",
+        "formula": "=XMATCH(\"banana\",Data!C1:C10)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 2
+      },
+      {
+        "i": 75,
+        "fn": "OFFSET",
+        "formula": "=OFFSET(Data!A1,2,1)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 30
+      },
+      {
+        "i": 76,
+        "fn": "INDIRECT",
+        "formula": "=INDIRECT(\"Data!B5\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 50
+      },
+      {
+        "i": 77,
+        "fn": "CHOOSE",
+        "formula": "=CHOOSE(2,\"a\",\"b\",\"c\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": "b"
+      },
+      {
+        "i": 78,
+        "fn": "ROW",
+        "formula": "=ROW(Data!B7)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 7
+      },
+      {
+        "i": 79,
+        "fn": "ROWS",
+        "formula": "=ROWS(Data!A1:A10)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 10
+      },
+      {
+        "i": 80,
+        "fn": "COLUMN",
+        "formula": "=COLUMN(Data!C1)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3
+      },
+      {
+        "i": 81,
+        "fn": "COLUMNS",
+        "formula": "=COLUMNS(Data!A1:C1)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3
+      },
+      {
+        "i": 82,
+        "fn": "ADDRESS",
+        "formula": "=ADDRESS(2,3)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": "$C$2"
+      },
+      {
+        "i": 83,
+        "fn": "TRANSPOSE",
+        "formula": "=INDEX(TRANSPOSE(Data!A1:A3),1,2)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 2
+      },
+      {
+        "i": 84,
+        "fn": "FILTER",
+        "formula": "=SUM(FILTER(Data!B1:B10,Data!A1:A10>8))",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 190
+      },
+      {
+        "i": 85,
+        "fn": "SORT",
+        "formula": "=INDEX(SORT(Data!A1:A10,1,-1),1)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 10
+      },
+      {
+        "i": 86,
+        "fn": "UNIQUE",
+        "formula": "=ROWS(UNIQUE(Data!C1:C10))",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3
+      },
+      {
+        "i": 87,
+        "fn": "SEQUENCE",
+        "formula": "=SUM(SEQUENCE(4))",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 10
+      },
+      {
+        "i": 88,
+        "fn": "CONCAT",
+        "formula": "=CONCAT(\"a\",\"b\",\"c\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": "abc"
+      },
+      {
+        "i": 89,
+        "fn": "CONCATENATE",
+        "formula": "=CONCATENATE(\"x\",1,\"y\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": "x1y"
+      },
+      {
+        "i": 90,
+        "fn": "TEXTJOIN",
+        "formula": "=TEXTJOIN(\",\",TRUE,Data!C1:C3)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": "apple,banana,cherry"
+      },
+      {
+        "i": 91,
+        "fn": "LEFT",
+        "formula": "=LEFT(\"Excel\",2)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": "Ex"
+      },
+      {
+        "i": 92,
+        "fn": "RIGHT",
+        "formula": "=RIGHT(\"Excel\",3)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": "cel"
+      },
+      {
+        "i": 93,
+        "fn": "MID",
+        "formula": "=MID(\"Excel\",2,3)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": "xce"
+      },
+      {
+        "i": 94,
+        "fn": "LEN",
+        "formula": "=LEN(\"你好abc\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 5
+      },
+      {
+        "i": 95,
+        "fn": "FIND",
+        "formula": "=FIND(\"c\",\"abcabc\",4)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 6
+      },
+      {
+        "i": 96,
+        "fn": "SEARCH",
+        "formula": "=SEARCH(\"C\",\"abcabc\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 3
+      },
+      {
+        "i": 97,
+        "fn": "SUBSTITUTE",
+        "formula": "=SUBSTITUTE(\"a-b-c\",\"-\",\"+\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": "a+b+c"
+      },
+      {
+        "i": 98,
+        "fn": "REPLACE",
+        "formula": "=REPLACE(\"abcdef\",2,3,\"X\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": "aXef"
+      },
+      {
+        "i": 99,
+        "fn": "TRIM",
+        "formula": "=TRIM(\"  a   b  \")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": "a b"
+      },
+      {
+        "i": 100,
+        "fn": "UPPER",
+        "formula": "=UPPER(\"abC\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": "ABC"
+      },
+      {
+        "i": 101,
+        "fn": "LOWER",
+        "formula": "=LOWER(\"AbC\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": "abc"
+      },
+      {
+        "i": 102,
+        "fn": "PROPER",
+        "formula": "=PROPER(\"hello wORLD\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": "Hello World"
+      },
+      {
+        "i": 103,
+        "fn": "TEXT",
+        "formula": "=TEXT(1234.567,\"#,##0.00\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": "1,234.57"
+      },
+      {
+        "i": 104,
+        "fn": "VALUE",
+        "formula": "=VALUE(\"12.5\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 12.5
+      },
+      {
+        "i": 105,
+        "fn": "REPT",
+        "formula": "=REPT(\"ab\",3)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": "ababab"
+      },
+      {
+        "i": 106,
+        "fn": "EXACT",
+        "formula": "=EXACT(\"a\",\"A\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 0,
+        "t": 3
+      },
+      {
+        "i": 107,
+        "fn": "CLEAN",
+        "formula": "=CLEAN(\"a\"&CHAR(7)&\"b\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": "ab"
+      },
+      {
+        "i": 108,
+        "fn": "CHAR",
+        "formula": "=CHAR(65)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": "A"
+      },
+      {
+        "i": 109,
+        "fn": "CODE",
+        "formula": "=CODE(\"A\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 65
+      },
+      {
+        "i": 110,
+        "fn": "NUMBERVALUE",
+        "formula": "=NUMBERVALUE(\"1.234,5\",\",\",\".\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1234.5
+      },
+      {
+        "i": 111,
+        "fn": "FIXED",
+        "formula": "=FIXED(1234.567,1)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": "1,234.6"
+      },
+      {
+        "i": 112,
+        "fn": "T",
+        "formula": "=T(\"abc\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": "abc"
+      },
+      {
+        "i": 113,
+        "fn": "TODAY",
+        "formula": "=TODAY()",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 46294
+      },
+      {
+        "i": 114,
+        "fn": "NOW",
+        "formula": "=NOW()",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 46294.768900462965
+      },
+      {
+        "i": 115,
+        "fn": "DATE",
+        "formula": "=DATE(2024,2,29)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 45351
+      },
+      {
+        "i": 116,
+        "fn": "YEAR",
+        "formula": "=YEAR(DATE(2024,2,29))",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 2024
+      },
+      {
+        "i": 117,
+        "fn": "MONTH",
+        "formula": "=MONTH(DATE(2024,2,29))",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 2
+      },
+      {
+        "i": 118,
+        "fn": "DAY",
+        "formula": "=DAY(DATE(2024,2,29))",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 29
+      },
+      {
+        "i": 119,
+        "fn": "HOUR",
+        "formula": "=HOUR(TIME(13,45,30))",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 13
+      },
+      {
+        "i": 120,
+        "fn": "MINUTE",
+        "formula": "=MINUTE(TIME(13,45,30))",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 45
+      },
+      {
+        "i": 121,
+        "fn": "SECOND",
+        "formula": "=SECOND(TIME(13,45,30))",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 30
+      },
+      {
+        "i": 122,
+        "fn": "WEEKDAY",
+        "formula": "=WEEKDAY(DATE(2024,2,29))",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 5
+      },
+      {
+        "i": 123,
+        "fn": "WEEKNUM",
+        "formula": "=WEEKNUM(DATE(2024,2,29))",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 9
+      },
+      {
+        "i": 124,
+        "fn": "EDATE",
+        "formula": "=EDATE(DATE(2024,1,31),1)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 45351
+      },
+      {
+        "i": 125,
+        "fn": "EOMONTH",
+        "formula": "=EOMONTH(DATE(2024,1,15),1)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 45351
+      },
+      {
+        "i": 126,
+        "fn": "DATEDIF",
+        "formula": "=DATEDIF(DATE(2024,1,1),DATE(2024,3,15),\"m\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 2
+      },
+      {
+        "i": 127,
+        "fn": "DAYS",
+        "formula": "=DAYS(DATE(2024,3,1),DATE(2024,2,1))",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 29
+      },
+      {
+        "i": 128,
+        "fn": "NETWORKDAYS",
+        "formula": "=NETWORKDAYS(DATE(2024,1,1),DATE(2024,1,7))",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 5
+      },
+      {
+        "i": 129,
+        "fn": "WORKDAY",
+        "formula": "=WORKDAY(DATE(2024,1,5),1)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 45299
+      },
+      {
+        "i": 130,
+        "fn": "TIME",
+        "formula": "=TIME(12,0,0)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 0.5
+      },
+      {
+        "i": 131,
+        "fn": "DATEVALUE",
+        "formula": "=DATEVALUE(\"2024-02-29\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 45351
+      },
+      {
+        "i": 132,
+        "fn": "TIMEVALUE",
+        "formula": "=TIMEVALUE(\"06:00\")",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 0.25
+      },
+      {
+        "i": 133,
+        "fn": "YEARFRAC",
+        "formula": "=YEARFRAC(DATE(2024,1,1),DATE(2024,7,1))",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 0.5
+      },
+      {
+        "i": 134,
+        "fn": "ISNUMBER",
+        "formula": "=ISNUMBER(Data!A1)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1,
+        "t": 3
+      },
+      {
+        "i": 135,
+        "fn": "ISTEXT",
+        "formula": "=ISTEXT(Data!C1)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1,
+        "t": 3
+      },
+      {
+        "i": 136,
+        "fn": "ISBLANK",
+        "formula": "=ISBLANK(Data!Z99)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1,
+        "t": 3
+      },
+      {
+        "i": 137,
+        "fn": "ISERROR",
+        "formula": "=ISERROR(1/0)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1,
+        "t": 3
+      },
+      {
+        "i": 138,
+        "fn": "ISERR",
+        "formula": "=ISERR(NA())",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 0,
+        "t": 3
+      },
+      {
+        "i": 139,
+        "fn": "ISNA",
+        "formula": "=ISNA(NA())",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1,
+        "t": 3
+      },
+      {
+        "i": 140,
+        "fn": "ISLOGICAL",
+        "formula": "=ISLOGICAL(TRUE)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1,
+        "t": 3
+      },
+      {
+        "i": 141,
+        "fn": "ISEVEN",
+        "formula": "=ISEVEN(4)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1,
+        "t": 3
+      },
+      {
+        "i": 142,
+        "fn": "ISODD",
+        "formula": "=ISODD(4)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 0,
+        "t": 3
+      },
+      {
+        "i": 143,
+        "fn": "N",
+        "formula": "=N(TRUE)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1
+      },
+      {
+        "i": 144,
+        "fn": "NA",
+        "formula": "=NA()",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": "#N/A"
+      },
+      {
+        "i": 145,
+        "fn": "PMT",
+        "formula": "=PMT(0.05/12,60,-10000)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 188.7123364401099
+      },
+      {
+        "i": 146,
+        "fn": "FV",
+        "formula": "=FV(0.05,10,-100)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 1257.789253554884
+      },
+      {
+        "i": 147,
+        "fn": "PV",
+        "formula": "=PV(0.05,10,-100)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 772.1734929184817
+      },
+      {
+        "i": 148,
+        "fn": "NPV",
+        "formula": "=NPV(0.1,100,100,100)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 248.68519909842223
+      },
+      {
+        "i": 149,
+        "fn": "IRR",
+        "formula": "=IRR(Data!K1:K3)",
+        "ok": true,
+        "wait": "done",
+        "pass": true,
+        "cls": "ok",
+        "actual": 0.13066238629180751
+      }
+    ],
+    "errorCases": [
+      {
+        "id": "div0",
+        "formula": "=1/0",
+        "pass": true,
+        "cls": "ok",
+        "actual": "#DIV/0!"
+      },
+      {
+        "id": "valueErr",
+        "formula": "=VALUE(\"abc\")",
+        "pass": true,
+        "cls": "ok",
+        "actual": "#VALUE!"
+      },
+      {
+        "id": "unknownFn",
+        "formula": "=NOSUCHFUNCTION(1)",
+        "pass": true,
+        "cls": "ok",
+        "actual": "#NAME?"
+      },
+      {
+        "id": "missingSheet",
+        "formula": "=Data!A1+Missing!A1",
+        "pass": false,
+        "cls": "错误文本不符",
+        "actual": "#NAME?"
+      }
+    ]
+  }
+}
