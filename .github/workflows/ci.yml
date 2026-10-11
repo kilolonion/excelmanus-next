@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   gates:
@@ -41,9 +42,10 @@ jobs:
       - name: Unit tests
         run: pnpm test
 
-  # 13 §4.4：打包后在仓库之外解压并运行 --self-test（防止依赖仓库内文件的假绿），
-  # 同时输出体积报告（预算 250 MB，超出即失败）。签名与公证需要证书，CI 中未配置。
+  # 13 §4.4：打包后在仓库之外解压并运行 --self-test，同时输出体积报告（预算 250 MB）。
+  # 只在 Actions 页面手动触发时运行（发布前需要时用），不随每次提交运行。签名与公证需要证书，CI 中未配置。
   desktop:
+    if: github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
