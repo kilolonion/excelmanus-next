@@ -22,6 +22,7 @@ import { workbookRenderTool } from "../src/render.ts";
 import {
   CHECKPOINT_MIGRATION,
   DOC_OPS_MIGRATION,
+  DOC_OPS_REVERTS_MIGRATION,
   DOCUMENTS_MIGRATION,
   DocumentService,
 } from "../src/service.ts";
@@ -40,6 +41,7 @@ const MIGRATIONS = [
   DOC_OPS_MIGRATION,
   BACKUPS_MIGRATION,
   CHECKPOINT_MIGRATION,
+  DOC_OPS_REVERTS_MIGRATION,
 ];
 
 function workspace(base: string, id: string) {
@@ -668,4 +670,122 @@ test("确定种子并发模糊：用户与两代理不重叠写不丢失，重�
     await svc.close();
     db.close();
   }
-}, 60000);
+  // 150 次提交与逐格快照读取；较慢的机器上接近 60 秒，放宽上限避免偶发超时。
+}, 180000);
+
+describe("用户在冲突条里选择保留自己的值（overwrite）", () => {
+  async function userSet(
+    svc: DocumentService,
+    docId: string,
+    root: string,
+    row: number,
+    v: string,
+  ) {
+    const unitId = (await svc.snapshot(docId, root)).snapshot.id;
+    return {
+      id: "sheet.mutation.set-range-values",
+      params: {
+        unitId,
+        subUnitId: "s0",
+        trigger: "sheet.command.set-range-values",
+        cellValue: { [row]: { 0: { v } } },
+      },
+    };
+  }
+
+  test("先被拒绝并指出对方；带 overwrite 重提交后产生新修订并覆盖对方", async () => {
+    const { db, root, svc, docId } = await setup();
+    try {
+      await svc.submit(docId, root, {
+        baseRev: 0,
+        source: agentY,
+        ops: [{ op: "cells.set", range: "销售!A2", values: [["代理"]] }],
+      });
+      const mine = await userSet(svc, docId, root, 1, "用户");
+      const rejected = await svc.submit(docId, root, {
+        baseRev: 0,
+        source: user,
+        mutations: [mine],
+      });
+      expect(rejected).toMatchObject({
+        ok: false,
+        code: "VERSION_CONFLICT",
+        conflicts: [{ source: "agent:ses1/Y", cells: ["'销售'!A2"] }],
+      });
+      expect(await cell(svc, root, docId, 2)).toBe("代理");
+      const again = await svc.submit(docId, root, {
+        baseRev: 0,
+        source: user,
+        mutations: [mine],
+        overwrite: true,
+      });
+      expect(again).toMatchObject({ ok: true, rev: 2 });
+      expect(await cell(svc, root, docId, 2)).toBe("用户");
+    } finally {
+      await svc.close();
+      db.close();
+    }
+  });
+
+  test("overwrite 仍按 baseRev 之后的插行平移坐标，不会写到错位的格子", async () => {
+    const { db, root, svc, docId } = await setup();
+    try {
+      // 用户基于修订 0 的 A11；代理先在第 2 行前插一行（A11 → A12），再改写移位后的 A12
+      await svc.submit(docId, root, {
+        baseRev: 0,
+        source: agentY,
+        ops: [{ op: "rows.insert", sheet: "销售", at: 2, count: 1 }],
+      });
+      await svc.submit(docId, root, {
+        baseRev: 1,
+        source: agentZ,
+        ops: [{ op: "cells.set", range: "销售!A12", values: [["代理Z"]] }],
+      });
+      const before11 = await cell(svc, root, docId, 11);
+      const mine = await userSet(svc, docId, root, 10, "用户");
+      expect(
+        await svc.submit(docId, root, { baseRev: 0, source: user, mutations: [mine] }),
+      ).toMatchObject({
+        ok: false,
+        code: "VERSION_CONFLICT",
+        conflicts: [{ cells: ["'销售'!A12"] }],
+      });
+      expect(
+        await svc.submit(docId, root, {
+          baseRev: 0,
+          source: user,
+          mutations: [mine],
+          overwrite: true,
+        }),
+      ).toMatchObject({ ok: true });
+      expect(await cell(svc, root, docId, 12)).toBe("用户");
+      expect(await cell(svc, root, docId, 11)).toBe(before11);
+    } finally {
+      await svc.close();
+      db.close();
+    }
+  });
+
+  test("overwrite 只对用户来源生效，代理写入仍按冲突处理", async () => {
+    const { db, root, svc, docId } = await setup();
+    try {
+      await svc.submit(docId, root, {
+        baseRev: 0,
+        source: user,
+        ops: [{ op: "cells.set", range: "销售!A2", values: [["用户"]] }],
+      });
+      expect(
+        await svc.submit(docId, root, {
+          baseRev: 0,
+          source: agentY,
+          overwrite: true,
+          ops: [{ op: "cells.set", range: "销售!A2", values: [["代理"]] }],
+        }),
+      ).toMatchObject({ ok: false, code: "VERSION_CONFLICT" });
+      expect(await cell(svc, root, docId, 2)).toBe("用户");
+    } finally {
+      await svc.close();
+      db.close();
+    }
+  });
+});

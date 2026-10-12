@@ -67,6 +67,7 @@ port.on("message", ({ data: msg }) => {
         dataDir: msg.dataDir,
         masterKey: Buffer.from(msg.masterKey, "base64"),
         shape: "desktop",
+        autoTitle: true,
         extraOrigins: ["app://excelmanus"],
         builtinSkillsDir: join(msg.resources, "skills"),
         catalogDir: join(msg.resources, "catalog"),

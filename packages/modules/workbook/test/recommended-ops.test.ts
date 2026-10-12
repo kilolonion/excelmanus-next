@@ -10,6 +10,7 @@ import { rulesResource } from "../src/rule-codec.ts";
 import {
   CHECKPOINT_MIGRATION,
   DOC_OPS_MIGRATION,
+  DOC_OPS_REVERTS_MIGRATION,
   DOCUMENTS_MIGRATION,
   DocumentService,
 } from "../src/service.ts";
@@ -22,6 +23,7 @@ test("推荐操作实际闭环：复制移动隐藏工作表、公式填充、�
     DOC_OPS_MIGRATION,
     BACKUPS_MIGRATION,
     CHECKPOINT_MIGRATION,
+    DOC_OPS_REVERTS_MIGRATION,
   ]);
   let service = new DocumentService(db);
   try {

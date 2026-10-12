@@ -105,6 +105,10 @@ export type DispatchStatus = z.infer<typeof DispatchStatus>;
 export const DispatchMode = z.enum(["steer", "interrupt", "queue"]);
 export type DispatchMode = z.infer<typeof DispatchMode>;
 
+/** 聊天模式：ask 只读问答，plan 先出计划不执行；两者都不允许写入（缺省为正常执行）。 */
+export const ChatMode = z.enum(["ask", "plan"]);
+export type ChatMode = z.infer<typeof ChatMode>;
+
 export const AgentRole = z.enum(["main", "lead", "worker", "reader"]);
 export type AgentRole = z.infer<typeof AgentRole>;
 
@@ -143,6 +147,26 @@ export const ContextRef = z.object({
 });
 export type ContextRef = z.infer<typeof ContextRef>;
 
+/**
+ * present 工具的呈现内容（06 §present）：focus = 在工作台里指给用户看某个区域（附一句说明）；
+ * file = 交付一个工作区文件（可下载，表格文件可在工作台打开）。
+ */
+export const PresentPayload = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("focus"),
+    docId: z.string().optional(),
+    path: z.string().optional(),
+    range: z.string().min(1),
+    note: z.string().max(500).optional(),
+  }),
+  z.strictObject({
+    kind: z.literal("file"),
+    path: z.string().min(1),
+    note: z.string().max(500).optional(),
+  }),
+]);
+export type PresentPayload = z.infer<typeof PresentPayload>;
+
 export const RECORD_DATA_SCHEMAS = {
   "session.created": z.object({
     workspaceId: z.string(),
@@ -153,6 +177,8 @@ export const RECORD_DATA_SCHEMAS = {
   }),
   "session.updated": z.object({
     title: z.string().optional(),
+    /** 标题由模型自动生成（首轮完成后）。 */
+    auto: z.boolean().optional(),
     permissionMode: PermissionMode.optional(),
   }),
   "agent.spawned": z.object({
@@ -187,6 +213,7 @@ export const RECORD_DATA_SCHEMAS = {
     replacesDispatchId: z.string().optional(),
     text: z.string(),
     mode: DispatchMode.optional(),
+    chatMode: ChatMode.optional(),
     /** 本轮变化的上下文（04 §7.3），进入上下文时包进 <context> 块。 */
     context: z.array(ContextRef).optional(),
     /** 图片附件（只存引用；发给模型时由运行时从 blob 存储读出，不支持视觉则以文字说明代替）。 */
@@ -204,6 +231,11 @@ export const RECORD_DATA_SCHEMAS = {
     text: z.string(),
     /** 规则/技能状态指纹：下一条消息前比对，变化才追加说明。 */
     hash: z.string().optional(),
+    /** kind=doc.edited：用户修改了代理读过的区域（02 §4.7）；界面据此提示代理正在重新读取。 */
+    docId: z.string().optional(),
+    path: z.string().optional(),
+    rev: z.int().nonnegative().optional(),
+    ranges: z.array(z.string()).optional(),
   }),
   /** 代理保存了一条记忆（界面可撤销，12 §2.2）。 */
   "memory.saved": z.object({
@@ -212,6 +244,12 @@ export const RECORD_DATA_SCHEMAS = {
     category: z.string(),
   }),
   "memory.deleted": z.object({ memoryId: z.string() }),
+  /** 用户对某条代理回复的反馈；同一 seq 以最后一条为准，rating=null 表示撤回。 */
+  "feedback.given": z.object({
+    seq: z.int().positive(),
+    rating: z.enum(["up", "down"]).nullable(),
+    comment: z.string().max(2000).optional(),
+  }),
   "dispatch.updated": z.object({
     dispatchId: z.string(),
     status: DispatchStatus,
@@ -223,7 +261,11 @@ export const RECORD_DATA_SCHEMAS = {
     usage: Usage.optional(),
   }),
   "turn.failed": z.object({ turnId: z.string(), error: ClassifiedError }),
-  "turn.interrupted": z.object({ turnId: z.string() }),
+  "turn.interrupted": z.object({
+    turnId: z.string(),
+    /** restart：服务重启时由恢复流程补写；stopped 或缺省：用户/系统主动停止。 */
+    reason: z.enum(["stopped", "restart"]).optional(),
+  }),
   "step.started": z.object({
     turnId: z.string(),
     stepId: z.string(),
@@ -282,7 +324,15 @@ export const RECORD_DATA_SCHEMAS = {
     answer: z.unknown(),
     rev: z.number().int().nonnegative().optional(),
   }),
-  "ui.present": z.object({ payload: z.unknown() }),
+  "ui.present": PresentPayload,
+  /**
+   * 从某条用户消息起重新开始（编辑重发、重试、回到某一轮）：该代理 seq ≥ fromSeq 的上下文条目
+   * 不再进入模型上下文，界面隐藏这段对话。只改对话，不回滚文件。不能越过最近一次压缩。
+   */
+  "history.rewound": z.object({
+    dispatchId: z.string(),
+    fromSeq: z.int().positive(),
+  }),
   "todo.set": z.object({ items: z.array(z.record(z.string(), z.unknown())) }),
   "todo.updated": z.object({
     todoId: z.string().optional(),

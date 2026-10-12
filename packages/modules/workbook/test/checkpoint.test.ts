@@ -24,6 +24,7 @@ import { workbookEditTool } from "../src/edit.ts";
 import {
   CHECKPOINT_MIGRATION,
   DOC_OPS_MIGRATION,
+  DOC_OPS_REVERTS_MIGRATION,
   DOCUMENTS_MIGRATION,
   DocumentService,
 } from "../src/service.ts";
@@ -46,6 +47,7 @@ async function setup(file = fixture) {
     DOC_OPS_MIGRATION,
     BACKUPS_MIGRATION,
     CHECKPOINT_MIGRATION,
+    DOC_OPS_REVERTS_MIGRATION,
   ]);
   const svc = new DocumentService(db);
   setups.push({ svc, db });

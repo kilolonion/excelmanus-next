@@ -1,3 +1,5 @@
+import { indexToCol } from "@excelmanus/core";
+import type { IWorkbookData } from "@univerjs/core";
 // 快照差异：结构化深比较 + 两份快照间"实际变化的单元格/字段"集合。
 // 逆操作生成（inverse.ts）用它定位需要恢复前像的单元格与元数据字段。
 
@@ -90,4 +92,90 @@ export function changedCellsBetween(
     if (k !== "sheets" && deepDiff(before[k], after[k]).length > 0) meta.push(`workbook.${k}`);
   }
   return { cells, meta };
+}
+
+type CellLike = { v?: unknown; f?: unknown } | null | undefined;
+type Rows = Record<string, Record<string, CellLike>>;
+
+export interface CompareCell {
+  cell: string;
+  kind: "added" | "deleted" | "modified";
+  left: { value: string | number | boolean | null; formula?: string } | null;
+  right: { value: string | number | boolean | null; formula?: string } | null;
+}
+
+export interface CompareSheet {
+  name: string;
+  status: "both" | "leftOnly" | "rightOnly";
+  changed: number;
+  cells: CompareCell[];
+}
+
+/**
+ * 两个工作簿并排对比：按表名配对，逐格比较值与公式（不比较样式）。
+ * cells 合计最多 limit 条，changed 是完整计数。
+ */
+export function compareWorkbooks(
+  left: IWorkbookData,
+  right: IWorkbookData,
+  limit = 500,
+): { sheets: CompareSheet[]; truncated: boolean } {
+  const byName = (b: IWorkbookData) =>
+    new Map(
+      (b.sheetOrder ?? Object.keys(b.sheets ?? {})).map((id) => {
+        const s = b.sheets?.[id] ?? {};
+        return [s.name ?? id, (s.cellData ?? {}) as unknown as Rows] as const;
+      }),
+    );
+  const l = byName(left);
+  const r = byName(right);
+  const norm = (c: CellLike) => {
+    const v = c?.v;
+    const value =
+      typeof v === "string" || typeof v === "number" || typeof v === "boolean" ? v : null;
+    const formula = typeof c?.f === "string" && c.f !== "" ? c.f : undefined;
+    if (value === null && formula === undefined) return null;
+    return { value, ...(formula !== undefined ? { formula } : {}) };
+  };
+  let budget = limit;
+  let truncated = false;
+  const sheets: CompareSheet[] = [];
+  for (const name of new Set([...l.keys(), ...r.keys()])) {
+    const a = l.get(name);
+    const b = r.get(name);
+    const status = a && b ? "both" : a ? "leftOnly" : "rightOnly";
+    const cells: CompareCell[] = [];
+    let changed = 0;
+    const ad = a ?? {};
+    const bd = b ?? {};
+    const rows = [...new Set([...Object.keys(ad), ...Object.keys(bd)])]
+      .map(Number)
+      .sort((x, y) => x - y);
+    for (const row of rows) {
+      const ar = ad[row] ?? {};
+      const br = bd[row] ?? {};
+      const cols = [...new Set([...Object.keys(ar), ...Object.keys(br)])]
+        .map(Number)
+        .sort((x, y) => x - y);
+      for (const col of cols) {
+        const x = norm(ar[col]);
+        const y = norm(br[col]);
+        if (JSON.stringify(x) === JSON.stringify(y)) continue;
+        changed++;
+        if (budget <= 0) {
+          truncated = true;
+          continue;
+        }
+        budget--;
+        cells.push({
+          cell: `${indexToCol(col + 1)}${row + 1}`,
+          kind: x === null ? "added" : y === null ? "deleted" : "modified",
+          left: x,
+          right: y,
+        });
+      }
+    }
+    sheets.push({ name, status, changed, cells });
+  }
+  return { sheets, truncated };
 }

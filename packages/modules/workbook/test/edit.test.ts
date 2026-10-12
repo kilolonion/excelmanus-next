@@ -10,6 +10,7 @@ import { workbookEditTool } from "../src/edit.ts";
 import {
   CHECKPOINT_MIGRATION,
   DOC_OPS_MIGRATION,
+  DOC_OPS_REVERTS_MIGRATION,
   DOCUMENTS_MIGRATION,
   DocumentService,
 } from "../src/service.ts";
@@ -24,6 +25,7 @@ async function setup() {
     DOC_OPS_MIGRATION,
     BACKUPS_MIGRATION,
     CHECKPOINT_MIGRATION,
+    DOC_OPS_REVERTS_MIGRATION,
   ]);
   const svc = new DocumentService(db);
   const { meta } = await svc.open("ws1", dir, "sales.xlsx");

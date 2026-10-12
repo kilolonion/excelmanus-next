@@ -6,7 +6,7 @@ import { ManageFilesBody, ManageFilesResponse } from "./files.ts";
 import * as rest from "./rest.ts";
 
 export interface HttpContract {
-  method: "get" | "post" | "patch" | "delete";
+  method: "get" | "post" | "put" | "patch" | "delete";
   path: string;
   response: z.ZodType;
   body?: z.ZodType;
@@ -55,6 +55,12 @@ export const httpContracts: HttpContract[] = [
     body: extensions.UpdateWorkspaceBody,
     response: extensions.WorkspaceResponse,
   },
+  {
+    method: "put",
+    path: "/workspaces/order",
+    body: extensions.WorkspaceOrderBody,
+    response: extensions.WorkspaceListResponse,
+  },
   { method: "delete", path: "/workspaces/{id}", response: rest.OkResponse },
   {
     method: "patch",
@@ -95,6 +101,29 @@ export const httpContracts: HttpContract[] = [
     body: diagnostics.DiagnosticExportBody,
     response: diagnostics.DiagnosticExportResponse,
   },
+  {
+    method: "post",
+    path: "/workspaces/{id}/docs/compare",
+    body: rest.CompareDocsBody,
+    response: rest.CompareDocsResponse,
+  },
+  {
+    method: "get",
+    path: "/workspaces/{id}/docs/{docId}/revs",
+    response: rest.DocRevisionsResponse,
+  },
+  {
+    method: "post",
+    path: "/workspaces/{id}/docs/{docId}/revs/{rev}/undo",
+    response: rest.UndoRevisionResponse,
+  },
+  {
+    method: "post",
+    path: "/sessions/{id}/feedback",
+    body: rest.FeedbackBody,
+    response: rest.OkResponse,
+  },
+  { method: "get", path: "/sessions/{id}/export/json", response: rest.SessionExportJson },
   { method: "get", path: "/health", response: rest.HealthResponse },
   { method: "post", path: "/auth/session", response: rest.AuthSessionResponse },
   { method: "post", path: "/auth/logout", response: rest.OkResponse },
@@ -136,11 +165,22 @@ export const httpContracts: HttpContract[] = [
   },
   {
     method: "post",
+    path: "/sessions/{id}/agents/{agentId}/rewind",
+    body: rest.RewindBody,
+    response: rest.RewindResponse,
+  },
+  {
+    method: "post",
     path: "/sessions/{id}/agents/{agentId}/control",
     body: rest.ControlBody,
     response: rest.ControlResponse,
   },
-  { method: "post", path: "/sessions/{id}/stop-all", response: rest.StopAllResponse },
+  {
+    method: "post",
+    path: "/sessions/{id}/stop-all",
+    body: rest.StopAllBody,
+    response: rest.StopAllResponse,
+  },
   {
     method: "post",
     path: "/approvals/{id}",
@@ -191,6 +231,13 @@ export const httpContracts: HttpContract[] = [
   },
   { method: "get", path: "/workspaces", response: extensions.WorkspaceListResponse },
   { method: "get", path: "/workspaces/{id}/files", response: rest.FileListResponse },
+  {
+    method: "post",
+    path: "/workspaces/{id}/files/new",
+    body: rest.NewFileBody,
+    response: rest.UploadResponse,
+  },
+  { method: "get", path: "/workspaces/{id}/files/history", response: rest.FileHistoryResponse },
   {
     method: "post",
     path: "/workspaces/{id}/files/upload",

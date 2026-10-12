@@ -32,27 +32,40 @@ import {
   type TeamCoordinator,
 } from "@excelmanus/kernel";
 import { PROVIDER_PRESETS, redactSecrets } from "@excelmanus/models";
-import type { StepEvent } from "@excelmanus/protocol";
+import type { LogRecord, StepEvent } from "@excelmanus/protocol";
 import {
   ApprovalDecisionBody,
+  CompareDocsBody,
   ControlBody,
   CreateModelProfileBody,
   CreateSessionBody,
   createOpenApiDocument,
+  DocRevisionsQuery,
+  FeedbackBody,
+  type FileEvent,
   findHttpContract,
+  NewFileBody,
   OpenDocBody,
   protocolVersion,
   QuestionAnswerBody,
   RenderDocBody,
   type RenderLayout,
   ResolveExternalBody,
+  RewindBody,
   SendMessageBody,
   SessionListQuery,
   SessionLogQuery,
+  StopAllBody,
   UpdateModelProfileBody,
   UpdateSessionBody,
 } from "@excelmanus/protocol";
-import { buildLayout, type DocumentService } from "@excelmanus/workbook";
+import {
+  buildLayout,
+  compareWorkbooks,
+  DocNotFoundError,
+  type DocRevisionInfo,
+  type DocumentService,
+} from "@excelmanus/workbook";
 import { type Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import type { z } from "zod";
@@ -160,18 +173,6 @@ type SessionRowLike = {
   last_seq: number;
 };
 
-function sessionDto(row: SessionRowLike) {
-  return {
-    id: row.id,
-    workspaceId: row.workspace_id,
-    title: row.title,
-    permissionMode: row.permission_mode,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    lastSeq: row.last_seq,
-  };
-}
-
 function agentDto(row: {
   id: string;
   session_id: string;
@@ -195,6 +196,32 @@ function agentDto(row: {
 export function createApp(deps: AppDeps): Hono {
   const app = new Hono();
   const { db, emit } = deps;
+
+  // 会话列表的活动摘要（侧栏状态点）：忙碌代理与待处理交互，按会话即时计算
+  const busyAgentStmt = db.prepare(
+    "SELECT 1 FROM agents WHERE session_id = ? AND status IN ('running', 'waiting', 'blocked', 'queued') LIMIT 1",
+  );
+  const pendingKindsStmt = db.prepare(
+    "SELECT kind, COUNT(*) AS n FROM pending_interactions WHERE session_id = ? AND status = 'pending' GROUP BY kind",
+  );
+  const sessionDto = (row: SessionRowLike) => {
+    const pending = pendingKindsStmt.all(row.id) as { kind: string; n: number }[];
+    const count = (kind: string) => Number(pending.find((p) => p.kind === kind)?.n ?? 0);
+    return {
+      id: row.id,
+      workspaceId: row.workspace_id,
+      title: row.title,
+      permissionMode: row.permission_mode,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      lastSeq: row.last_seq,
+      activity: {
+        busy: busyAgentStmt.get(row.id) !== undefined,
+        pendingApprovals: count("approval"),
+        pendingQuestions: count("question"),
+      },
+    };
+  };
 
   const redactValue = (value: unknown): unknown => {
     if (typeof value === "string") return redactSecrets(value);
@@ -727,6 +754,43 @@ export function createApp(deps: AppDeps): Hono {
     });
   });
 
+  app.get("/api/v1/sessions/:id/export/json", (c) => {
+    const row = getSession(db, c.req.param("id"));
+    if (!row) return fail(c, 404, "not_found", "会话不存在");
+    const records: LogRecord[] = [];
+    for (let after = 0; ; ) {
+      const batch = deps.log.readAfter(row.id, after, 1000);
+      if (batch.length === 0) break;
+      records.push(...batch);
+      after = batch[batch.length - 1]?.seq ?? after;
+    }
+    // 历史失败原因可能含明文凭据（P0-12）：与 Markdown 导出同样按格式正则兜底
+    const body = redactSecrets(
+      JSON.stringify({
+        exportedAt: nowIso(),
+        session: sessionDto(row),
+        agents: listAgents(db, row.id).map(agentDto),
+        records,
+      }),
+    );
+    return new Response(body, { headers: { "content-type": "application/json; charset=utf-8" } });
+  });
+
+  app.post("/api/v1/sessions/:id/feedback", async (c) => {
+    const row = getSession(db, c.req.param("id"));
+    if (!row) return fail(c, 404, "not_found", "会话不存在");
+    const body = parse(FeedbackBody, await c.req.json().catch(() => null));
+    if ("issues" in body) return fail(c, 400, "bad_request", "请求体不合法", body.issues);
+    const target = db
+      .prepare(
+        "SELECT agent_id FROM session_log WHERE session_id = ? AND seq = ? AND type = 'model.output'",
+      )
+      .get(row.id, body.seq) as { agent_id: string | null } | undefined;
+    if (!target) return fail(c, 404, "not_found", "回复不存在");
+    deps.log.append(row.id, target.agent_id, [{ type: "feedback.given", data: body }]);
+    return c.json({ ok: true });
+  });
+
   app.patch("/api/v1/sessions/:id", async (c) => {
     const row = getSession(db, c.req.param("id"));
     if (!row) return fail(c, 404, "not_found", "会话不存在");
@@ -991,6 +1055,7 @@ export function createApp(deps: AppDeps): Hono {
           ...(body.replacesDispatchId ? { replacesDispatchId: body.replacesDispatchId } : {}),
           text: body.text,
           mode,
+          ...(body.chatMode !== undefined ? { chatMode: body.chatMode } : {}),
           ...(body.context !== undefined ? { context: body.context } : {}),
           ...(body.attachments !== undefined && body.attachments.length > 0
             ? { attachments: body.attachments }
@@ -1043,12 +1108,16 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   /** 停止该会话全部运行中的代理（11 §147）。 */
-  app.post("/api/v1/sessions/:id/stop-all", (c) => {
+  app.post("/api/v1/sessions/:id/stop-all", async (c) => {
     const sessionId = c.req.param("id");
     const row = getSession(db, sessionId);
     if (!row) return fail(c, 404, "not_found", "会话不存在");
     // 05 §11"停止全部"：在跑的轮中止、闸门排队的子代理撤出、之后的报告不唤醒代理。
-    const stopped = deps.runtime.stopAll(sessionId);
+    const body = parse(StopAllBody, await c.req.json().catch(() => ({})));
+    if ("issues" in body) return fail(c, 400, "bad_request", "请求体不合法", body.issues);
+    const stopped = deps.runtime.stopAll(sessionId, {
+      subagentsOnly: body.scope === "subagents",
+    });
     return c.json({ ok: true, stopped });
   });
 
@@ -1160,6 +1229,25 @@ export function createApp(deps: AppDeps): Hono {
       });
       return fail(c, 502, "compaction_failed", "上下文压缩失败，请重试");
     }
+  });
+
+  /** 从某条用户消息起重新开始（编辑重发 / 重试）：代理须空闲，只改对话不回滚文件。 */
+  app.post("/api/v1/sessions/:id/agents/:agentId/rewind", async (c) => {
+    const sessionId = c.req.param("id");
+    const agentId = c.req.param("agentId");
+    const row = getSession(db, sessionId);
+    if (!row) return fail(c, 404, "not_found", "会话不存在");
+    const body = parse(RewindBody, await c.req.json().catch(() => null));
+    if ("issues" in body) return fail(c, 400, "bad_request", "请求体不合法", body.issues);
+    const out = deps.runtime.rewind(sessionId, agentId, body.dispatchId);
+    if ("ok" in out) return c.json(out);
+    if (out.error === "not_found") return fail(c, 404, "not_found", "代理或消息不存在");
+    const message = {
+      busy: "代理正在运行或等待处理，请先停止",
+      not_applied: "消息尚未生效，请直接撤回",
+      before_compaction: "上下文已压缩，无法回到压缩之前的消息",
+    }[out.error];
+    return fail(c, 409, "conflict", message);
   });
 
   // ---------- 工作区文档与文件（modules/workbook 的活文档只读面） ----------
@@ -1312,6 +1400,95 @@ export function createApp(deps: AppDeps): Hono {
     }
   });
 
+  app.post("/api/v1/workspaces/:id/docs/compare", async (c) => {
+    const svc = deps.docService;
+    if (!svc) return fail(c, 501, "not_implemented", "workbook 模块未装配");
+    const wsRow = getWorkspace(db, c.req.param("id"));
+    if (!wsRow) return fail(c, 404, "not_found", "工作区不存在");
+    const body = parse(CompareDocsBody, await c.req.json().catch(() => null));
+    if ("issues" in body) return fail(c, 400, "bad_request", "请求体不合法", body.issues);
+    const load = async (side: { path: string } | { docId: string }) => {
+      const docId =
+        "docId" in side ? side.docId : (await svc.open(wsRow.id, wsRow.path, side.path)).meta.id;
+      if (!docWorkspace(wsRow.id, docId)) throw new DocNotFoundError(docId);
+      return svc.snapshot(docId, wsRow.path);
+    };
+    try {
+      const [left, right] = [await load(body.left), await load(body.right)];
+      const side = (d: typeof left) => ({ docId: d.meta.id, path: d.meta.path, rev: d.meta.rev });
+      return c.json({
+        left: side(left),
+        right: side(right),
+        ...compareWorkbooks(left.snapshot, right.snapshot, body.limit ?? 500),
+      });
+    } catch (e) {
+      if (e instanceof DocNotFoundError) return fail(c, 404, "not_found", e.message);
+      return docErr(c, e);
+    }
+  });
+
+  /** 文档属于该工作区时返回工作区行。 */
+  const docWorkspace = (workspaceId: string, docId: string) => {
+    const wsRow = getWorkspace(db, workspaceId);
+    const docRow = db.prepare("SELECT workspace_id FROM documents WHERE id = ?").get(docId) as
+      | { workspace_id: string }
+      | undefined;
+    return wsRow && docRow?.workspace_id === wsRow.id ? wsRow : undefined;
+  };
+
+  // 撤销面板：修订列表与撤销某次修订（回退作为新的用户修订提交）
+  app.get("/api/v1/workspaces/:id/docs/:docId/revs", async (c) => {
+    const svc = deps.docService;
+    if (!svc) return fail(c, 501, "not_implemented", "workbook 模块未装配");
+    const docId = c.req.param("docId");
+    const wsRow = docWorkspace(c.req.param("id"), docId);
+    if (!wsRow) return fail(c, 404, "not_found", "文档不存在");
+    const query = parse(DocRevisionsQuery, c.req.query());
+    if ("issues" in query) return fail(c, 400, "bad_request", "查询参数不合法", query.issues);
+    try {
+      const out = await svc.revisions(docId, wsRow.path, {
+        limit: query.limit ?? 50,
+        ...(query.before !== undefined ? { before: query.before } : {}),
+      });
+      return c.json({
+        docId,
+        headRev: out.headRev,
+        items: out.items.map((r) => ({
+          rev: r.rev,
+          source: { kind: r.sourceKind, id: r.sourceId },
+          sessionId: r.sessionId,
+          createdAt: r.createdAt,
+          changes: r.changes,
+          reverts: r.reverts,
+          revertedBy: r.revertedBy,
+        })),
+      });
+    } catch (e) {
+      return docErr(c, e);
+    }
+  });
+
+  app.post("/api/v1/workspaces/:id/docs/:docId/revs/:rev/undo", async (c) => {
+    const svc = deps.docService;
+    if (!svc) return fail(c, 501, "not_implemented", "workbook 模块未装配");
+    const docId = c.req.param("docId");
+    const wsRow = docWorkspace(c.req.param("id"), docId);
+    if (!wsRow) return fail(c, 404, "not_found", "文档不存在");
+    const rev = Number(c.req.param("rev"));
+    if (!Number.isInteger(rev) || rev <= 0) return fail(c, 400, "bad_request", "修订号不合法");
+    const out = await svc.undoRevision(docId, wsRow.path, rev, { kind: "user", id: "undo" });
+    if (!out.ok) {
+      const status = out.code === "DOC_NOT_FOUND" ? 404 : out.code === "INTERNAL" ? 500 : 409;
+      return fail(
+        c,
+        status,
+        status === 404 ? "not_found" : status === 500 ? "internal" : "conflict",
+        out.message,
+      );
+    }
+    return c.json({ docId, rev: out.rev, reverted: rev, changes: out.changes });
+  });
+
   // 07 §7.4：修订的"修改前的值"取自 doc_ops.inverse 中的 set-range-values（精确且无需读文件）
   app.get("/api/v1/workspaces/:id/docs/:docId/revs/:rev/before", async (c) => {
     const svc = deps.docService;
@@ -1407,6 +1584,13 @@ export function createApp(deps: AppDeps): Hono {
       const { abs, rel: safeRel } = resolveWorkspacePath(wsRow.path, rel === "" ? "." : rel);
       const st = statSync(abs);
       if (!st.isDirectory()) return fail(c, 400, "bad_request", "不是目录");
+      const opened = new Map(
+        (
+          db
+            .prepare("SELECT path, last_opened_at FROM documents WHERE workspace_id = ?")
+            .all(wsRow.id) as { path: string; last_opened_at: string }[]
+        ).map((r) => [r.path, r.last_opened_at]),
+      );
       const items = readdirSync(abs, { withFileTypes: true })
         .filter((d) => !d.name.startsWith("."))
         .flatMap((d) => {
@@ -1430,6 +1614,7 @@ export function createApp(deps: AppDeps): Hono {
               kind,
               ...(size !== undefined ? { size } : {}),
               ...(modifiedAt !== undefined ? { modifiedAt } : {}),
+              ...(opened.has(entryRel) ? { openedAt: opened.get(entryRel) } : {}),
             },
           ];
         })
@@ -1440,6 +1625,125 @@ export function createApp(deps: AppDeps): Hono {
     } catch (e) {
       return docErr(c, e);
     }
+  });
+
+  app.post("/api/v1/workspaces/:id/files/new", async (c) => {
+    const wsRow = getWorkspace(db, c.req.param("id"));
+    if (!wsRow) return fail(c, 404, "not_found", "工作区不存在");
+    const body = parse(NewFileBody, await c.req.json().catch(() => null));
+    if ("issues" in body) return fail(c, 400, "bad_request", "请求体不合法", body.issues);
+    const ext = extname(body.path).toLowerCase();
+    if (basename(body.path).startsWith(".")) return fail(c, 400, "bad_request", "文件名不合法");
+    try {
+      if (ext === ".xlsx") {
+        if (!deps.docService) return fail(c, 501, "not_implemented", "workbook 模块未装配");
+        deps.docService.createEmpty(wsRow.path, body.path);
+      } else if ([".csv", ".txt", ".md"].includes(ext)) {
+        writeFileSync(resolveWorkspacePath(wsRow.path, body.path).abs, "", { flag: "wx" });
+      } else {
+        return fail(c, 400, "bad_request", "只能新建 .xlsx、.csv、.txt 或 .md 文件");
+      }
+    } catch (e) {
+      const code = (e as { code?: string }).code;
+      if (code === "EEXIST" || code === "VERSION_CONFLICT")
+        return fail(c, 409, "conflict", "同名文件已存在");
+      if (code === "ENOENT") return fail(c, 400, "bad_request", "所在文件夹不存在");
+      return docErr(c, e);
+    }
+    const { rel } = resolveWorkspacePath(wsRow.path, body.path);
+    deps.bus.publish({ kind: "app", data: { type: "files.changed", workspaceId: wsRow.id } });
+    return c.json(
+      { path: rel, size: statSync(resolveWorkspacePath(wsRow.path, rel).abs).size },
+      201,
+    );
+  });
+
+  /** 文件来源谱系与事件历史：由哪个会话/代理新建、每次修订的来源与区域、备份与删除。 */
+  app.get("/api/v1/workspaces/:id/files/history", async (c) => {
+    const wsRow = getWorkspace(db, c.req.param("id"));
+    if (!wsRow) return fail(c, 404, "not_found", "工作区不存在");
+    let path: string;
+    try {
+      path = resolveWorkspacePath(wsRow.path, c.req.query("path") ?? "").rel;
+    } catch (e) {
+      return docErr(c, e);
+    }
+    const titles = new Map<string, string | null>();
+    const titleOf = (sessionId: string | null) => {
+      if (sessionId === null) return null;
+      if (!titles.has(sessionId)) titles.set(sessionId, getSession(db, sessionId)?.title ?? null);
+      return titles.get(sessionId) ?? null;
+    };
+    const events: FileEvent[] = [];
+    const doc = db
+      .prepare("SELECT id FROM documents WHERE workspace_id = ? AND path = ?")
+      .get(wsRow.id, path) as { id: string } | undefined;
+    if (doc && deps.docService) {
+      let revs: DocRevisionInfo[];
+      try {
+        revs = (await deps.docService.revisions(doc.id, wsRow.path, { limit: 200 })).items;
+      } catch {
+        // 文件已不在（删除/移走）：历史仍按日志列出，不带区域摘要
+        revs = (
+          db
+            .prepare(
+              "SELECT rev, source_kind, source_id, session_id, created_at FROM doc_ops WHERE doc_id = ? AND source_kind != 'engine' ORDER BY rev DESC LIMIT 200",
+            )
+            .all(doc.id) as {
+            rev: number;
+            source_kind: string;
+            source_id: string | null;
+            session_id: string | null;
+            created_at: string;
+          }[]
+        ).map((r) => ({
+          rev: r.rev,
+          sourceKind: r.source_kind,
+          sourceId: r.source_id,
+          sessionId: r.session_id,
+          createdAt: r.created_at,
+          changes: { cellsBySheet: {}, ranges: [], structural: [], added: [] },
+          reverts: null,
+          revertedBy: null,
+        }));
+      }
+      for (const r of revs)
+        events.push({
+          at: r.createdAt,
+          kind: "modified",
+          source: r.sourceKind,
+          sessionId: r.sessionId,
+          sessionTitle: titleOf(r.sessionId),
+          agentId: r.sourceKind === "agent" || r.sourceKind === "script" ? r.sourceId : null,
+          rev: r.rev,
+          changes: r.changes,
+        });
+    }
+    const backupRows = db
+      .prepare(
+        "SELECT id, session_id, agent_id, created_at, kind FROM backups WHERE workspace_id = ? AND original_path = ?",
+      )
+      .all(wsRow.id, path) as {
+      id: string;
+      session_id: string;
+      agent_id: string;
+      created_at: string;
+      kind: "backup" | "created" | "trash";
+    }[];
+    for (const b of backupRows) {
+      const sessionId = getSession(db, b.session_id) ? b.session_id : null;
+      events.push({
+        at: b.created_at,
+        kind: b.kind === "trash" ? "trashed" : b.kind,
+        source: b.kind === "created" ? (b.agent_id === "user" ? "user" : "agent") : null,
+        sessionId,
+        sessionTitle: titleOf(sessionId),
+        agentId: b.agent_id === "user" ? null : b.agent_id,
+        ...(b.kind === "created" ? {} : { backupId: b.id }),
+      });
+    }
+    events.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : (b.rev ?? 0) - (a.rev ?? 0)));
+    return c.json({ path, docId: doc?.id ?? null, events });
   });
 
   // ---------- 附件（11 §4 `POST /attachments`）：图片，内容寻址去重 ----------
@@ -1589,6 +1893,12 @@ export function createApp(deps: AppDeps): Hono {
       ".woff2": "font/woff2",
       ".map": "application/json",
       ".ico": "image/x-icon",
+      ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg",
+      ".gif": "image/gif",
+      ".webp": "image/webp",
+      ".csv": "text/csv; charset=utf-8",
+      ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     };
     app.get("*", (c) => {
       const p = decodeURIComponent(c.req.path);

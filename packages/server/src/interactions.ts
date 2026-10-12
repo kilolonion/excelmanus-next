@@ -1,5 +1,5 @@
 import type { QuestionCoordinator, SessionLog, ToolDefinition } from "@excelmanus/kernel";
-import type { ToolResult } from "@excelmanus/protocol";
+import { PresentPayload, type ToolResult } from "@excelmanus/protocol";
 import { z } from "zod";
 
 const output = z.record(z.string(), z.unknown());
@@ -10,7 +10,7 @@ const askInput = z.strictObject({
   spec: z.record(z.string(), z.unknown()),
   timeoutSeconds: z.number().positive().max(86_400).optional(),
 });
-const presentInput = z.strictObject({ payload: z.unknown() });
+const presentInput = z.strictObject({ payload: PresentPayload });
 const todoInput = z.discriminatedUnion("op", [
   z.strictObject({ op: z.literal("set"), items: z.array(z.record(z.string(), z.unknown())) }),
   z.strictObject({
@@ -55,7 +55,8 @@ export function interactionTools(
   const present: ToolDefinition<z.infer<typeof presentInput>> = {
     name: "present",
     title: "呈现内容",
-    description: "非阻塞地向用户呈现区域高亮或文件等内容。",
+    description:
+      "非阻塞地向用户呈现内容：kind=focus 在工作台里指给用户看某个区域（docId 或 path 加 range，附一句 note）；kind=file 交付一个工作区文件（path）。",
     input: presentInput,
     output,
     effect: "interactive",
@@ -64,9 +65,7 @@ export function interactionTools(
     timeoutMs: 30_000,
     roles: ["main", "lead", "worker", "reader"],
     execute(args, ctx) {
-      log.append(ctx.sessionId, ctx.agentId, [
-        { type: "ui.present", data: { payload: args.payload } },
-      ]);
+      log.append(ctx.sessionId, ctx.agentId, [{ type: "ui.present", data: args.payload }]);
       return ok({ presented: true });
     },
   };

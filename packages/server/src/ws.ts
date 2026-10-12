@@ -12,7 +12,7 @@ import type {
   ServerMessage,
   SnapshotMsg,
 } from "@excelmanus/protocol";
-import { ClientMessage, protocolVersion } from "@excelmanus/protocol";
+import { ClientMessage, protocolVersion, ToolArgsDelta } from "@excelmanus/protocol";
 import type { DocMutation, DocumentService } from "@excelmanus/workbook";
 import { deriveWriteSet } from "@excelmanus/workbook";
 import { type WebSocket, WebSocketServer } from "ws";
@@ -78,6 +78,15 @@ export interface SyncChannelOptions {
   /** 截图渲染中转（ADR 0010）：订阅 app 主题的界面连接可作为渲染端。 */
   render?: RenderBroker;
 }
+
+/** 改变会话活动摘要（SessionSummary.activity）的记录类型。 */
+const ACTIVITY_RECORDS = new Set([
+  "agent.status",
+  "approval.requested",
+  "approval.decided",
+  "question.asked",
+  "question.answered",
+]);
 
 export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () => void {
   const emit = opts.emit ?? (() => {});
@@ -161,10 +170,15 @@ export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () 
       reasoning: "",
       toolArgs: "",
     };
-    const piece = typeof ev.payload === "string" ? ev.payload : "";
-    if (ev.deltaKind === "text") s.text += piece;
-    else if (ev.deltaKind === "reasoning") s.reasoning += piece;
-    else if (ev.deltaKind === "tool_args") s.toolArgs += piece;
+    if (ev.deltaKind === "tool_args") {
+      // snapshot.toolArgs 只是本步全部参数分片的拼接；分片本身带工具 id 与名称（v3）
+      const p = ToolArgsDelta.safeParse(ev.payload);
+      if (p.success) s.toolArgs += p.data.delta;
+    } else {
+      const piece = typeof ev.payload === "string" ? ev.payload : "";
+      if (ev.deltaKind === "text") s.text += piece;
+      else if (ev.deltaKind === "reasoning") s.reasoning += piece;
+    }
     streams.set(key, s);
     for (const conn of conns.values()) {
       const sub = conn.subs.get(topic);
@@ -199,8 +213,12 @@ export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () 
   };
 
   const unsubscribe = opts.bus.subscribe((ev) => {
-    if (ev.kind === "rec") publishRec(`session:${ev.rec.sessionId}`, ev.rec);
-    else if (ev.kind === "delta") publishDelta(ev);
+    if (ev.kind === "rec") {
+      publishRec(`session:${ev.rec.sessionId}`, ev.rec);
+      // 会话列表的活动摘要（运行中 / 待审批 / 待回答）随之变化：通知未订阅该会话的窗口刷新
+      if (ACTIVITY_RECORDS.has(ev.rec.type))
+        publishApp({ type: "session.activity", sessionId: ev.rec.sessionId });
+    } else if (ev.kind === "delta") publishDelta(ev);
     else publishApp(ev.data);
   });
 
@@ -445,6 +463,7 @@ export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () 
             baseRev: msg.baseRev,
             source: { kind: "user", id: conn.id },
             mutations: msg.mutations as DocMutation[],
+            ...(msg.overwrite === true ? { overwrite: true } : {}),
           })
           .then((result) => {
             if (result.ok) {

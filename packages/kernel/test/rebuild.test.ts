@@ -439,6 +439,91 @@ describe("SessionLog 投影重建", () => {
     expect(visible()).toEqual(rows);
   });
 
+  test("history.rewound：该消息及其后的条目失效、之后的消息照常进入；不越过压缩；重建一致", () => {
+    const db = tmpDb();
+    const log = new SessionLog(db, { projections: kernelProjections() });
+    const sid = "ses_rew";
+    log.append(sid, null, [
+      {
+        type: "session.created",
+        data: { workspaceId: "wks_1", title: null, permissionMode: "standard" },
+      },
+    ]);
+    log.append(sid, "main", [
+      {
+        type: "agent.spawned",
+        data: { role: "main", name: "主代理", modelProfileId: "mp_1", systemPrompt: "p" },
+      },
+    ]);
+    const turn = (n: number, text: string): number => {
+      const [msg] = log.append(sid, "main", [
+        {
+          type: "user.message",
+          data: { dispatchId: `d${n}`, clientMessageId: `c${n}`, text },
+        },
+        { type: "dispatch.updated", data: { dispatchId: `d${n}`, status: "applied" } },
+        { type: "turn.started", data: { turnId: `t${n}` } },
+        { type: "model.output", data: { stepId: `s${n}`, text: `答${n}` } },
+        { type: "turn.completed", data: { turnId: `t${n}`, reason: "stop" } },
+      ]);
+      return msg?.seq ?? 0;
+    };
+    const live = () =>
+      (
+        db
+          .prepare(
+            "SELECT item FROM agent_context WHERE session_id = ? AND agent_id = 'main' AND superseded = 0 ORDER BY idx",
+          )
+          .all(sid) as { item: string }[]
+      ).map((r) => (JSON.parse(r.item) as { text?: string }).text);
+
+    const seq1 = turn(1, "问1");
+    const seq2 = turn(2, "问2");
+    turn(3, "问3");
+    log.append(sid, "main", [
+      { type: "history.rewound", data: { dispatchId: "d2", fromSeq: seq2 } },
+    ]);
+    expect(live()).toEqual(["问1", "答1"]);
+    const seq4 = turn(4, "问2（改）");
+    expect(live()).toEqual(["问1", "答1", "问2（改）", "答4"]);
+
+    // 压缩之后，回退到压缩之前的消息（含保留尾部里的）不生效
+    const keep = db
+      .prepare(
+        "SELECT from_seq FROM agent_context WHERE session_id = ? AND agent_id = 'main' AND superseded = 0 AND json_extract(item, '$.text') = '问2（改）'",
+      )
+      .get(sid) as { from_seq: number };
+    log.append(sid, "main", [
+      {
+        type: "compaction",
+        data: {
+          trigger: "manual",
+          summary: "摘要",
+          keepFromSeq: keep.from_seq,
+          beforeTokens: 100,
+          afterTokens: 10,
+          estimated: true,
+        },
+      },
+    ]);
+    const afterCompaction = ["<summary>\n摘要\n</summary>", "问2（改）", "答4"];
+    log.append(sid, "main", [
+      { type: "history.rewound", data: { dispatchId: "d1", fromSeq: seq1 } },
+      { type: "history.rewound", data: { dispatchId: "d4", fromSeq: seq4 } },
+    ]);
+    expect(live()).toEqual(afterCompaction);
+    const seq5 = turn(5, "问5");
+    turn(6, "问6");
+    log.append(sid, "main", [
+      { type: "history.rewound", data: { dispatchId: "d5", fromSeq: seq5 } },
+    ]);
+    expect(live()).toEqual(afterCompaction);
+
+    const before = dump(db);
+    log.rebuild(sid);
+    expect(dump(db)).toEqual(before);
+  });
+
   test("连续两次压缩：第二次切点落在首次保留尾部内，按位置取尾不重复摘要；重建一致", () => {
     const db = tmpDb();
     const log = new SessionLog(db, { projections: kernelProjections() });

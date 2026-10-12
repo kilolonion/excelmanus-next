@@ -10,6 +10,7 @@ import { objectsOf } from "../src/objects.ts";
 import {
   CHECKPOINT_MIGRATION,
   DOC_OPS_MIGRATION,
+  DOC_OPS_REVERTS_MIGRATION,
   DOCUMENTS_MIGRATION,
   DocumentService,
 } from "../src/service.ts";
@@ -22,6 +23,7 @@ test("工作区图片新增、预览回滚与原始字节保真回读", async ()
     DOC_OPS_MIGRATION,
     BACKUPS_MIGRATION,
     CHECKPOINT_MIGRATION,
+    DOC_OPS_REVERTS_MIGRATION,
   ]);
   const service = new DocumentService(db);
   try {

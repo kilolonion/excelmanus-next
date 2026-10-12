@@ -2,12 +2,380 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="description" content="基于大语言模型的 Excel 智能代理" />
     <link rel="icon" type="image/png" href="/favicon.png" />
     <title>ExcelManus</title>
+    <!-- 等待页关键样式：首个 JS 包到达前就要画出等待页（桌面 CSP 允许内联样式、禁止内联脚本）。 -->
+    <style>
+      .em-splash{
+        --em-primary:#0b6b4f;
+        --em-hairline:#dce7e0;
+        --em-text:#18241e;
+        --em-text-secondary:#66756c;
+        --card:#fff;
+        position:relative;
+        display:flex;
+        flex-direction:column;
+        height:100vh;
+        height:100dvh;
+        min-height:100vh;
+        min-height:100dvh;
+        overflow:hidden;
+        background:#fff;
+        color:#18241e;
+        user-select:none;
+        font-family:ui-sans-serif,system-ui,sans-serif;
+      }
+      .em-splash-glow{
+        pointer-events:none;
+        position:absolute;
+        inset:0;
+      }
+      .em-splash-glow::before{
+        content:"";
+        position:absolute;
+        left:50%;
+        top:42%;
+        width:min(72vw,520px);
+        height:min(72vw,520px);
+        transform:translate(-50%,-50%);
+        border-radius:999px;
+        background:#0b6b4f;
+        opacity:.045;
+        filter:blur(90px);
+      }
+      .em-splash-header{
+        position:relative;
+        z-index:10;
+        display:flex;
+        flex-wrap:nowrap;
+        align-items:center;
+        justify-content:space-between;
+        gap:12px;
+        padding:max(1.25rem,env(safe-area-inset-top)) 16px 0;
+      }
+      .em-splash-wordmark{
+        display:inline-flex;
+        align-items:center;
+        gap:8px;
+      }
+      .em-splash-wordmark img{
+        width:28px;
+        height:28px;
+        object-fit:contain;
+      }
+      .em-splash-wordmark-text{
+        font-size:17px;
+        font-weight:600;
+        letter-spacing:-.02em;
+        color:#0b6b4f;
+      }
+      .em-splash-tag{
+        display:none;
+        white-space:nowrap;
+        font-size:13px;
+        letter-spacing:.02em;
+        color:#66756c;
+      }
+      .em-splash-main{
+        position:relative;
+        z-index:10;
+        flex:1;
+        display:flex;
+        flex-direction:column;
+        align-items:center;
+        justify-content:center;
+        padding:0 20px;
+        text-align:center;
+      }
+      .em-splash-mark{
+        position:relative;
+        width:272px;
+        height:214px;
+      }
+      .em-splash-mark-glow{
+        pointer-events:none;
+        position:absolute;
+        left:50%;
+        top:48%;
+        width:250px;
+        height:250px;
+        transform:translate(-50%,-50%);
+        border-radius:999px;
+        background:#0b6b4f;
+        opacity:.08;
+        filter:blur(58px);
+      }
+      .em-splash-sheet{
+        position:absolute;
+        width:128px;
+        opacity:.9;
+        filter:drop-shadow(0 16px 32px rgba(11,107,79,.18));
+      }
+      .em-splash-sheet svg{
+        display:block;
+        width:100%;
+        height:auto;
+      }
+      .em-splash-sheet-left{
+        left:8px;
+        top:58px;
+        transform:rotate(-16deg);
+      }
+      .em-splash-sheet-right{
+        right:4px;
+        top:34px;
+        transform:rotate(13deg);
+      }
+      .em-splash-logo-wrap{
+        position:absolute;
+        left:50%;
+        top:48%;
+        width:148px;
+        height:148px;
+        transform:translate(-50%,-50%);
+        display:flex;
+        align-items:center;
+        justify-content:center;
+      }
+      .em-splash-arc{
+        position:absolute;
+        inset:0;
+        animation:em-splash-arc-spin 3s linear infinite;
+        transform-origin:50% 50%;
+        will-change:transform;
+      }
+      .em-splash-arc svg{
+        display:block;
+        width:100%;
+        height:100%;
+      }
+      .em-splash-logo{
+        position:relative;
+        z-index:10;
+        width:92px;
+        height:92px;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        overflow:hidden;
+        border-radius:999px;
+        background:#fff;
+        box-shadow:0 10px 28px rgba(11,107,79,.16),0 0 0 1px rgba(11,107,79,.1);
+      }
+      .em-splash-logo img{
+        width:72%;
+        height:72%;
+        object-fit:contain;
+      }
+      .em-splash-title{
+        margin:28px 0 0;
+        white-space:nowrap;
+        font-size:1.5rem;
+        font-weight:600;
+        line-height:1;
+        letter-spacing:-.02em;
+        color:#18241e;
+      }
+      .em-splash-subtitle{
+        margin:10px 0 0;
+        white-space:nowrap;
+        font-size:13px;
+        line-height:1;
+        color:#66756c;
+      }
+      .em-splash-status{
+        margin:32px 0 0;
+        display:flex;
+        flex-wrap:nowrap;
+        align-items:center;
+        gap:8px;
+        justify-content:center;
+        max-width:100%;
+        font-size:13px;
+        color:#66756c;
+      }
+      .em-splash-spinner{
+        display:inline-block;
+        box-sizing:border-box;
+        flex-shrink:0;
+        width:14px;
+        height:14px;
+        border-radius:999px;
+        border:2px solid rgba(11,107,79,.15);
+        border-top-color:#0b6b4f;
+        animation:em-splash-status-spin .8s linear infinite;
+        will-change:transform;
+      }
+      .em-splash-progress{
+        margin:14px 0 0;
+        width:min(70vw,220px);
+        height:5px;
+        overflow:hidden;
+        border-radius:999px;
+        background:#dce7e0;
+      }
+      .em-splash-progress-fill{
+        width:40%;
+        height:100%;
+        border-radius:999px;
+        background:#0b6b4f;
+        animation:em-splash-progress-slide 1.6s cubic-bezier(.4,0,.2,1) infinite;
+        will-change:transform;
+      }
+      .em-splash-elapsed{
+        margin:14px 0 0;
+        color:#66756c;
+        font-size:12px;
+        line-height:1.5;
+        font-variant-numeric:tabular-nums;
+      }
+      .em-splash-hint{
+        margin:6px 0 0;
+        max-width:32em;
+        min-height:3em;
+        color:#66756c;
+        font-size:12px;
+        line-height:1.5;
+      }
+      .em-splash-recovery{
+        margin-top:8px;
+        visibility:hidden;
+        /* Offer a working link even if the application never hydrates. */
+        animation:em-splash-reveal 0s 30s forwards;
+      }
+      .em-splash-recovery a{
+        display:inline-block;
+        border:1px solid #dce7e0;
+        border-radius:8px;
+        padding:8px 16px;
+        color:#0b6b4f;
+        background:#fff;
+        font-size:13px;
+        line-height:1.5;
+        text-decoration:none;
+      }
+      .em-splash-recovery a:hover{background:#f0f7f3}
+      .em-splash-recovery a:focus-visible{outline:2px solid #0b6b4f;outline-offset:3px}
+      .em-splash[data-error="true"] .em-splash-recovery{
+        visibility:visible;
+        animation:none;
+      }
+      .em-splash[data-error="true"] .em-splash-arc{
+        animation:none;
+      }
+      .em-splash-footer{
+        position:relative;
+        z-index:10;
+        display:flex;
+        justify-content:center;
+        overflow:hidden;
+        padding:0 12px max(1.75rem,env(safe-area-inset-bottom));
+      }
+      .em-splash-tip{
+        display:flex;
+        max-width:100%;
+        align-items:center;
+        gap:6px;
+        font-size:11px;
+        line-height:1;
+        color:#66756c;
+      }
+      .em-splash-tip svg{
+        flex-shrink:0;
+        width:14px;
+        height:14px;
+        color:#0b6b4f;
+      }
+      .em-splash-tip span{
+        white-space:nowrap;
+      }
+      @keyframes em-splash-arc-spin{
+        from{transform:rotate(0deg)}
+        to{transform:rotate(360deg)}
+      }
+      @keyframes em-splash-status-spin{
+        from{transform:rotate(0deg)}
+        to{transform:rotate(360deg)}
+      }
+      @keyframes em-splash-progress-slide{
+        from{transform:translateX(-100%)}
+        to{transform:translateX(250%)}
+      }
+      @keyframes em-splash-reveal{
+        to{visibility:visible}
+      }
+      @media (min-width:768px){
+        .em-splash-glow::before{
+          top:50%;
+          width:560px;
+          height:560px;
+        }
+        .em-splash-header{
+          padding:32px 40px 0;
+        }
+        .em-splash-tag{display:inline}
+        .em-splash-main{padding:0 64px}
+        .em-splash-mark{
+          width:308px;
+          height:236px;
+        }
+        .em-splash-mark-glow{
+          width:300px;
+          height:300px;
+        }
+        .em-splash-sheet{width:140px}
+        .em-splash-sheet-left{
+          left:16px;
+          top:62px;
+        }
+        .em-splash-sheet-right{
+          right:8px;
+          top:30px;
+        }
+        .em-splash-logo-wrap{
+          width:162px;
+          height:162px;
+        }
+        .em-splash-logo{
+          width:102px;
+          height:102px;
+        }
+        .em-splash-title{
+          margin-top:36px;
+          font-size:2rem;
+        }
+        .em-splash-subtitle{font-size:15px}
+        .em-splash-status{margin-top:36px}
+        .em-splash-progress{width:168px}
+        .em-splash-footer{padding:0 40px 40px}
+        .em-splash-tip{
+          gap:8px;
+          font-size:13px;
+        }
+        .em-splash-tip svg{
+          width:16px;
+          height:16px;
+        }
+      }
+      @media (prefers-reduced-motion:reduce){
+        /* Decorative rotation stops; essential liveness feedback keeps moving slowly. */
+        .em-splash-arc{animation:none;will-change:auto}
+        .em-splash-spinner{animation-duration:1.6s}
+        .em-splash-progress-fill{animation-duration:3.2s}
+      }
+      @media (max-height:700px){
+        .em-splash{overflow:auto}
+        .em-splash-main{padding-top:20px;padding-bottom:20px}
+        .em-splash-mark{height:162px;flex-shrink:0}
+        .em-splash-title{margin-top:16px}
+        .em-splash-status{margin-top:24px}
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root"><div class="em-splash"><div class="em-splash-glow" aria-hidden="true"></div><header class="em-splash-header"><span class="em-splash-wordmark"><img src="/brand-icon.png" alt="" width="28" height="28" /><span class="em-splash-wordmark-text">ExcelManus</span></span><span class="em-splash-tag">智能表格助手</span></header><main class="em-splash-main"><div class="em-splash-mark" aria-hidden="true"><div class="em-splash-mark-glow"></div><div class="em-splash-sheet em-splash-sheet-left"><svg viewBox="0 0 148 108" aria-hidden="true"><rect x="0.75" y="0.75" width="146.5" height="106.5" rx="14" fill="#ffffff" stroke="#dce7e0"/><path d="M14.75 0.75h118.5a14 14 0 0 1 14 14V22H0.75V14.75a14 14 0 0 1 14-14Z" fill="#0b6b4f"/><line x1="29.6" y1="22" x2="29.6" y2="107.25" stroke="#dce7e0" stroke-width="1"/><line x1="58.4" y1="22" x2="58.4" y2="107.25" stroke="#dce7e0" stroke-width="1"/><line x1="87.2" y1="22" x2="87.2" y2="107.25" stroke="#dce7e0" stroke-width="1"/><line x1="116" y1="22" x2="116" y2="107.25" stroke="#dce7e0" stroke-width="1"/><line x1="0.75" y1="43.3" x2="147.25" y2="43.3" stroke="#dce7e0" stroke-width="1"/><line x1="0.75" y1="64.6" x2="147.25" y2="64.6" stroke="#dce7e0" stroke-width="1"/><line x1="0.75" y1="85.9" x2="147.25" y2="85.9" stroke="#dce7e0" stroke-width="1"/></svg></div><div class="em-splash-sheet em-splash-sheet-right"><svg viewBox="0 0 148 108" aria-hidden="true"><rect x="0.75" y="0.75" width="146.5" height="106.5" rx="14" fill="#ffffff" stroke="#dce7e0"/><path d="M14.75 0.75h118.5a14 14 0 0 1 14 14V22H0.75V14.75a14 14 0 0 1 14-14Z" fill="#0b6b4f"/><line x1="29.6" y1="22" x2="29.6" y2="107.25" stroke="#dce7e0" stroke-width="1"/><line x1="58.4" y1="22" x2="58.4" y2="107.25" stroke="#dce7e0" stroke-width="1"/><line x1="87.2" y1="22" x2="87.2" y2="107.25" stroke="#dce7e0" stroke-width="1"/><line x1="116" y1="22" x2="116" y2="107.25" stroke="#dce7e0" stroke-width="1"/><line x1="0.75" y1="43.3" x2="147.25" y2="43.3" stroke="#dce7e0" stroke-width="1"/><line x1="0.75" y1="64.6" x2="147.25" y2="64.6" stroke="#dce7e0" stroke-width="1"/><line x1="0.75" y1="85.9" x2="147.25" y2="85.9" stroke="#dce7e0" stroke-width="1"/><rect x="88" y="66.2" width="27" height="18.2" rx="3" fill="#0b6b4f" opacity="0.88"/></svg></div><div class="em-splash-logo-wrap"><div class="em-splash-arc"><svg viewBox="0 0 162 162"><circle cx="81" cy="81" r="73" fill="none" stroke="rgba(11,107,79,0.12)" stroke-width="3"/><circle cx="81" cy="81" r="73" fill="none" stroke="#0b6b4f" stroke-width="3.5" stroke-linecap="round" stroke-dasharray="118 340" transform="rotate(-22 81 81)"/></svg></div><div class="em-splash-logo"><img src="/brand-icon.png" alt="" width="80" height="80" /></div></div></div><h1 class="em-splash-title">正在准备你的工作空间</h1><p class="em-splash-subtitle">让繁琐的表格工作，变得简单。</p><div class="em-splash-status" role="status"><span class="em-splash-spinner" aria-hidden="true"></span><span class="em-splash-status-text">正在加载界面...</span></div><div class="em-splash-progress" role="progressbar" aria-label="正在加载"><div class="em-splash-progress-fill"></div></div><p class="em-splash-hint">准备完成后会自动进入。</p></main><footer class="em-splash-footer"><p class="em-splash-tip"><span>小提示：用一句话描述需求，即可开始处理表格。</span></p></footer></div></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

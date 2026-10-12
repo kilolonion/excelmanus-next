@@ -346,6 +346,37 @@ describe("e2e：活文档写入 + doc: 同步", () => {
       expect(result(4)).toMatchObject({ status: "error", error: { code: "VERSION_CONFLICT" } });
       expect(result(5)).toMatchObject({ status: "ok" });
       expect(result(6)).toMatchObject({ status: "ok" });
+      // 冲突条「保留我的」：同一格带旧 baseRev 先被拒绝并指出冲突区域，带 overwrite 重发则通过
+      const stale = {
+        type: "doc.submit",
+        docId: document.id,
+        baseRev: current.document.rev,
+        mutations: [
+          {
+            id: "sheet.mutation.set-range-values",
+            params: {
+              ...params,
+              trigger: "sheet.command.set-range-values",
+              cellValue: { 16: { 2: { v: 123456, t: 2 } } },
+            },
+          },
+        ],
+      };
+      ws.send({ ...stale, clientOpId: "stale-user" });
+      const staleReject = await ws.waitFor(
+        (m) => m.type === "doc.reject" && m.clientOpId === "stale-user",
+        "stale reject",
+      );
+      expect(staleReject).toMatchObject({
+        conflict: { code: "VERSION_CONFLICT", conflicts: [{ cells: ["'销售报表'!C17"] }] },
+      });
+      ws.send({ ...stale, clientOpId: "keep-mine", overwrite: true });
+      const kept = await ws.waitFor(
+        (m) => m.type === "doc.ack" && m.clientOpId === "keep-mine",
+        "keep mine ack",
+      );
+      if (kept.type !== "doc.ack") throw new Error("missing ack");
+      expect(kept.rev).toBeGreaterThan(userRev);
       const meta = (await api.getDocSnapshot(session.workspaceId, document.id)).document;
       await ws.waitFor(
         (m) => m.type === "doc.checkpoint" && m.checkpointRev === meta.rev,

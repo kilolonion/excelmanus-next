@@ -16,6 +16,7 @@ import { exportCsv, importCsv } from "../src/csv.ts";
 import {
   CHECKPOINT_MIGRATION,
   DOC_OPS_MIGRATION,
+  DOC_OPS_REVERTS_MIGRATION,
   DOCUMENTS_MIGRATION,
   DocumentService,
 } from "../src/service.ts";
@@ -293,6 +294,7 @@ async function openBook(bytes: Uint8Array) {
     DOC_OPS_MIGRATION,
     BACKUPS_MIGRATION,
     CHECKPOINT_MIGRATION,
+    DOC_OPS_REVERTS_MIGRATION,
   ]);
   const svc = new DocumentService(db);
   services.push({ svc, db });

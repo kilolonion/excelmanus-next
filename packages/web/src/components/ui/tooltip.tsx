@@ -1,51 +1,53 @@
-import * as T from "@radix-ui/react-tooltip";
-import type { ReactNode } from "react";
-import { cn } from "./cn.ts";
-import { Shortcut } from "./kbd.tsx";
+"use client";
 
-export function TooltipProvider({ children }: { children: ReactNode }) {
+import { Tooltip as TooltipPrimitive } from "radix-ui";
+import type * as React from "react";
+
+import { cn } from "@/lib/utils";
+
+function TooltipProvider({
+  delayDuration = 0,
+  ...props
+}: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
   return (
-    <T.Provider delayDuration={400} skipDelayDuration={200}>
-      {children}
-    </T.Provider>
+    <TooltipPrimitive.Provider
+      data-slot="tooltip-provider"
+      delayDuration={delayDuration}
+      {...props}
+    />
   );
 }
 
-export function Tip({
-  content,
-  side = "top",
-  shortcut,
-  children,
+function Tooltip({ ...props }: React.ComponentProps<typeof TooltipPrimitive.Root>) {
+  return <TooltipPrimitive.Root data-slot="tooltip" {...props} />;
+}
+
+function TooltipTrigger({ ...props }: React.ComponentProps<typeof TooltipPrimitive.Trigger>) {
+  return <TooltipPrimitive.Trigger data-slot="tooltip-trigger" {...props} />;
+}
+
+function TooltipContent({
   className,
-  disabled = false,
-}: {
-  content: ReactNode;
-  side?: "top" | "bottom" | "left" | "right";
-  shortcut?: string;
-  children: ReactNode;
-  className?: string;
-  disabled?: boolean;
-}) {
-  if (content === null || content === undefined || content === "") return <>{children}</>;
+  sideOffset = 0,
+  children,
+  ...props
+}: React.ComponentProps<typeof TooltipPrimitive.Content>) {
   return (
-    <T.Root open={disabled ? false : undefined}>
-      <T.Trigger asChild>{children}</T.Trigger>
-      <T.Portal>
-        <T.Content
-          side={side}
-          data-slot="tooltip"
-          sideOffset={6}
-          collisionPadding={8}
-          className={cn(
-            "z-[10100] flex max-w-80 items-center gap-2.5 rounded-md bg-primary px-2.5 py-1.5 text-xs leading-relaxed text-primary-foreground shadow-popover",
-            "origin-[var(--radix-tooltip-content-transform-origin)] animate-in fade-in-0 zoom-in-98 duration-150 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 motion-reduce:animate-none",
-            className,
-          )}
-        >
-          <span className="min-w-0 break-words">{content}</span>
-          {shortcut && <Shortcut keys={shortcut} className="opacity-80" inverted />}
-        </T.Content>
-      </T.Portal>
-    </T.Root>
+    <TooltipPrimitive.Portal>
+      <TooltipPrimitive.Content
+        data-slot="tooltip-content"
+        sideOffset={sideOffset}
+        className={cn(
+          "bg-foreground text-background animate-in fade-in-0 zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 w-fit origin-(--radix-tooltip-content-transform-origin) rounded-md px-3 py-1.5 text-xs text-balance",
+          className,
+        )}
+        {...props}
+      >
+        {children}
+        <TooltipPrimitive.Arrow className="bg-foreground fill-foreground z-50 size-2.5 translate-y-[calc(-50%_-_2px)] rotate-45 rounded-[2px]" />
+      </TooltipPrimitive.Content>
+    </TooltipPrimitive.Portal>
   );
 }
+
+export { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger };

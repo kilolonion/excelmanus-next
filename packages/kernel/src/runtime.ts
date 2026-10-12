@@ -29,6 +29,7 @@ import {
   transcriptForSummary,
 } from "./compaction.ts";
 import { FileLeaseError, type LeaseService } from "./leases.ts";
+import { lastCompactionSeq } from "./projections.ts";
 import type { QuestionCoordinator } from "./questions.ts";
 import { isResultPage, resultPageTool } from "./result-pages.ts";
 // Agent actor（04 §3 子集）：邮箱串行；Preparing→Calling→Executing→循环；
@@ -41,7 +42,7 @@ import { isResultPage, resultPageTool } from "./result-pages.ts";
 // 停止只中止当前轮：排队中的派发留在 dispatches 表保持 queued（挂起），经 resume 恢复。
 
 import type { DatabaseSync } from "node:sqlite";
-import { newId } from "@excelmanus/core";
+import { newId, type RangeRef } from "@excelmanus/core";
 import type {
   AgentRole,
   ClassifiedError,
@@ -51,6 +52,7 @@ import type {
   ErrorKind,
   FinishReason,
   ResolvedModel,
+  ToolArgsDelta,
   ToolCall,
   ToolResult,
   ToolSpec,
@@ -108,6 +110,8 @@ export interface AgentRuntimeDeps {
   autoCompact?: boolean | (() => boolean);
   /** 上下文压缩摘要使用的模型（09 §3 用途分配）；未设置用本代理模型。 */
   summaryModel?(): ResolvedModel | undefined;
+  /** 首轮完成后用模型生成会话标题（用户没有改过标题时）；缺省关闭。 */
+  autoTitle?(): boolean;
   emit?: (event: string, fields: Record<string, unknown>) => void;
 }
 
@@ -161,6 +165,14 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     }
     signal?.addEventListener("abort", done, { once: true });
   });
+}
+
+/** 一次已提交的用户编辑（server 从文档服务转来，坐标为提交时坐标）。 */
+export interface DocEdit {
+  docId: string;
+  path: string;
+  rev: number;
+  ranges: Array<RangeRef & { sheetName: string; a1: string }>;
 }
 
 export class AgentRuntime {
@@ -308,6 +320,40 @@ export class AgentRuntime {
     return { resumed, started: actor.running };
   }
 
+  /**
+   * 用户编辑提交后（02 §4.7）：读过被改区域的代理在下一步边界收到 context.notice
+   * （kind=doc.edited），不必等到写入冲突才发现。候选是上下文里出现过该文档的未关闭代理；
+   * 重叠按区域矩形判定、不做读取修订之后的插删变换（只是提示，写入仍由冲突检测兜底）。
+   */
+  notifyDocEdited(edit: DocEdit): void {
+    if (this.shuttingDown) return;
+    const rows = this.deps.db
+      .prepare(
+        `SELECT DISTINCT c.session_id, c.agent_id FROM agent_context c
+         JOIN agents a ON a.session_id = c.session_id AND a.id = c.agent_id
+         WHERE a.status != 'closed' AND instr(c.item, ?) > 0`,
+      )
+      .all(`"docId":"${edit.docId}"`) as { session_id: string; agent_id: string }[];
+    for (const row of rows) {
+      if (this.deleted.has(row.session_id)) continue;
+      const ranges = this.actor(row.session_id, row.agent_id).staleReads(edit);
+      if (ranges.length === 0) continue;
+      this.deps.log.append(row.session_id, row.agent_id, [
+        {
+          type: "context.notice",
+          data: {
+            kind: "doc.edited",
+            docId: edit.docId,
+            path: edit.path,
+            rev: edit.rev,
+            ranges,
+            text: `用户修改了 ${ranges.join("、")}（文件 ${edit.path}，rev ${edit.rev}）。你之前读过这些单元格，读到的值可能已过时；继续使用或写入前请重新读取。`,
+          },
+        },
+      ]);
+    }
+  }
+
   /** 收件箱消息到达：不伪造 user.message 派发，只唤醒目标 actor。 */
   enqueueInbox(sessionId: string, agentId: string): void {
     if (this.shuttingDown) return;
@@ -337,13 +383,22 @@ export class AgentRuntime {
    * 子代理回到 idle（任务派发挂起）；此后收件箱消息不唤醒任何代理，直到用户
    * 发消息或继续。返回被停止（含被撤出闸门）的 agentId。
    */
-  stopAll(sessionId: string): string[] {
-    this.halted.add(sessionId);
+  stopAll(sessionId: string, opts: { subagentsOnly?: boolean } = {}): string[] {
+    // 只停子代理时主代理照常运行，子代理的中断报告仍按正常路径投递给它
+    if (!opts.subagentsOnly) this.halted.add(sessionId);
     const gated = new Set(this.turnWaiters.get(sessionId) ?? []);
     this.turnWaiters.delete(sessionId);
+    const main = new Set(
+      (
+        this.deps.db
+          .prepare("SELECT id FROM agents WHERE session_id = ? AND role = 'main'")
+          .all(sessionId) as { id: string }[]
+      ).map((r) => r.id),
+    );
     const stopped: string[] = [];
     for (const [key, actor] of this.actors) {
       if (!key.startsWith(`${sessionId}/`)) continue;
+      if (opts.subagentsOnly && main.has(actor.agentId)) continue;
       if (actor.requestStop() || gated.has(actor)) stopped.push(actor.agentId);
     }
     const queued = this.deps.db
@@ -375,6 +430,61 @@ export class AgentRuntime {
     const stillRunning = running();
     for (const key of [...this.actors.keys()]) if (key.startsWith(prefix)) this.actors.delete(key);
     return { stillRunning };
+  }
+
+  /**
+   * 从某条用户消息起重新开始（编辑重发 / 重试 / 回到某一轮）：代理必须空闲；仍挂起的派发
+   * 一并撤回，追加 history.rewound，投影让该消息及其后的上下文条目失效。只改对话，不回滚文件，
+   * 不越过最近一次压缩。检查与写日志之间没有异步让出。
+   */
+  rewind(
+    sessionId: string,
+    agentId: string,
+    dispatchId: string,
+  ):
+    | { ok: true; fromSeq: number; cancelled: string[] }
+    | { error: "busy" | "not_found" | "not_applied" | "before_compaction" } {
+    const db = this.deps.db;
+    const agent = db
+      .prepare("SELECT status FROM agents WHERE session_id = ? AND id = ?")
+      .get(sessionId, agentId) as { status: string } | undefined;
+    if (!agent) return { error: "not_found" };
+    if (this.isRunning(sessionId, agentId) || !REWINDABLE.has(agent.status)) {
+      return { error: "busy" };
+    }
+    const msg = db
+      .prepare(
+        "SELECT seq FROM session_log WHERE session_id = ? AND agent_id = ? AND type = 'user.message' AND json_extract(data, '$.dispatchId') = ? ORDER BY seq LIMIT 1",
+      )
+      .get(sessionId, agentId, dispatchId) as { seq: number } | undefined;
+    if (!msg) return { error: "not_found" };
+    const dispatch = db
+      .prepare("SELECT status FROM dispatches WHERE session_id = ? AND id = ?")
+      .get(sessionId, dispatchId) as { status: string } | undefined;
+    if (dispatch?.status !== "applied") return { error: "not_applied" };
+    if (msg.seq <= lastCompactionSeq(db, sessionId, agentId)) return { error: "before_compaction" };
+    const cancelled = (
+      db
+        .prepare(
+          "SELECT id FROM dispatches WHERE session_id = ? AND agent_id = ? AND status IN ('accepted', 'queued') ORDER BY created_at",
+        )
+        .all(sessionId, agentId) as { id: string }[]
+    ).map((r) => r.id);
+    this.deps.log.append(sessionId, agentId, [
+      ...cancelled.map((id) => ({
+        type: "dispatch.updated" as const,
+        data: { dispatchId: id, status: "cancelled" as const },
+      })),
+      { type: "history.rewound", data: { dispatchId, fromSeq: msg.seq } },
+      // 被截掉的那一轮（中断/失败）不再等待继续
+      ...(agent.status !== "idle"
+        ? [{ type: "agent.status" as const, data: { status: "idle" as const } }]
+        : []),
+    ]);
+    const actor = this.actors.get(`${sessionId}/${agentId}`);
+    for (const id of cancelled) actor?.dropDispatch(id);
+    actor?.contextRewound();
+    return { ok: true, fromSeq: msg.seq, cancelled };
   }
 
   isRunning(sessionId: string, agentId: string): boolean {
@@ -426,6 +536,15 @@ export class AgentRuntime {
     return out;
   }
 
+  private readonly titled = new Set<string>();
+
+  /** 每个会话只尝试一次自动标题（本进程内）。 */
+  titleTried(sessionId: string): boolean {
+    if (this.titled.has(sessionId)) return true;
+    this.titled.add(sessionId);
+    return false;
+  }
+
   private actor(sessionId: string, agentId: string): AgentActor {
     const key = `${sessionId}/${agentId}`;
     let a = this.actors.get(key);
@@ -436,6 +555,12 @@ export class AgentRuntime {
     return a;
   }
 }
+
+const TITLE_SYSTEM =
+  "根据下面的对话给这个会话起一个简短的中文标题（不超过 16 个字），概括用户要做的事。只输出标题本身，不加引号、标点或解释。";
+
+/** 可回退的代理状态：不在运行、不在等待审批/回答、未暂停或关闭。 */
+const REWINDABLE = new Set(["idle", "interrupted", "failed"]);
 
 type StepOutcome = "continue" | "done" | "failed" | "interrupted" | "budget_exceeded";
 
@@ -461,9 +586,7 @@ class AgentActor {
   /** 回指宿主运行时：并发闸门与轮结束唤醒。 */
   private readonly host: AgentRuntime;
   /** 本代理的文档读集（07 §10；首次使用时从 agent_context 重建，10 §3.4）。 */
-  private readonly reads: ReadTable = createReadTable(() =>
-    persistedReads(this.deps.db, this.sessionId, this.agentId),
-  );
+  private reads: ReadTable = this.seededReads();
   /** 本轮与历史累计预算；每次 usage.updated 同事务持久化。 */
   private budgetUsage: BudgetUsage = emptyBudgetUsage();
   private budget: AgentBudget = {};
@@ -505,6 +628,41 @@ class AgentActor {
 
   dropDispatch(dispatchId: string): void {
     this.queue = this.queue.filter((e) => "inbox" in e || e.dispatchId !== dispatchId);
+  }
+
+  /** 每文档最近一次 doc.edited 通知的修订：之后没有重新读取就不重复通知。 */
+  private editNotices = new Map<string, number>();
+
+  /** 本代理读过、且被这次用户编辑改到的区域（A1）；同一读取只提醒一次。 */
+  staleReads(edit: DocEdit): string[] {
+    const read = this.reads.get(edit.docId);
+    if (!read) return [];
+    const since = this.editNotices.get(edit.docId) ?? -1;
+    const hit = edit.ranges.filter((w) =>
+      read.ranges.some(
+        (r) =>
+          r.rev < edit.rev &&
+          r.rev >= since &&
+          ((r.sheetId !== "*" && r.sheetId === w.sheetId) || r.sheetName === w.sheetName) &&
+          r.r0 <= w.r1 &&
+          w.r0 <= r.r1 &&
+          r.c0 <= w.c1 &&
+          w.c0 <= r.c1,
+      ),
+    );
+    if (hit.length === 0) return [];
+    this.editNotices.set(edit.docId, edit.rev);
+    return hit.map((w) => w.a1);
+  }
+
+  /** 上下文被回退后：读集与上下文占用按剩余条目重新计算。 */
+  contextRewound(): void {
+    this.reads = this.seededReads();
+    this.lastContextTokens = undefined;
+  }
+
+  private seededReads(): ReadTable {
+    return createReadTable(() => persistedReads(this.deps.db, this.sessionId, this.agentId));
   }
 
   /** 进程重启后没有 in-memory continuation：从 pending spec 执行已批准调用。 */
@@ -875,10 +1033,29 @@ class AgentActor {
     );
     const plan = planCompaction(parsed, keepBudgetTokens(model.contextWindow, beforeTokens));
     if (plan === null) return false;
-    const summary = await this.callSummaryModel(
-      this.deps.summaryModel?.() ?? model,
-      transcriptForSummary(plan.old.map((r) => r.item)),
-    );
+    // 压缩进度（瞬时，不入日志）：界面据此显示"正在压缩上下文"，结束以 compaction 记录或失败收尾
+    const progress = (running: boolean) =>
+      this.deps.bus.publish({
+        kind: "app",
+        data: {
+          type: "compaction.progress",
+          sessionId: this.sessionId,
+          agentId: this.agentId,
+          trigger,
+          running,
+          beforeTokens,
+        },
+      });
+    progress(true);
+    let summary: string;
+    try {
+      summary = await this.callSummaryModel(
+        this.deps.summaryModel?.() ?? model,
+        transcriptForSummary(plan.old.map((r) => r.item)),
+      );
+    } finally {
+      progress(false);
+    }
     const summaryItem: ContextItem = { kind: "user", text: `<summary>\n${summary}\n</summary>` };
     const kept = tailFrom(parsed, plan.keepFromSeq).map((r) => r.item);
     const afterTokens = estimateTokens([summaryItem, ...kept]);
@@ -897,6 +1074,89 @@ class AgentActor {
     ]);
     this.lastContextTokens = undefined;
     return true;
+  }
+
+  /** 本代理最近一条已生效用户消息的聊天模式（ask/plan 时本轮只读）。 */
+  private chatMode(): "ask" | "plan" | undefined {
+    const row = this.deps.db
+      .prepare(
+        `SELECT json_extract(m.data, '$.chatMode') AS mode FROM session_log m
+         JOIN dispatches d ON d.session_id = m.session_id AND d.id = json_extract(m.data, '$.dispatchId')
+         WHERE m.session_id = ? AND m.agent_id = ? AND m.type = 'user.message' AND d.status = 'applied'
+         ORDER BY m.seq DESC LIMIT 1`,
+      )
+      .get(this.sessionId, this.agentId) as { mode: string | null } | undefined;
+    return row?.mode === "ask" || row?.mode === "plan" ? row.mode : undefined;
+  }
+
+  /**
+   * 自动会话标题：标题仍是首条消息截断（日志里没有任何 title）时，取首条用户消息与本轮回复
+   * 让模型起一个短标题，写 session.updated（auto）。失败不重试、不影响对话。
+   */
+  private async autoTitle(agent: AgentRow): Promise<void> {
+    const { db, log } = this.deps;
+    if (this.deps.autoTitle?.() !== true || this.host.titleTried(this.sessionId)) return;
+    const titled = db
+      .prepare(
+        "SELECT 1 FROM session_log WHERE session_id = ? AND type IN ('session.created', 'session.updated') AND json_extract(data, '$.title') IS NOT NULL LIMIT 1",
+      )
+      .get(this.sessionId);
+    if (titled) return;
+    const first = db
+      .prepare(
+        "SELECT json_extract(data, '$.text') AS t FROM session_log WHERE session_id = ? AND type = 'user.message' ORDER BY seq LIMIT 1",
+      )
+      .get(this.sessionId) as { t: string | null } | undefined;
+    const reply = db
+      .prepare(
+        "SELECT json_extract(data, '$.text') AS t FROM session_log WHERE session_id = ? AND agent_id = ? AND type = 'model.output' AND json_extract(data, '$.text') != '' ORDER BY seq DESC LIMIT 1",
+      )
+      .get(this.sessionId, this.agentId) as { t: string | null } | undefined;
+    if (!first?.t) return;
+    const resolved =
+      this.deps.summaryModel?.() ??
+      this.deps.resolveModel({
+        id: agent.id,
+        sessionId: this.sessionId,
+        modelProfileId: agent.model_profile_id,
+      });
+    if ("error" in resolved) return;
+    try {
+      let text = "";
+      for await (const ev of this.deps.gateway.step({
+        model: resolved,
+        system: TITLE_SYSTEM,
+        history: [
+          {
+            kind: "user",
+            text: `用户：${first.t.slice(0, 2000)}\n助手：${(reply?.t ?? "").slice(0, 2000)}`,
+          },
+        ],
+        providerOptions: resolved.providerOptions,
+        signal: AbortSignal.timeout(30_000),
+      })) {
+        if (ev.kind === "text.delta") text += ev.text;
+        else if (ev.kind === "error") return;
+      }
+      const title = text
+        .trim()
+        .split("\n")[0]
+        ?.replace(/^["'“”‘’《「【#\s]+|["'“”‘’》」】。.\s]+$/g, "")
+        .slice(0, 30);
+      // 生成期间用户可能已经改了标题
+      if (
+        !title ||
+        db
+          .prepare(
+            "SELECT 1 FROM session_log WHERE session_id = ? AND type = 'session.updated' AND json_extract(data, '$.title') IS NOT NULL LIMIT 1",
+          )
+          .get(this.sessionId)
+      )
+        return;
+      log.append(this.sessionId, null, [{ type: "session.updated", data: { title, auto: true } }]);
+    } catch {
+      // 标题只是便利功能：失败保持首条消息截断
+    }
   }
 
   /**
@@ -1304,11 +1564,16 @@ class AgentActor {
               this.delta(stepId, part, "reasoning", ev.text);
               break;
             case "tool.args.delta": {
-              sawContent = true;
+              if (ev.delta !== "") sawContent = true;
               if (!toolCallIdx.has(ev.toolCallId)) {
                 toolCallIdx.set(ev.toolCallId, toolCallIdx.size);
               }
-              this.delta(stepId, toolCallIdx.get(ev.toolCallId) ?? 0, "tool_args", ev.delta);
+              const payload: ToolArgsDelta = {
+                id: ev.toolCallId,
+                ...(ev.toolName !== undefined ? { name: ev.toolName } : {}),
+                delta: ev.delta,
+              };
+              this.delta(stepId, toolCallIdx.get(ev.toolCallId) ?? 0, "tool_args", payload);
               break;
             }
             case "tool.call":
@@ -1654,8 +1919,10 @@ class AgentActor {
       ]);
     }
 
-    // 2. 完成报告（仅子代理）。
     const agent = this.agent();
+    if (agent?.role === "main" && term.type === "turn.completed") void this.autoTitle(agent);
+
+    // 2. 完成报告（仅子代理）。
     if (!agent || agent.role === "main" || !agent.parent_id) return;
     const termData = JSON.parse(term.data) as {
       reason?: string;
@@ -1775,6 +2042,18 @@ class AgentActor {
     leased: boolean;
     waitSignal?: AbortSignal;
   }): Promise<{ required: boolean; decision: "approved" | "denied"; reason?: string }> {
+    if (
+      (input.effect === "write" || input.effect === "destructive" || input.effect === "external") &&
+      this.chatMode() !== undefined
+    )
+      return {
+        required: true,
+        decision: "denied",
+        reason:
+          this.chatMode() === "plan"
+            ? "当前是计划模式，不能修改文件。请把计划告诉用户，等用户确认后再执行"
+            : "当前是只读问答模式，不能修改文件",
+      };
     const approval = this.deps.approval;
     const permission =
       (
@@ -2476,7 +2755,7 @@ export function recoverInterruptedAgents(deps: {
       .get(agent.session_id, agent.id) as { data: string } | undefined;
     if (turn) {
       const turnId = (JSON.parse(turn.data) as { turnId?: string }).turnId ?? "";
-      records.push({ type: "turn.interrupted", data: { turnId } });
+      records.push({ type: "turn.interrupted", data: { turnId, reason: "restart" } });
     } else {
       records.push({ type: "agent.status", data: { status: "interrupted" } });
     }

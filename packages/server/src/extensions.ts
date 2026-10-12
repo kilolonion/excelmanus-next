@@ -614,18 +614,43 @@ export function extensionRoutes(deps: ExtensionDeps, fail: Fail): Hono {
     path: r.path,
     isDefault: r.is_default === 1,
   });
-  app.get("/workspaces", (c) =>
-    c.json({
-      items: (
-        db.prepare("SELECT * FROM workspaces ORDER BY is_default DESC, sort, created_at").all() as {
-          id: string;
-          name: string;
-          path: string;
-          is_default: number;
-        }[]
-      ).map(wsDto),
-    }),
-  );
+  // 列表顺序即侧栏顺序：用户拖动排序后按 sort 排，默认工作区不再强制置顶
+  const listWorkspacesDto = () =>
+    (
+      db.prepare("SELECT * FROM workspaces ORDER BY sort, created_at").all() as {
+        id: string;
+        name: string;
+        path: string;
+        is_default: number;
+      }[]
+    ).map(wsDto);
+  app.get("/workspaces", (c) => c.json({ items: listWorkspacesDto() }));
+  app.put("/workspaces/order", async (c) => {
+    const b = ((await body(c)) ?? {}) as { ids?: unknown };
+    if (!Array.isArray(b.ids) || b.ids.length === 0 || b.ids.some((id) => typeof id !== "string"))
+      return fail(c, 400, "bad_request", "请提供工作区顺序");
+    const wanted = [...new Set(b.ids as string[])];
+    const known = (
+      db.prepare("SELECT id FROM workspaces ORDER BY sort, created_at").all() as { id: string }[]
+    ).map((r) => r.id);
+    const order = [
+      ...wanted.filter((id) => known.includes(id)),
+      ...known.filter((id) => !wanted.includes(id)),
+    ];
+    const update = db.prepare("UPDATE workspaces SET sort = ? WHERE id = ?");
+    db.exec("BEGIN");
+    try {
+      order.forEach((id, index) => {
+        update.run(index + 1, id);
+      });
+      db.exec("COMMIT");
+    } catch (e) {
+      db.exec("ROLLBACK");
+      throw e;
+    }
+    appEvent("workspaces.changed");
+    return c.json({ items: listWorkspacesDto() });
+  });
   /** 最近存在祖先取磁盘规范路径（大小写、符号链接归一），其余段原样拼接。 */
   const canonicalDir = (p: string): string => {
     const tail: string[] = [];

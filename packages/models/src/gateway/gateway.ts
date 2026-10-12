@@ -133,6 +133,15 @@ async function* stepImpl(
             providerMetadata: part.providerMetadata,
           };
           break;
+        case "tool-input-start":
+          // 只转发工具名，界面据此提前画出"正在准备调用某工具"；不算已产出内容。
+          yield {
+            kind: "tool.args.delta",
+            toolCallId: part.id,
+            toolName: part.toolName,
+            delta: "",
+          };
+          break;
         case "tool-input-delta":
           sawContent = true;
           yield { kind: "tool.args.delta", toolCallId: part.id, delta: part.delta };
@@ -198,7 +207,7 @@ async function* stepImpl(
           break;
         default:
           // start / start-step / text-start|end / reasoning-start|end /
-          // tool-input-start|end / source / file / tool-approval* 等骨架事件不出中立面。
+          // tool-input-end / source / file / tool-approval* 等骨架事件不出中立面。
           break;
       }
     }

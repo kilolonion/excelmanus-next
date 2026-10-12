@@ -205,7 +205,7 @@ describe("e2e：档案→会话→WS订阅→消息→只读工具→流式回�
     writeFileSync(join(srv.workspaceRoot, "note.txt"), "hello workspace\n", "utf8");
 
     const api = createApiClient(srv.url, srv.token);
-    expect(await api.health()).toMatchObject({ ok: true, protocolVersion: 2 });
+    expect(await api.health()).toMatchObject({ ok: true, protocolVersion: 3 });
     const boot = await api.bootstrap();
     expect(boot.hasModelProfile).toBe(false);
     expect(boot.modules).toContain("files");
@@ -276,7 +276,15 @@ describe("e2e：档案→会话→WS订阅→消息→只读工具→流式回�
 
     // 流式增量：tool_args 与 text delta 都到达过
     const deltas = ws.msgs.filter((m) => m.type === "delta");
-    expect(deltas.some((d) => d.type === "delta" && d.kind === "tool_args")).toBe(true);
+    // v3：tool_args 分片带工具 id，首个分片（tool-input-start）带工具名
+    const argParts = deltas.flatMap((d) =>
+      d.type === "delta" && d.kind === "tool_args"
+        ? [d.payload as { id: string; name?: string; delta: string }]
+        : [],
+    );
+    expect(argParts[0]).toEqual({ id: "tc1", name: "find", delta: "" });
+    expect(argParts.every((p) => p.id === "tc1")).toBe(true);
+    expect(argParts.map((p) => p.delta).join("")).toBe('{"path":"."}');
     expect(deltas.some((d) => d.type === "delta" && d.kind === "text")).toBe(true);
 
     const headAfterTurn1 = Math.max(...recs.map((r) => r.seq));
@@ -384,6 +392,79 @@ describe("e2e：档案→会话→WS订阅→消息→只读工具→流式回�
   }, 90_000);
 
   // ---- modules/workbook 纵切：mock 模型调 workbook_read overview + <context> 渲染 ----
+  test("rewind：从某条消息重新开始，之后的对话不再进入模型上下文", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "excelmanus-e2e-rewind-"));
+    dirs.push(dataDir);
+    const prompts: string[] = [];
+    const srv = await startServer({
+      dataDir,
+      retryBaseMs: 10,
+      resolveLanguageModel: () =>
+        new MockLanguageModelV4({
+          provider: "mock",
+          modelId: "mock-1",
+          doStream: async (opts) => {
+            prompts.push(JSON.stringify(opts.prompt));
+            return {
+              stream: streamOf([
+                { type: "stream-start", warnings: [] },
+                { type: "text-start", id: "t1" },
+                { type: "text-delta", id: "t1", delta: "好的" },
+                { type: "text-end", id: "t1" },
+                { type: "finish", usage: USAGE, finishReason: { unified: "stop", raw: "stop" } },
+              ]),
+            };
+          },
+        }),
+      log: () => {},
+    });
+    servers.push(srv);
+    const api = createApiClient(srv.url, srv.token);
+    await api.createModelProfile({
+      name: "测试档案",
+      provider: "custom-openai-compatible",
+      model: "mock-1",
+      baseUrl: "https://mock.invalid/v1",
+      apiKey: "sk-test-1234",
+    });
+    const { session } = await api.createSession({});
+    const sid = session.id;
+    const send = async (n: number, text: string) => {
+      const { dispatch } = await api.sendMessage(sid, "main", { clientMessageId: `m${n}`, text });
+      const t0 = Date.now();
+      for (;;) {
+        const page = await api.getSessionLog(sid, { limit: 200 });
+        if (page.items.filter((i) => i.type === "turn.completed").length >= n) break;
+        if (Date.now() - t0 > 15_000) throw new Error(`第 ${n} 轮未完成`);
+        await sleep(20);
+      }
+      return dispatch.id;
+    };
+    await send(1, "第一条消息");
+    const d2 = await send(2, "第二条消息");
+
+    const out = await api.rewindAgent(sid, "main", { dispatchId: d2 });
+    const log = await api.getSessionLog(sid, { limit: 200 });
+    const msg2 = log.items.find(
+      (i) => i.type === "user.message" && (i.data as { dispatchId?: string }).dispatchId === d2,
+    );
+    expect(out).toEqual({ ok: true, fromSeq: msg2?.seq, cancelled: [] });
+    expect(log.items.at(-1)).toMatchObject({
+      type: "history.rewound",
+      data: { dispatchId: d2, fromSeq: msg2?.seq },
+    });
+
+    await send(3, "改过的第二条");
+    const last = prompts.at(-1) ?? "";
+    expect(last).toContain("第一条消息");
+    expect(last).toContain("改过的第二条");
+    expect(last).not.toContain("第二条消息");
+
+    await expect(api.rewindAgent(sid, "main", { dispatchId: "dsp_nope" })).rejects.toMatchObject({
+      status: 404,
+    });
+  });
+
   test("workbook_read 走真实 DocumentService；context 渲染进模型历史", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "excelmanus-e2e-wb-"));
     dirs.push(dataDir);

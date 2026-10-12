@@ -47,6 +47,7 @@ import { SKILLS_MIGRATION, skillsModule } from "@excelmanus/skills";
 import {
   CHECKPOINT_MIGRATION,
   DOC_OPS_MIGRATION,
+  DOC_OPS_REVERTS_MIGRATION,
   DOCUMENTS_MIGRATION,
   type WorkbookModule,
   workbookModule,
@@ -95,6 +96,8 @@ export interface StartServerOptions {
   ticketTtlMs?: number;
   /** 同时运行的子代理数上限（05 §8，默认 4；超出排队 FIFO）。 */
   maxConcurrentSubAgents?: number;
+  /** 启用自动会话标题（仍受用户设置控制）；应用入口打开，测试默认关闭以免多出模型调用。 */
+  autoTitle?: boolean;
   /** 开发模式：放行 Vite dev server（127.0.0.1:5173）的 Origin/Host。 */
   dev?: boolean;
   /** 前端产物目录；默认 <repo>/packages/web/dist。 */
@@ -175,6 +178,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
         DOC_OPS_MIGRATION,
         BACKUPS_MIGRATION,
         CHECKPOINT_MIGRATION,
+        DOC_OPS_REVERTS_MIGRATION,
       ]),
       ...SERVER_MIGRATIONS,
       RULES_MIGRATION,
@@ -346,6 +350,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
         return "error" in r ? undefined : r;
       },
       autoCompact: () => settings.get().autoCompact,
+      autoTitle: () => opts.autoTitle === true && settings.get().autoTitle,
       resolveResource: (sessionId, uri) =>
         skills.service.readResource(uri, workspaceRootFor(sessionId)),
       workspaceRoot: workspaceRootFor,
@@ -357,6 +362,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       // 04 §11：每轮变更摘要从 workbook 文档日志生成（分支 agent-control，P1-05）
       ...(workbook ? { changeSummary: workbookChangeSummary(db, workbook.service) } : {}),
     });
+    if (workbook) workbook.service.onUserEdit = (edit) => runtime.notifyDocEdited(edit);
     // 05 §9：子代理系统提示词复用 main 的组成（分支 agent-control，P1-10）
     team.setPromptEnv((sessionId) => {
       const env = sessionEnv(

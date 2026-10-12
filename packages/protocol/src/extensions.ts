@@ -10,6 +10,7 @@ export const RULE_MAX_CHARS = 2000;
 export const RULES_TOTAL_MAX_CHARS = 8000;
 
 export const RuleScope = z.enum(["global", "session"]);
+export type RuleScope = z.infer<typeof RuleScope>;
 export const Rule = z.object({
   id: z.string(),
   scope: RuleScope,
@@ -70,6 +71,7 @@ export const MemoryResponse = z.object({ memory: Memory });
 // ---------- 技能（12 §1） ----------
 
 export const SkillSource = z.enum(["builtin", "user", "workspace"]);
+export type SkillSource = z.infer<typeof SkillSource>;
 export const Skill = z.object({
   name: z.string(),
   description: z.string(),
@@ -118,6 +120,8 @@ export const McpServerConfig = z.object({
   headers: z.record(z.string(), z.string()).optional(),
   callTimeoutSeconds: z.int().positive().max(3600).optional(),
 });
+export type McpTransport = z.infer<typeof McpTransport>;
+export type McpStatus = z.infer<typeof McpStatus>;
 export const McpToolInfo = z.object({
   name: z.string(),
   /** 加入工具列表的名称 mcp__<服务器>__<工具>。 */
@@ -126,6 +130,8 @@ export const McpToolInfo = z.object({
   readOnly: z.boolean(),
   autoApprove: z.boolean(),
 });
+export type McpToolInfo = z.infer<typeof McpToolInfo>;
+export type McpServerConfig = z.infer<typeof McpServerConfig>;
 export const McpServer = z.object({
   id: z.string(),
   name: z.string(),
@@ -213,6 +219,8 @@ export const AppSettings = z.object({
   httpProxy: z.string().nullable(),
   noProxy: z.string().nullable(),
   memoryInjection: z.boolean(),
+  /** 首轮完成后用模型生成会话标题（使用压缩摘要模型，未设置时用主对话模型）。 */
+  autoTitle: z.boolean(),
 });
 export type AppSettings = z.infer<typeof AppSettings>;
 export const SettingsResponse = z.object({
@@ -230,6 +238,7 @@ export const CapabilityValue = z.object({
   checkedAt: z.string().nullable(),
   detail: z.string().optional(),
 });
+export type CapabilityValue = z.infer<typeof CapabilityValue>;
 export const Capabilities = z.object({
   connectivity: CapabilityValue,
   tools: CapabilityValue,
@@ -279,6 +288,7 @@ export const Workspace = z.object({
   path: z.string(),
   isDefault: z.boolean(),
 });
+export type Workspace = z.infer<typeof Workspace>;
 export const WorkspaceListResponse = z.object({ items: z.array(Workspace) });
 
 // ---------- 备份与回收站（11 §4） ----------
@@ -291,6 +301,7 @@ export const BackupEntry = z.object({
   createdAt: z.string(),
   sessionId: z.string(),
 });
+export type BackupEntry = z.infer<typeof BackupEntry>;
 export const BackupListResponse = z.object({ items: z.array(BackupEntry) });
 
 // Remaining REST DTOs share one schema between clients, OpenAPI and dev validation.
@@ -303,6 +314,9 @@ export const UpdateWorkspaceBody = z.strictObject({
   name: z.string().optional(),
   isDefault: z.boolean().optional(),
 });
+export type UpdateWorkspaceBody = z.infer<typeof UpdateWorkspaceBody>;
+/** 侧栏拖动排序：按给定顺序重写工作区排序（未列出的保持原相对顺序排在后面）。 */
+export const WorkspaceOrderBody = z.strictObject({ ids: z.array(z.string().min(1)).min(1) });
 export const RestoreBackupResponse = z.object({
   ok: z.literal(true),
   path: z.string(),
@@ -342,3 +356,15 @@ export const UploadFileBody = z.object({
   file: z.string().meta({ format: "binary" }),
   path: z.string().optional(),
 });
+
+export type Device = z.infer<typeof DeviceListResponse>["items"][number];
+export type RemoteModel = z.infer<typeof RemoteModelsResponse>["items"][number];
+
+export type CreateRuleBody = z.infer<typeof CreateRuleBody>;
+export type UpdateRuleBody = z.infer<typeof UpdateRuleBody>;
+export type CreateMemoryBody = z.infer<typeof CreateMemoryBody>;
+export type UpdateMemoryBody = z.infer<typeof UpdateMemoryBody>;
+export type CreateMcpServerBody = z.infer<typeof CreateMcpServerBody>;
+export type UpdateMcpServerBody = z.infer<typeof UpdateMcpServerBody>;
+export type UpdateSettingsBody = z.infer<typeof UpdateSettingsBody>;
+export type OverrideCapabilitiesBody = z.infer<typeof OverrideCapabilitiesBody>;

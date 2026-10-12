@@ -50,6 +50,7 @@ import { objectsOf } from "../src/objects.ts";
 import {
   CHECKPOINT_MIGRATION,
   DOC_OPS_MIGRATION,
+  DOC_OPS_REVERTS_MIGRATION,
   DOCUMENTS_MIGRATION,
   DocumentService,
 } from "../src/service.ts";
@@ -62,6 +63,7 @@ test("原生八类图表随 actor 修订保存、重新导入，更新和删除�
     DOC_OPS_MIGRATION,
     BACKUPS_MIGRATION,
     CHECKPOINT_MIGRATION,
+    DOC_OPS_REVERTS_MIGRATION,
   ]);
   const service = new DocumentService(db);
   try {
@@ -221,6 +223,7 @@ test("条件格式与数据验证经真实 actor 写入、回读、修改和预�
     DOC_OPS_MIGRATION,
     BACKUPS_MIGRATION,
     CHECKPOINT_MIGRATION,
+    DOC_OPS_REVERTS_MIGRATION,
   ]);
   const service = new DocumentService(db);
   try {

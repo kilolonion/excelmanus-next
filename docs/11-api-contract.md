@@ -11,12 +11,35 @@
 - 由契约生成接口文档（OpenAPI），开发模式下可在 `/api/docs` 查看。
 - 模块（[03 §4.3](03-architecture.md#43-能力模块)）可以向契约注册自己的记录类型、主题与端点，但都在 `protocol` 包内定义，保证前端可见。
 
-### 当前实现（2026-10-10）
+### 当前实现（2026-10-11）
 
-- `protocolVersion = 2`：前后端共同支持对象层及行列分组 mutation；Web 在 bootstrap 与同步 hello 检查版本，不匹配停止进入工作台并提示刷新/升级。
+- `protocolVersion = 3`：前后端共同支持对象层及行列分组 mutation；v3 新增 `history.rewound` 记录、`present` 载荷定型、`tool_args` 增量带 id/name；Web 在 bootstrap 与同步 hello 检查版本，不匹配停止进入工作台并提示刷新/升级。
 - `http-contracts.ts` 为挂载 REST 的 schema 注册表，生成 OpenAPI 3.1；开发/测试启动校验真实路由登记完整，成功 JSON 响应按 DTO 校验。文件上传为 multipart，下载/诊断附件使用真实内容类型。
 - 文件管理路径为 `POST /workspaces/{id}/files/manage`，正文 `ops` 与 `confirmed`；渲染实际路径带工作区：`POST /workspaces/{id}/docs/{docId}/render`。
 - 诊断接口已实现；无渲染端返回错误，不生成占位成功图片。鉴权、Host/Origin 与设备令牌逻辑不变。
+- v3 其余变化：
+  - `POST /sessions/{id}/agents/{agentId}/rewind`（`RewindBody { dispatchId }`）：「从这条消息重新开始」。代理须空闲、中断或失败，且该消息已进入对话，否则 409；取消排队中的派发后追加 `history.rewound { dispatchId, fromSeq }`。投影让 `seq ≥ fromSeq` 的条目失效，不能回退到最近一次压缩之前；只截断对话，不回滚文件。
+  - `present` 工具输入为 `{ payload: PresentPayload }`，日志 data 直接是该载荷。
+  - 同步通道 `delta` 的 `tool_args` 载荷为 `{ id, name?, delta }`（`ToolArgsDelta`），不再是裸字符串。
+  - `SessionSummary.activity { busy, pendingApprovals, pendingQuestions }` 必填；`agent.status`、`approval.*`、`question.*` 记录提交后推送 `session.activity` 应用事件，会话列表状态以它为准。
+  - `PUT /workspaces/order`（`WorkspaceOrderBody { ids }`）按给定顺序重写工作区排序，返回列表并推送 `workspaces.changed`；`GET /workspaces` 按 `sort, created_at` 排序，默认工作区不再强制置顶。
+  - 契约客户端新增 `rewindAgent`、`updateWorkspace`、`reorderWorkspaces`、`listDevices`、`revokeDevice`。
+- `turn.interrupted` 可带 `reason`：`restart` 表示服务重启后由恢复流程补写（界面提示「服务重启中断」并给「继续」），`stopped` 或缺省为主动停止。
+
+#### 一代功能的后端适配（2026-10-11）
+
+只新增字段与端点，协议版本仍为 3。
+
+- **用户改了代理读过的区域**（02 §4.7）：用户编辑（含撤销）提交后，上下文里读过该文档、读到的区域与改动重叠且之后没有重读的未关闭代理，收到 `context.notice { kind: "doc.edited", docId, path, rev, ranges, text }`，在下一步边界进入其上下文。同一次读取只提醒一次；重叠按矩形判定，不做读取之后的插删变换（写入仍由冲突检测兜底）。
+- **修订撤销**：`GET /workspaces/{id}/docs/{docId}/revs?limit=&before=` 返回 `DocRevisionsResponse`（不含公式重算的 engine 修订）；`POST /workspaces/{id}/docs/{docId}/revs/{rev}/undo` 把该修订的逆操作作为新的用户修订提交，`doc_ops.reverts` 记录被撤销的修订。之后的修订改到同一区域、任一方有表结构变化、或已撤销过时 409。
+- **工作簿对比**：`POST /workspaces/{id}/docs/compare`，`{ left, right }` 各为 `{ path }` 或 `{ docId }`，返回每张表的状态、差异格数与差异格（合计最多 `limit`，默认 500）。
+- **文件**：`POST /workspaces/{id}/files/new { path }` 新建空的 .xlsx/.csv/.txt/.md，已存在 409；`GET /workspaces/{id}/files/history?path=` 返回 `FileHistoryResponse`；`FileEntry.openedAt` 为最近一次在工作台打开的时间。
+- **聊天模式**：`SendMessageBody.chatMode`（`ask` / `plan`）写入 `user.message`，渲染进 `<context>`；该消息生效后的轮次中写入类工具（write/destructive/external）以 `APPROVAL_DENIED` 拒绝。
+- **自动标题**：设置 `autoTitle`（默认开）。主代理首轮完成且日志中从未出现过标题时，用压缩摘要模型（未设置时用主代理模型）生成标题，写 `session.updated { title, auto: true }`；每个会话每次进程只尝试一次。
+- **反馈**：`POST /sessions/{id}/feedback { seq, rating: "up" | "down" | null, comment? }`，`seq` 须是 `model.output` 记录，写 `feedback.given`（同一 seq 以最后一条为准）。
+- **会话 JSON 导出**：`GET /sessions/{id}/export/json` 返回会话、代理与全部日志记录（按凭据格式脱敏）。
+- **只停子代理**：`POST /sessions/{id}/stop-all` 可带 `{ scope: "subagents" }`，主代理继续运行，子代理的中断报告照常投递。
+- **压缩进度**：压缩摘要调用前后推送 `app.event { type: "compaction.progress", sessionId, agentId, trigger, running, beforeTokens }`（瞬时，不入日志）。
 
 ## 2. REST 约定
 
@@ -118,7 +141,8 @@
 | `compaction` | 压缩前后 token 数、摘要 |
 | `retry.scheduled` | 第几次、等待秒数、原因 |
 | `error.guidance` | 错误分类与建议操作 |
-| `context.notice` | 追加给代理的环境变化或文档变化通知（[03 §6.2](03-architecture.md#62-文档与会话之间)） |
+| `context.notice` | 追加给代理的环境变化或文档变化通知（[03 §6.2](03-architecture.md#62-文档与会话之间)）；`kind: "doc.edited"` 为用户改了该代理读过的单元格 |
+| `feedback.given` | 用户对某条代理回复的点赞/点踩 |
 | `change.summary` | 一轮结束时的变更摘要（由文档日志生成） |
 | `ui.present` | `present` 工具：高亮区域、提供文件 |
 | `memory.saved` | 代理保存了一条记忆（界面可撤销） |
@@ -148,14 +172,14 @@
 | 提供商 | `GET /providers`；`POST /providers/{id}/models` | 预设列表；拉取远端模型列表 |
 | 订阅账号 | `/accounts` | 列表；`POST /accounts/{provider}/login`（授权 URL 或设备码）；`POST /accounts/{provider}/login/poll`；`POST /{id}/refresh`；`DELETE /{id}` |
 | 工作区 | `/workspaces` | 列表、添加、改名、删除登记、排序 |
-| 文件 | `/workspaces/{id}/files` | `GET ?path=` 列目录；`POST /upload`；`GET /download?path=`；`POST /manage`（批量 mkdir/copy/move/delete，与 `files` 工具同一实现） |
-| 文档 | `/workspaces/{id}/docs` | `POST /open`（返回 `docId`、`rev`）；`GET /{docId}/snapshot?rev=&window=`（快照，大文件按窗口）；`POST /{docId}/render`（截图）；`GET /{docId}/revs/{rev}/before`（该修订改动单元格的修改前的值，来自逆操作，07 §7.4）。编辑只经同步通道的 `doc.submit` |
+| 文件 | `/workspaces/{id}/files` | `GET ?path=` 列目录；`POST /upload`；`POST /new`（新建空文件）；`GET /history?path=`（来源与事件历史）；`GET /download?path=`；`POST /manage`（批量 mkdir/copy/move/delete，与 `files` 工具同一实现） |
+| 文档 | `/workspaces/{id}/docs` | `POST /open`（返回 `docId`、`rev`）；`GET /{docId}/snapshot?rev=&window=`（快照，大文件按窗口）；`POST /{docId}/render`（截图）；`GET /{docId}/revs`（修订列表）；`POST /{docId}/revs/{rev}/undo`（撤销修订）；`GET /{docId}/revs/{rev}/before`（该修订改动单元格的修改前的值，来自逆操作，07 §7.4）；`POST /compare`（两个工作簿逐格对比）。编辑只经同步通道的 `doc.submit` |
 | 备份与回收站 | `/workspaces/{id}/backups`、`/trash` | 列表、下载、替换回原文件、删除 |
-| 会话 | `/sessions` | 列表（`q` 标题搜索、`workspaceId` 过滤、游标分页；先过滤再分页）、创建、改名、删除、导出 Markdown；`GET /{id}`（摘要、代理、待处理交互、`headSeq`） |
+| 会话 | `/sessions` | 列表（`q` 标题搜索、`workspaceId` 过滤、游标分页；先过滤再分页）、创建、改名、删除、导出 Markdown 与 JSON（`/export`、`/export/json`）、回复反馈（`POST /{id}/feedback`）；`GET /{id}`（摘要、代理、待处理交互、`headSeq`） |
 | 会话日志 | `GET /sessions/{id}/log?before=&limit=` | 向前分页读取历史（打开旧会话时按需加载，之后靠同步通道） |
 | 发送消息 | `POST /sessions/{id}/agents/{agentId}/messages` | `clientMessageId`、内容、附件、上下文引用（含文档修订）、`mode`（缺省读取 defaultDispatchMode）、可选 `replacesDispatchId`（原子撤回并替换未生效派发）；返回派发记录 |
 | 撤回排队消息 | `DELETE /sessions/{id}/dispatches/{dispatchId}` | 仅未应用的 |
-| 停止 / 继续 | `POST /sessions/{id}/agents/{agentId}/stop`、`/resume`；`POST /sessions/{id}/stop-all` | |
+| 停止 / 继续 | `POST /sessions/{id}/agents/{agentId}/stop`、`/resume`；`POST /sessions/{id}/stop-all`（`scope: "subagents"` 只停子代理） | |
 | 审批 | `POST /approvals/{id}` | `decision`、`reason?`、`remember?` |
 | 提问 | `POST /questions/{id}` | 回答（区域题型含文档、工作表、区域、修订号） |
 | 代理控制 | `POST /sessions/{id}/agents/{agentId}/control` | pause / resume / close |

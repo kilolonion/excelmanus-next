@@ -7,7 +7,7 @@
 - 设计依据在 `docs/`（入口 `docs/README.md`）。它是设计参考，不是合同；文档和实现冲突时改成一致即可，哪边对就改另一边。
 - 待办、功能缺口和已知问题只记在 `docs/backlog.md`，做完就删掉对应条目。
 - 改动不需要写 ADR、验收记录或证据。只有影响全局的取舍（换核心依赖、改下面的核心约定）才在 `docs/decisions/` 写几段话的 ADR。`docs/acceptance/` 是历史存档，不再新增。
-- 不参考、不复制旧仓库 `~/Desktop/excelmanus` 的代码。
+- 前端（`packages/web`）沿用一代 `~/Desktop/excelmanus/web` 的视觉与交互（ADR 0025），可以参考它；后端和内核仍不参考、不复制一代代码。
 
 ## 不要做的事
 
@@ -45,8 +45,9 @@
 
 - 目录 `packages/{protocol,core,kernel,models,modules/*,sandbox,server,web,desktop}`，包名 `@excelmanus/<目录名>`；日期时间用 ISO 8601 UTC 字符串。
 - 简洁：一个通用机制能解决就不做三个专用机制；只在真实边界处理错误；不写与需求无关的注释。
-- 用户可见文案集中在 `packages/web/src/strings.ts`（简体中文）。
-- 前端控件只用 `packages/web/src/components/ui/`，图标只经 `Icon.tsx`，不用原生 `select`、`confirm`、`title` 提示（`ui-conventions.test.ts` 会检查）。
+- 用户可见文案用简体中文，写在使用它的组件旁边。
+- 前端控件只用 `packages/web/src/components/ui/`；确认走 `confirmAction`（`components/ui/confirm-dialog`），提示走 `toast`（`components/ui/toaster`），图标直接用 `lucide-react`；不用原生 `select`、`confirm`。
+- 审批与提问只在工具卡上内联决定（`ApprovalInline`、`AskUserCard`），不用弹窗；工具步骤用扁平的 `.em-step-*` 样式。
 - 技能只写任务方法；工具用法写在工具说明里，产品帮助写在 `docs/user-guide.md`。分工见 `docs/17-skill-authoring.md`。
 
 ## 测试
@@ -69,4 +70,4 @@
 
 ## 当前状态（2026-10-11）
 
-V1 功能和前端整体重构的代码已完成，2026-10-10 的 `pnpm check:all` 通过（72 个文件 / 371 个测试）。新前端还没在浏览器里实际跑过。接下来做什么见 `docs/backlog.md`。
+前端已换成一代界面跑在二代后端上（ADR 0025），协议升到 v3。`pnpm check:all` 通过；首次引导、发消息、读表、区域确认、内联审批、改表与备份、手动编辑刷新、停止与排队、设置九页、深色和窄屏已在浏览器里用假模型预览后端跑过。桌面版和真实模型还没跑。接下来做什么见 `docs/backlog.md`。

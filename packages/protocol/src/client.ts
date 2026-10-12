@@ -13,6 +13,7 @@ import {
   type CreateMcpServerBody,
   type CreateMemoryBody,
   type CreateRuleBody,
+  DeviceListResponse,
   ImportSkillResponse,
   LoginAttemptResponse,
   McpServerListResponse,
@@ -38,6 +39,7 @@ import {
   type UpdateMemoryBody,
   type UpdateRuleBody,
   type UpdateSettingsBody,
+  type UpdateWorkspaceBody,
   type Workspace,
   WorkspaceListResponse,
   WorkspaceResponse,
@@ -50,6 +52,8 @@ import {
   AuthSessionResponse,
   BootstrapResponse,
   CompactResponse,
+  type CompareDocsBody,
+  CompareDocsResponse,
   type ControlBody,
   ControlResponse,
   type CreateModelProfileBody,
@@ -57,7 +61,10 @@ import {
   CreateSessionResponse,
   DispatchResponse,
   DocRevBeforeResponse,
+  DocRevisionsResponse,
   DocSnapshotResponse,
+  type FeedbackBody,
+  FileHistoryResponse,
   FileListResponse,
   HealthResponse,
   OkResponse,
@@ -74,16 +81,21 @@ import {
   ResolveExternalResponse,
   RestError,
   ResumeResponse,
+  type RewindBody,
+  RewindResponse,
   type SendMessageBody,
   SendMessageResponse,
   SessionDetailResponse,
+  SessionExportJson,
   type SessionListQuery,
   SessionListResponse,
   SessionLogResponse,
+  type StopAllBody,
   StopAllResponse,
   StopResponse,
   TestProfileResponse,
   TicketResponse,
+  UndoRevisionResponse,
   type UpdateModelProfileBody,
   type UpdateSessionBody,
   UploadResponse,
@@ -166,9 +178,18 @@ export interface ApiClient {
   ): Promise<z.infer<typeof SendMessageResponse>>;
   cancelDispatch(sessionId: string, dispatchId: string): Promise<z.infer<typeof DispatchResponse>>;
   stopAgent(sessionId: string, agentId: string): Promise<z.infer<typeof StopResponse>>;
-  stopAll(sessionId: string): Promise<z.infer<typeof StopAllResponse>>;
+  stopAll(
+    sessionId: string,
+    body?: z.infer<typeof StopAllBody>,
+  ): Promise<z.infer<typeof StopAllResponse>>;
   resumeAgent(sessionId: string, agentId: string): Promise<z.infer<typeof ResumeResponse>>;
   compactAgent(sessionId: string, agentId: string): Promise<z.infer<typeof CompactResponse>>;
+  /** 从某条用户消息起重新开始（不回滚文件）。 */
+  rewindAgent(
+    sessionId: string,
+    agentId: string,
+    body: z.infer<typeof RewindBody>,
+  ): Promise<z.infer<typeof RewindResponse>>;
   controlAgent(
     sessionId: string,
     agentId: string,
@@ -193,6 +214,22 @@ export interface ApiClient {
     docId: string,
     rev: number,
   ): Promise<z.infer<typeof DocRevBeforeResponse>>;
+  sendFeedback(sessionId: string, body: z.infer<typeof FeedbackBody>): Promise<{ ok: true }>;
+  exportSessionJson(sessionId: string): Promise<z.infer<typeof SessionExportJson>>;
+  compareDocs(
+    workspaceId: string,
+    body: z.infer<typeof CompareDocsBody>,
+  ): Promise<z.infer<typeof CompareDocsResponse>>;
+  listDocRevisions(
+    workspaceId: string,
+    docId: string,
+    opts?: { limit?: number; before?: number },
+  ): Promise<z.infer<typeof DocRevisionsResponse>>;
+  undoDocRevision(
+    workspaceId: string,
+    docId: string,
+    rev: number,
+  ): Promise<z.infer<typeof UndoRevisionResponse>>;
   /** 外部修改冲突二选一（07 §5）。 */
   resolveDocExternal(
     workspaceId: string,
@@ -204,6 +241,8 @@ export interface ApiClient {
     body: ManageFilesBody,
   ): Promise<z.infer<typeof ManageFilesResponse>>;
   listFiles(workspaceId: string, path?: string): Promise<z.infer<typeof FileListResponse>>;
+  createFile(workspaceId: string, path: string): Promise<z.infer<typeof UploadResponse>>;
+  fileHistory(workspaceId: string, path: string): Promise<z.infer<typeof FileHistoryResponse>>;
   /** multipart 单文件上传；file 为浏览器 File 或 {name, data}。 */
   uploadFile(
     workspaceId: string,
@@ -277,6 +316,13 @@ export interface ApiClient {
   listWorkspaces(): Promise<z.infer<typeof WorkspaceListResponse>>;
   addWorkspace(path: string, name?: string): Promise<{ workspace: z.infer<typeof Workspace> }>;
   removeWorkspace(id: string): Promise<z.infer<typeof OkResponse>>;
+  updateWorkspace(
+    id: string,
+    body: UpdateWorkspaceBody,
+  ): Promise<{ workspace: z.infer<typeof Workspace> }>;
+  reorderWorkspaces(ids: string[]): Promise<z.infer<typeof WorkspaceListResponse>>;
+  listDevices(): Promise<z.infer<typeof DeviceListResponse>>;
+  revokeDevice(id: string): Promise<z.infer<typeof OkResponse>>;
   listBackups(
     workspaceId: string,
     kind: "backups" | "trash",
@@ -414,6 +460,10 @@ export function createApiClient(
         ...(name ? { name } : {}),
       }),
     removeWorkspace: (id) => call(OkResponse, "DELETE", `/workspaces/${id}`),
+    updateWorkspace: (id, body) => call(WorkspaceResponse, "PATCH", `/workspaces/${id}`, body),
+    reorderWorkspaces: (ids) => call(WorkspaceListResponse, "PUT", "/workspaces/order", { ids }),
+    listDevices: () => call(DeviceListResponse, "GET", "/devices"),
+    revokeDevice: (id) => call(OkResponse, "POST", `/devices/${encodeURIComponent(id)}/revoke`),
     listBackups: (workspaceId, kind) =>
       call(BackupListResponse, "GET", `/workspaces/${workspaceId}/${kind}`),
     restoreBackup: (workspaceId, kind, id) =>
@@ -487,11 +537,14 @@ export function createApiClient(
       call(DispatchResponse, "DELETE", `/sessions/${sessionId}/dispatches/${dispatchId}`),
     stopAgent: (sessionId, agentId) =>
       call(StopResponse, "POST", `/sessions/${sessionId}/agents/${agentId}/stop`),
-    stopAll: (sessionId) => call(StopAllResponse, "POST", `/sessions/${sessionId}/stop-all`),
+    stopAll: (sessionId, body) =>
+      call(StopAllResponse, "POST", `/sessions/${sessionId}/stop-all`, body ?? {}),
     resumeAgent: (sessionId, agentId) =>
       call(ResumeResponse, "POST", `/sessions/${sessionId}/agents/${agentId}/resume`),
     compactAgent: (sessionId, agentId) =>
       call(CompactResponse, "POST", `/sessions/${sessionId}/agents/${agentId}/compact`),
+    rewindAgent: (sessionId, agentId, body) =>
+      call(RewindResponse, "POST", `/sessions/${sessionId}/agents/${agentId}/rewind`, body),
     controlAgent: (sessionId, agentId, body) =>
       call(ControlResponse, "POST", `/sessions/${sessionId}/agents/${agentId}/control`, body),
     decideApproval: (approvalId, body) =>
@@ -508,6 +561,24 @@ export function createApiClient(
         DocRevBeforeResponse,
         "GET",
         `/workspaces/${workspaceId}/docs/${docId}/revs/${rev}/before`,
+      ),
+    sendFeedback: (sessionId, body) =>
+      call(OkResponse, "POST", `/sessions/${sessionId}/feedback`, body),
+    exportSessionJson: (sessionId) =>
+      call(SessionExportJson, "GET", `/sessions/${sessionId}/export/json`),
+    compareDocs: (workspaceId, body) =>
+      call(CompareDocsResponse, "POST", `/workspaces/${workspaceId}/docs/compare`, body),
+    listDocRevisions: (workspaceId, docId, opts) =>
+      call(
+        DocRevisionsResponse,
+        "GET",
+        `/workspaces/${workspaceId}/docs/${docId}/revs${qs({ limit: opts?.limit, before: opts?.before })}`,
+      ),
+    undoDocRevision: (workspaceId, docId, rev) =>
+      call(
+        UndoRevisionResponse,
+        "POST",
+        `/workspaces/${workspaceId}/docs/${docId}/revs/${rev}/undo`,
       ),
     resolveDocExternal: (workspaceId, docId, body) =>
       call(
@@ -526,6 +597,10 @@ export function createApiClient(
       call(DiagnosticExportResponse, "POST", "/diagnostics/export", body),
     listFiles: (workspaceId, path) =>
       call(FileListResponse, "GET", `/workspaces/${workspaceId}/files${qs({ path })}`),
+    createFile: (workspaceId, path) =>
+      call(UploadResponse, "POST", `/workspaces/${workspaceId}/files/new`, { path }),
+    fileHistory: (workspaceId, path) =>
+      call(FileHistoryResponse, "GET", `/workspaces/${workspaceId}/files/history${qs({ path })}`),
     uploadFile: async (workspaceId, file) => {
       const fd = new FormData();
       const blob =

@@ -5,6 +5,7 @@ export default {
   forbidden: [...depcruiseForbiddenRules()],
   options: {
     doNotFollow: { path: "node_modules" },
+    exclude: { path: "(^|/)dist/" },
     enhancedResolveOptions: {
       exportsFields: ["exports"],
       conditionNames: ["import", "require", "node", "default", "types"],

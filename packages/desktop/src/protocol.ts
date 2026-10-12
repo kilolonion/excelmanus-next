@@ -16,6 +16,12 @@ const MIME: Record<string, string> = {
   ".png": "image/png",
   ".woff2": "font/woff2",
   ".ico": "image/x-icon",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".csv": "text/csv; charset=utf-8",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   ".wasm": "application/wasm",
 };
 

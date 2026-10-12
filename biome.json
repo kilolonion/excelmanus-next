@@ -10,7 +10,8 @@
   },
   "css": {
     "parser": {
-      "tailwindDirectives": true
+      "tailwindDirectives": true,
+      "cssModules": true
     }
   },
   "formatter": {
@@ -24,5 +25,25 @@
     "rules": {
       "preset": "recommended"
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["packages/web/**"],
+      "linter": {
+        "rules": {
+          "a11y": "warn",
+          "correctness": {
+            "useExhaustiveDependencies": "warn"
+          },
+          "suspicious": {
+            "noArrayIndexKey": "warn",
+            "noDuplicateProperties": "off"
+          },
+          "security": {
+            "noDangerouslySetInnerHtml": "warn"
+          }
+        }
+      }
+    }
+  ]
 }

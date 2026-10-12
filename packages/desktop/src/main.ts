@@ -384,6 +384,7 @@ function buildMenu(): void {
     {
       label: "视图",
       submenu: [
+        { label: "快速打开…", accelerator: "CmdOrCtrl+K", click: send("quick-open") },
         { label: "聚焦表格", accelerator: "CmdOrCtrl+1", click: send("focus-workbench") },
         { label: "聚焦对话", accelerator: "CmdOrCtrl+2", click: send("focus-chat") },
         { label: "输入框（附带选区）", accelerator: "CmdOrCtrl+L", click: send("focus-composer") },

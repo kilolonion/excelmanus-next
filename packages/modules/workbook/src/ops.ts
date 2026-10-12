@@ -847,9 +847,19 @@ export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
             : op.what === "formats"
               ? "sheet.command.clear-selection-format"
               : "sheet.command.clear-selection-all";
-        commands.push({ id, params: { unitId, subUnitId: sheet.id, ranges: [univerRange(ref)] } });
+        // 整列/整行清除只把已用区域交给 Univer，写集仍保留原区域供冲突判断。
+        const used = {
+          ...ref,
+          r1: Math.min(ref.r1, (sheet.data.rowCount ?? 1) - 1),
+          c1: Math.min(ref.c1, (sheet.data.columnCount ?? 1) - 1),
+        };
+        if (used.r1 >= used.r0 && used.c1 >= used.c0)
+          commands.push({
+            id,
+            params: { unitId, subUnitId: sheet.id, ranges: [univerRange(used)] },
+          });
         ranges.push(ref);
-        estCells += (ref.r1 - ref.r0 + 1) * (ref.c1 - ref.c0 + 1);
+        estCells += (used.r1 - used.r0 + 1) * (used.c1 - used.c0 + 1);
         break;
       }
       case "style.set": {

@@ -187,11 +187,33 @@ function userText(d: Record<string, unknown>): string {
     for (const m of memories)
       lines.push(`- [${String(m.category ?? "")}] ${String(m.content ?? "")}`);
   }
+  if (d.chatMode === "ask")
+    lines.push("本条消息是只读问答：只读取、分析并回答，不要修改任何文件。");
+  else if (d.chatMode === "plan")
+    lines.push(
+      "本条消息是计划模式：先读取需要的内容，给出分步执行计划（涉及哪些文件、区域、怎么改），不要修改任何文件；用户确认后会切回执行模式再让你执行。",
+    );
   if (skill && typeof skill.body === "string") {
     lines.push(`<skill name="${String(skill.name ?? "")}">\n${skill.body}\n</skill>`);
   }
   if (lines.length === 0) return text;
   return `<context>\n${lines.join("\n")}\n</context>\n\n${text}`;
+}
+
+/** 该代理在 beforeSeq 之前最近一次压缩的 seq（没有为 0）；回退不能越过它。 */
+export function lastCompactionSeq(
+  db: DatabaseSync,
+  sessionId: string,
+  agentId: string,
+  beforeSeq = Number.MAX_SAFE_INTEGER,
+): number {
+  return (
+    db
+      .prepare(
+        "SELECT COALESCE(MAX(seq), 0) AS s FROM session_log WHERE session_id = ? AND agent_id = ? AND type = 'compaction' AND seq < ?",
+      )
+      .get(sessionId, agentId, beforeSeq) as { s: number }
+  ).s;
 }
 
 /** context.notice 在 inbox_pending 中的发送方标记（环境变化说明，04 §7.3）。 */
@@ -312,6 +334,17 @@ const agentContext: Projection = {
         text: userText(data),
         ...(images.length > 0 ? { images } : {}),
       };
+    } else if (rec.type === "history.rewound") {
+      // 从某条用户消息起重新开始：该代理 from_seq ≥ fromSeq 的条目标记 superseded，
+      // 日志只追加、条目保留在表内，重建结果确定。不越过最近一次压缩（摘要与保留尾部
+      // 都在压缩之前开始），越界的记录不生效。
+      const fromSeq = typeof d.fromSeq === "number" ? d.fromSeq : null;
+      if (targetAgentId === null || fromSeq === null) return;
+      if (fromSeq <= lastCompactionSeq(db, rec.sessionId, targetAgentId, rec.seq)) return;
+      db.prepare(
+        "UPDATE agent_context SET superseded = 1 WHERE session_id = ? AND agent_id = ? AND superseded = 0 AND from_seq >= ?",
+      ).run(rec.sessionId, targetAgentId, fromSeq);
+      return;
     } else if (rec.type === "compaction") {
       // 压缩是唯一的历史改写（04 §6.3）：旧条目标记 superseded 保留在表内，
       // 追加摘要条目 + 原样复制保留尾部（from_seq 保留原值），重放结果确定。

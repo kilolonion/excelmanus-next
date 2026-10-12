@@ -16,6 +16,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   httpProxy: null,
   noProxy: null,
   memoryInjection: true,
+  autoTitle: true,
 };
 
 /** 修改后需要重启才生效的键。 */

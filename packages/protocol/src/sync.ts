@@ -3,8 +3,8 @@
 import { z } from "zod";
 import { LogRecord } from "./records.ts";
 
-// v2 requires shared native-object and axis-group mutations on both peers.
-export const protocolVersion = 2;
+// v3：history.rewound、present 载荷定型、tool_args 增量带工具 id 与名称（一代前端接入二代内核）。
+export const protocolVersion = 3;
 export function protocolCompatible(remote: number): boolean {
   return remote === protocolVersion;
 }
@@ -28,6 +28,14 @@ export const DeltaKind = z.enum([
 ]);
 export type DeltaKind = z.infer<typeof DeltaKind>;
 
+/** tool_args 增量的载荷：首个分片带工具名，界面据此提前画出"正在准备调用某工具"。 */
+export const ToolArgsDelta = z.object({
+  id: z.string(),
+  name: z.string().optional(),
+  delta: z.string(),
+});
+export type ToolArgsDelta = z.infer<typeof ToolArgsDelta>;
+
 // ---------- 客户端 → 服务端 ----------
 
 export const SubMsg = z.strictObject({
@@ -45,6 +53,8 @@ export const DocSubmitMsg = z.strictObject({
   clientOpId: z.string(),
   baseRev: z.int().nonnegative(),
   mutations: z.unknown(),
+  /** 用户在冲突条里选了「保留我的」：仍按 baseRev 平移坐标，但不再因 baseRev 之后他人的写入而拒绝。 */
+  overwrite: z.boolean().optional(),
 });
 export const PresenceMsg = z.strictObject({
   type: z.literal("presence"),

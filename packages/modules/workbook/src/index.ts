@@ -5,6 +5,7 @@ import type { BackupService, CapabilityModule, DatabaseSync } from "@excelmanus/
 import {
   CHECKPOINT_MIGRATION,
   DOC_OPS_MIGRATION,
+  DOC_OPS_REVERTS_MIGRATION,
   DOCUMENTS_MIGRATION,
   DocumentService,
 } from "./service.ts";
@@ -19,12 +20,18 @@ export function workbookModule(db: DatabaseSync, backups?: BackupService): Workb
   const service = new DocumentService(db, backups);
   return {
     id: "workbook",
-    migrations: [DOCUMENTS_MIGRATION, DOC_OPS_MIGRATION, CHECKPOINT_MIGRATION],
+    migrations: [
+      DOCUMENTS_MIGRATION,
+      DOC_OPS_MIGRATION,
+      CHECKPOINT_MIGRATION,
+      DOC_OPS_REVERTS_MIGRATION,
+    ],
     tools: workbookTools(service),
     service,
   };
 }
 
+export { type CompareSheet, compareWorkbooks } from "./compare.ts";
 export {
   CsvImportError,
   decodeCsv,
@@ -42,9 +49,11 @@ export { buildLayout, displayText, workbookRenderTool } from "./render.ts";
 export {
   CHECKPOINT_MIGRATION,
   DOC_OPS_MIGRATION,
+  DOC_OPS_REVERTS_MIGRATION,
   DOCUMENTS_MIGRATION,
   DocNotFoundError,
   type DocOpRecord,
+  type DocRevisionInfo,
   type DocumentMeta,
   DocumentService,
   type DocWriteSet,
@@ -52,6 +61,7 @@ export {
   type SubmitBatch,
   type SubmitResult,
   UnsupportedDocError,
+  type UserEdit,
 } from "./service.ts";
 export {
   boundedWriteRanges,

@@ -18,6 +18,7 @@ const dev = process.argv.includes("--dev") || process.env.EXCELMANUS_DEV === "1"
 
 const srv = await startServer({
   dataDir,
+  autoTitle: true,
   ...(port !== undefined ? { port } : {}),
   ...(dev ? { dev: true } : {}),
 });

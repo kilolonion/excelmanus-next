@@ -6,6 +6,7 @@ import {
   AgentRole,
   AgentStatus,
   AttachmentRef,
+  ChatMode,
   ContextRef,
   DispatchMode,
   DispatchStatus,
@@ -189,6 +190,15 @@ export const TestProfileResponse = z.object({
 
 // ---------- 会话 ----------
 
+/** 会话列表上的活动摘要：侧栏据此标出运行中 / 待审批 / 待回答的会话。 */
+export const SessionActivity = z.object({
+  /** 有代理在运行、排队、等待子代理或等待交互。 */
+  busy: z.boolean(),
+  pendingApprovals: z.int().nonnegative(),
+  pendingQuestions: z.int().nonnegative(),
+});
+export type SessionActivity = z.infer<typeof SessionActivity>;
+
 export const SessionSummary = z.object({
   id: z.string(),
   workspaceId: z.string(),
@@ -197,6 +207,7 @@ export const SessionSummary = z.object({
   createdAt: z.string(),
   updatedAt: z.string(),
   lastSeq: z.int().nonnegative(),
+  activity: SessionActivity,
 });
 export type SessionSummary = z.infer<typeof SessionSummary>;
 
@@ -279,6 +290,8 @@ export const SendMessageBody = z.strictObject({
   replacesDispatchId: z.string().min(1).optional(),
   text: z.string().min(1),
   mode: DispatchMode.optional(),
+  /** 只读问答 / 计划模式：这条消息引起的轮次里代理不能写入。 */
+  chatMode: ChatMode.optional(),
   /** 随消息携带的选区引用（04 §7.3），渲染进该轮用户消息前的 <context> 块。 */
   context: z.array(ContextRef).optional(),
   /** 已经 POST /attachments 上传的图片（04 §4：受理前校验已上传）。 */
@@ -296,6 +309,9 @@ export const DispatchResponse = z.object({ dispatch: Dispatch });
 
 export const StopResponse = z.object({ ok: z.literal(true), stopped: z.boolean() });
 
+/** scope=subagents 只停子代理，主代理继续。 */
+export const StopAllBody = z.strictObject({ scope: z.enum(["all", "subagents"]).optional() });
+
 /** 停止会话全部运行中代理（11 §147）：stopped 为实际被停止的 agentId。 */
 export const StopAllResponse = z.object({ ok: z.literal(true), stopped: z.array(z.string()) });
 
@@ -304,6 +320,19 @@ export const ResumeResponse = z.object({
   ok: z.literal(true),
   resumed: z.int().nonnegative(),
   started: z.boolean(),
+});
+
+/**
+ * 从某条用户消息起重新开始（编辑重发 / 重试 / 回到某一轮）。代理必须空闲；该消息及其后的对话
+ * 不再进入模型上下文，仍未应用的排队消息一并撤回。文件不回滚。
+ */
+export const RewindBody = z.strictObject({ dispatchId: z.string().min(1) });
+export type RewindBody = z.infer<typeof RewindBody>;
+export const RewindResponse = z.object({
+  ok: z.literal(true),
+  fromSeq: z.int().positive(),
+  /** 被一并撤回的排队派发。 */
+  cancelled: z.array(z.string()),
 });
 
 /** 手动压缩：空闲立即压缩，运行中排期到下一步边界（04 §6.3、11 §4）。 */
@@ -368,6 +397,21 @@ export const ProfileListResponse = z.object({
 export const ProfileResponse = z.object({ profile: ModelProfile });
 
 export const OkResponse = z.object({ ok: z.literal(true) });
+
+/** 对代理回复（model.output 的 seq）点赞/点踩，可附说明；rating=null 撤回。 */
+export const FeedbackBody = z.strictObject({
+  seq: z.int().positive(),
+  rating: z.enum(["up", "down"]).nullable(),
+  comment: z.string().max(2000).optional(),
+});
+
+/** 会话完整导出（JSON）：会话、代理与全部日志记录。 */
+export const SessionExportJson = z.object({
+  exportedAt: z.string(),
+  session: SessionSummary,
+  agents: z.array(AgentInfo),
+  records: z.array(LogRecord),
+});
 
 // ---------- 工作区文档（活文档只读快照）与文件 ----------
 
@@ -434,6 +478,82 @@ export const DocRevBeforeResponse = z.object({
   truncated: z.boolean(),
 });
 
+/** 工作簿变更摘要（区域为 A1，含表名）。 */
+export const DocChanges = z.object({
+  cellsBySheet: z.record(z.string(), z.number()),
+  ranges: z.array(z.string()),
+  structural: z.array(z.string()),
+  added: z.array(z.string()),
+});
+
+/** 修订列表（撤销面板）：新到旧，不含公式重算修订。 */
+export const DocRevision = z.object({
+  rev: z.int().positive(),
+  source: z.object({ kind: z.string(), id: z.string().nullable() }),
+  sessionId: z.string().nullable(),
+  createdAt: z.string(),
+  changes: DocChanges,
+  /** 这是对哪个修订的撤销。 */
+  reverts: z.int().nullable(),
+  /** 已被哪个修订撤销。 */
+  revertedBy: z.int().nullable(),
+});
+export type DocRevision = z.infer<typeof DocRevision>;
+export const DocRevisionsQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  before: z.coerce.number().int().positive().optional(),
+});
+export const DocRevisionsResponse = z.object({
+  docId: z.string(),
+  headRev: z.int().nonnegative(),
+  items: z.array(DocRevision),
+});
+/** 撤销一次修订：回退作为新修订提交；之后有修订改到同一区域时 409。 */
+export const UndoRevisionResponse = z.object({
+  docId: z.string(),
+  rev: z.int().positive(),
+  reverted: z.int().positive(),
+  changes: DocChanges,
+});
+
+/** 两个工作簿并排对比：按表名配对逐格比较值与公式（不比较样式）。 */
+const DocSide = z.union([
+  z.strictObject({ path: z.string().min(1) }),
+  z.strictObject({ docId: z.string().min(1) }),
+]);
+export const CompareDocsBody = z.strictObject({
+  left: DocSide,
+  right: DocSide,
+  limit: z.int().min(1).max(5000).optional(),
+});
+const CompareValue = z
+  .object({
+    value: z.union([z.string(), z.number(), z.boolean()]).nullable(),
+    formula: z.string().optional(),
+  })
+  .nullable();
+export const CompareDocsResponse = z.object({
+  left: z.object({ docId: z.string(), path: z.string(), rev: z.int().nonnegative() }),
+  right: z.object({ docId: z.string(), path: z.string(), rev: z.int().nonnegative() }),
+  sheets: z.array(
+    z.object({
+      name: z.string(),
+      status: z.enum(["both", "leftOnly", "rightOnly"]),
+      /** 差异格总数（cells 可能被截断）。 */
+      changed: z.int().nonnegative(),
+      cells: z.array(
+        z.object({
+          cell: z.string(),
+          kind: z.enum(["added", "deleted", "modified"]),
+          left: CompareValue,
+          right: CompareValue,
+        }),
+      ),
+    }),
+  ),
+  truncated: z.boolean(),
+});
+
 export const FileEntry = z.object({
   name: z.string(),
   /** 工作区相对路径（POSIX 分隔符）。 */
@@ -441,8 +561,33 @@ export const FileEntry = z.object({
   kind: z.enum(["file", "dir"]),
   size: z.number().nonnegative().optional(),
   modifiedAt: z.string().optional(),
+  /** 最近一次在工作台打开的时间（只有打开过的表格有），供按最近使用排序。 */
+  openedAt: z.string().optional(),
 });
 export type FileEntry = z.infer<typeof FileEntry>;
+
+/** 新建空文件：.xlsx 建一张空表，.csv/.txt/.md 建空文本；已存在则 409。 */
+export const NewFileBody = z.strictObject({ path: z.string().min(1) });
+
+/** 文件来源与事件历史（新到旧）。 */
+export const FileEvent = z.object({
+  at: z.string(),
+  kind: z.enum(["created", "modified", "backup", "trashed"]),
+  /** user / agent / script / external；备份与回收站事件为 null。 */
+  source: z.string().nullable(),
+  sessionId: z.string().nullable(),
+  sessionTitle: z.string().nullable(),
+  agentId: z.string().nullable(),
+  rev: z.int().optional(),
+  changes: DocChanges.optional(),
+  backupId: z.string().optional(),
+});
+export type FileEvent = z.infer<typeof FileEvent>;
+export const FileHistoryResponse = z.object({
+  path: z.string(),
+  docId: z.string().nullable(),
+  events: z.array(FileEvent),
+});
 
 export const FileListResponse = z.object({
   path: z.string(),

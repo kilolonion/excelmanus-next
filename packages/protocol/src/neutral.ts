@@ -138,7 +138,8 @@ export interface ResolvedModel {
 export type StepEvent =
   | { kind: "text.delta"; text: string }
   | { kind: "reasoning.delta"; text: string; providerMetadata?: unknown }
-  | { kind: "tool.args.delta"; toolCallId: string; delta: string }
+  /** 工具参数分片；首个分片（提供商的 tool-input-start）带工具名、delta 可为空。 */
+  | { kind: "tool.args.delta"; toolCallId: string; toolName?: string; delta: string }
   | {
       kind: "tool.call";
       toolCallId: string;

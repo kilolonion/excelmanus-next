@@ -170,10 +170,24 @@ CREATE TABLE doc_checkpoints (
 `,
 };
 
+/** 修订撤销：记下回退修订对应的原修订，供修订列表标注"已撤销"。 */
+export const DOC_OPS_REVERTS_MIGRATION: Migration = {
+  id: "workbook/doc-ops-reverts",
+  sql: "ALTER TABLE doc_ops ADD COLUMN reverts INTEGER;",
+};
+
 export interface DocWriteSet {
   objects?: string[];
   ranges: RangeRef[];
   structural: StructuralOp[];
+}
+
+/** 一次已提交的用户编辑：区域为提交时（head）坐标，带表名与 A1 文本。 */
+export interface UserEdit {
+  docId: string;
+  path: string;
+  rev: number;
+  ranges: Array<RangeRef & { sheetName: string; a1: string }>;
 }
 
 export type SubmitSourceKind = "user" | "agent" | "script" | "engine" | "external";
@@ -208,6 +222,25 @@ export interface SubmitBatch {
   created?: boolean;
   /** 用户提交的传输修补需要发送方快照（可选）。 */
   senderSnapshot?: unknown;
+  /**
+   * 用户在冲突条里明确选择「保留我的」：坐标仍从 baseRev 平移到 head，
+   * 但不再因 baseRev 之后他人的写入而拒绝（仅 user 来源有效）。
+   */
+  overwrite?: boolean;
+  /** 回退提交：被撤销的修订号（写入 doc_ops.reverts）。 */
+  reverts?: number;
+}
+
+/** 修订列表的一项（撤销面板）。 */
+export interface DocRevisionInfo {
+  rev: number;
+  sourceKind: string;
+  sourceId: string | null;
+  sessionId: string | null;
+  createdAt: string;
+  changes: WorkbookChanges;
+  reverts: number | null;
+  revertedBy: number | null;
 }
 
 export interface ConflictDetail {
@@ -346,6 +379,8 @@ export class DocumentService {
   private watchTimer?: ReturnType<typeof setInterval>;
   private closing = false;
   onCheckpoint: ((docId: string, rev: number, error?: string) => void) | undefined;
+  /** 用户编辑提交后回调（server 据此通知读过这些区域的代理，02 §4.7）。 */
+  onUserEdit: ((edit: UserEdit) => void) | undefined;
 
   constructor(db: DatabaseSync, backups = new BackupService(db)) {
     this.db = db;
@@ -707,7 +742,15 @@ export class DocumentService {
         // 保真性仍由导出预检/检查点保证
         return this.doSubmit(
           entry,
-          { baseRev: entry.meta.rev, readSet: [], source, sessionId, toolCallId, mutations },
+          {
+            baseRev: entry.meta.rev,
+            readSet: [],
+            source,
+            sessionId,
+            toolCallId,
+            mutations,
+            reverts: rev,
+          },
           { revert: true },
         );
       });
@@ -718,6 +761,82 @@ export class DocumentService {
         message: e instanceof FileOperationError ? e.message : "回退修订失败",
       };
     }
+  }
+
+  /** 修订列表（新到旧，不含公式重算的 engine 修订）；区域按当前表名显示。 */
+  async revisions(
+    docId: string,
+    workspaceRoot: string,
+    opts: { limit: number; before?: number },
+  ): Promise<{ headRev: number; items: DocRevisionInfo[] }> {
+    const { meta, snapshot } = await this.snapshot(docId, workspaceRoot);
+    const names = sheetNamesOf(snapshot as IWorkbookData);
+    const rows = this.db
+      .prepare(
+        `SELECT rev, source_kind, source_id, session_id, created_at, write_set, reverts,
+           (SELECT MAX(r.rev) FROM doc_ops r WHERE r.doc_id = o.doc_id AND r.reverts = o.rev) AS reverted_by
+         FROM doc_ops o WHERE doc_id = ? AND source_kind != 'engine' AND rev < ?
+         ORDER BY rev DESC LIMIT ?`,
+      )
+      .all(docId, opts.before ?? Number.MAX_SAFE_INTEGER, opts.limit) as Array<{
+      rev: number;
+      source_kind: string;
+      source_id: string | null;
+      session_id: string | null;
+      created_at: string;
+      write_set: string;
+      reverts: number | null;
+      reverted_by: number | null;
+    }>;
+    return {
+      headRev: meta.rev,
+      items: rows.map((r) => ({
+        rev: r.rev,
+        sourceKind: r.source_kind,
+        sourceId: r.source_id,
+        sessionId: r.session_id,
+        createdAt: r.created_at,
+        changes: summarizeWriteSet(JSON.parse(r.write_set) as DocWriteSet, names),
+        reverts: r.reverts,
+        revertedBy: r.reverted_by,
+      })),
+    };
+  }
+
+  /**
+   * 用户撤销某次修订（撤销面板、/undo）：只在之后没有其他修订改到同一区域时才回退，
+   * 否则拒绝并说明（不静默覆盖后来的修改）。结构变更的修订只能在它是最新修订时撤销。
+   */
+  async undoRevision(
+    docId: string,
+    workspaceRoot: string,
+    rev: number,
+    source: SubmitSource,
+  ): Promise<SubmitResult> {
+    const target = this.db
+      .prepare("SELECT write_set, source_kind FROM doc_ops WHERE doc_id = ? AND rev = ?")
+      .get(docId, rev) as { write_set: string; source_kind: string } | undefined;
+    if (!target || target.source_kind === "engine")
+      return { ok: false, code: "DOC_NOT_FOUND", message: "修订不存在" };
+    if (this.db.prepare("SELECT 1 FROM doc_ops WHERE doc_id = ? AND reverts = ?").get(docId, rev))
+      return { ok: false, code: "VERSION_CONFLICT", message: `修订 ${rev} 已经撤销过` };
+    const ws = JSON.parse(target.write_set) as DocWriteSet;
+    const later = this.opsAfter(docId, rev).filter((h) => h.sourceKind !== "engine");
+    const overlaps = (a: RangeRef, b: RangeRef) =>
+      a.sheetId === b.sheetId && a.r0 <= b.r1 && b.r0 <= a.r1 && a.c0 <= b.c1 && b.c0 <= a.c1;
+    const blocker = later.find(
+      (h) =>
+        ws.structural.length > 0 ||
+        h.writeSet.structural.length > 0 ||
+        h.writeSet.ranges.some((r) => ws.ranges.some((t) => overlaps(r, t))),
+    );
+    if (blocker)
+      return {
+        ok: false,
+        code: "VERSION_CONFLICT",
+        message: `修订 ${blocker.rev} 之后又改动了相同区域或表结构，不能单独撤销修订 ${rev}；请先撤销之后的修订`,
+      };
+    return this.revert(docId, workspaceRoot, rev, source);
   }
 
   meta(docId: string): DocumentMeta | undefined {
@@ -920,8 +1039,10 @@ export class DocumentService {
       );
     }
     // ---- 2. 冲突检查（统一在 head 坐标系；写集已在编译前平移；同源修订不算冲突） ----
-    const conflict = this.checkConflicts(entry, batch, batch.readSet ?? [], writeSet, minBase);
-    if (conflict) return conflict;
+    if (!(batch.overwrite === true && batch.source.kind === "user")) {
+      const conflict = this.checkConflicts(entry, batch, batch.readSet ?? [], writeSet, minBase);
+      if (conflict) return conflict;
+    }
 
     // ---- 3. 20 万格上限（无界区域不计入） ----
     const boundedCells = boundedWriteRanges(writeSet.ranges).reduce(
@@ -1168,8 +1289,8 @@ export class DocumentService {
     try {
       this.db
         .prepare(
-          `INSERT INTO doc_ops (doc_id, rev, base_rev, source_kind, source_id, session_id, tool_call_id, write_set, mutations, inverse, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO doc_ops (doc_id, rev, base_rev, source_kind, source_id, session_id, tool_call_id, write_set, mutations, inverse, created_at, reverts)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           meta.id,
@@ -1183,6 +1304,7 @@ export class DocumentService {
           JSON.stringify(emitted),
           JSON.stringify(inverse),
           now,
+          batch.reverts ?? null,
         );
       this.db
         .prepare("UPDATE documents SET head_rev = ?, rev = ? WHERE id = ?")
@@ -1202,6 +1324,19 @@ export class DocumentService {
     if (calc === "pending") meta.calcPending = true;
     else delete meta.calcPending;
     this.onRevision?.(meta.id, rev, `${batch.source.kind}:${batch.source.id}`, emitted);
+    if (batch.source.kind === "user" && finalWriteSet.ranges.length > 0) {
+      const names = sheetNamesOf(postSnap);
+      this.onUserEdit?.({
+        docId: meta.id,
+        path: meta.path,
+        rev,
+        ranges: boundedWriteRanges(finalWriteSet.ranges).map((r) => ({
+          ...r,
+          sheetName: names.get(r.sheetId) ?? r.sheetId,
+          a1: rangeRefToA1(r, names.get(r.sheetId) ?? r.sheetId),
+        })),
+      });
+    }
     this.schedule(entry, batch.source.kind === "user" ? 2000 : 1000);
     return {
       ok: true,
@@ -1794,7 +1929,10 @@ export class DocumentService {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db
-        .prepare("INSERT INTO doc_ops VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+        .prepare(
+          `INSERT INTO doc_ops (doc_id, rev, base_rev, source_kind, source_id, session_id, tool_call_id, write_set, mutations, inverse, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
         .run(
           entry.meta.id,
           rev,
@@ -1910,6 +2048,12 @@ export class DocumentService {
     atomicWrite(root, path, minimalXlsx(snapshot), null);
     this.backups.bind({ workspaceId, workspaceRoot: root, sessionId, agentId }).markCreated(path);
     return this.open(workspaceId, root, path);
+  }
+
+  /** 用户在文件面板新建空工作簿：只写文件，不登记会话"新建"（不参与代理的新建回滚）。 */
+  createEmpty(root: string, path: string): void {
+    this.validateCreatePath(root, path);
+    atomicWrite(root, path, minimalXlsx(this.newWorkbookSnapshot(path)), null);
   }
 
   validateCreatePath(root: string, path: string): void {
