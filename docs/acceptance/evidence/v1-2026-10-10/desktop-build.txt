@@ -1,5 +1,0 @@
-
-> @excelmanus/desktop@0.0.0 build /workspace/scratch/7c969a215a60/excelmanus-next/packages/desktop
-> node scripts/build.ts
-
-已构建：/workspace/scratch/7c969a215a60/excelmanus-next/packages/desktop/build/app
