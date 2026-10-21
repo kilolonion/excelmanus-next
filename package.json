@@ -1,0 +1,33 @@
+{
+  "name": "excelmanus-next",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@10.34.7",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json && pnpm -r --filter './packages/**' run typecheck",
+    "lint": "biome check .",
+    "check:deps": "node scripts/check-deps.ts && depcruise packages --config .dependency-cruiser.mjs",
+    "check:licenses": "node scripts/check-licenses.ts",
+    "test": "vitest run",
+    "build:web": "pnpm --filter @excelmanus/web build",
+    "dev": "node scripts/dev.ts",
+    "start": "pnpm --filter @excelmanus/web build && node packages/server/src/main.ts",
+    "check": "pnpm typecheck && pnpm lint && pnpm check:deps && pnpm check:licenses",
+    "check:all": "pnpm check && pnpm build:web && pnpm test",
+    "build:desktop": "pnpm build:web && pnpm --filter @excelmanus/desktop build",
+    "pack:desktop": "pnpm build:desktop && pnpm --filter @excelmanus/desktop pack"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.14",
+    "@types/node": "24.13.6",
+    "dependency-cruiser": "18.4.0",
+    "fflate": "0.8.3",
+    "iconv-lite": "0.7.3",
+    "typescript": "6.0.3",
+    "vite": "7.3.6",
+    "vitest": "5.0.1"
+  }
+}

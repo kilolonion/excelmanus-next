@@ -1,0 +1,105 @@
+// SKILL.md 解析（12 §1.2）：frontmatter（YAML）+ 正文。与 Agent Skills 目录格式兼容。
+
+import { parse as parseYaml } from "yaml";
+import { z } from "zod";
+
+const Frontmatter = z
+  .object({
+    name: z
+      .string()
+      .max(64)
+      .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, "name 必须是 kebab-case"),
+    description: z.string().trim().min(1).max(1024),
+    "requires-tools": z.array(z.string()).optional(),
+    "optional-tools": z.array(z.string()).optional(),
+    "file-patterns": z.array(z.string()).optional(),
+    "user-invocable": z.boolean().optional(),
+    "model-invocable": z.boolean().optional(),
+    version: z.union([z.string(), z.number()]).optional(),
+  })
+  .loose();
+
+export interface ParsedSkill {
+  name: string;
+  description: string;
+  requiresTools: string[];
+  optionalTools: string[];
+  filePatterns: string[];
+  userInvocable: boolean;
+  modelInvocable: boolean;
+  version: string | null;
+  body: string;
+}
+
+export class SkillFormatError extends Error {}
+
+export function parseSkillMd(text: string): ParsedSkill {
+  const src = text.replace(/^﻿/, "");
+  const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(src);
+  if (!m) throw new SkillFormatError("SKILL.md 缺少 frontmatter（以 --- 开头与结束）");
+  let raw: unknown;
+  try {
+    raw = parseYaml(m[1] ?? "");
+  } catch (e) {
+    throw new SkillFormatError(`frontmatter 不是合法 YAML：${e instanceof Error ? e.message : e}`);
+  }
+  const fm = Frontmatter.safeParse(raw);
+  if (!fm.success) {
+    const issue = fm.error.issues[0];
+    throw new SkillFormatError(
+      `frontmatter 不合法：${issue?.path.join(".") ?? ""} ${issue?.message ?? ""}`,
+    );
+  }
+  const d = fm.data;
+  const body = (m[2] ?? "").trim();
+  if (!body) throw new SkillFormatError("SKILL.md 正文不能为空");
+  return {
+    name: d.name,
+    description: d.description.trim(),
+    requiresTools: d["requires-tools"] ?? [],
+    optionalTools: d["optional-tools"] ?? [],
+    filePatterns: d["file-patterns"] ?? [],
+    userInvocable: d["user-invocable"] ?? true,
+    modelInvocable: d["model-invocable"] ?? true,
+    version: d.version !== undefined ? String(d.version) : null,
+    body,
+  };
+}
+
+/** 正文里以反引号引用、看起来像工具名的标识符（CI 检查：必须存在于工具目录，04 §7.1）。 */
+export function referencedToolNames(body: string, known: ReadonlySet<string>): string[] {
+  const out = new Set<string>();
+  for (const m of body.matchAll(/`([a-z][a-z0-9]*(?:_[a-z0-9]+)+|[a-z]+)`/g)) {
+    const name = m[1] ?? "";
+    const looksLikeTool = /^(workbook|agent|run|ask|mcp)_/.test(name) || known.has(name);
+    if (looksLikeTool) out.add(name);
+  }
+  return [...out];
+}
+
+/** 依赖与可识别的正文/参考资料工具引用均按实时目录校验，不尝试用规则判断技能质量。 */
+export function missingSkillTools(
+  skill: Pick<ParsedSkill, "requiresTools" | "optionalTools" | "body">,
+  known: ReadonlySet<string>,
+  references: string[] = [],
+): string[] {
+  const names = new Set([
+    ...skill.requiresTools,
+    ...[skill.body, ...references]
+      .flatMap((body) => referencedToolNames(body, known))
+      .filter((name) => !skill.optionalTools.includes(name)),
+  ]);
+  return [...names].filter((name) => !known.has(name)).sort();
+}
+
+/** 极简 glob（* 与 ?，不跨目录分隔符匹配 **），用于 file-patterns 排序。 */
+export function globMatch(pattern: string, path: string): boolean {
+  const re = pattern
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*/g, "\u0000")
+    .replace(/\*/g, "[^/]*")
+    .replace(/\?/g, "[^/]")
+    .replaceAll("\u0000", ".*");
+  const base = path.split("/").pop() ?? path;
+  return new RegExp(`^${re}$`, "i").test(path) || new RegExp(`^${re}$`, "i").test(base);
+}

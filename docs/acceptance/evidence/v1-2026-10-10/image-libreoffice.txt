@@ -1,0 +1,1 @@
+convert /tmp/excelmanus-v1-image-proof/image.xlsx as a Calc document -> /tmp/excelmanus-v1-image-proof/converted/image.xlsx using filter : Calc Office Open XML

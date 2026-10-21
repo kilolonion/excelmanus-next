@@ -1,0 +1,39 @@
+{
+  "name": "@excelmanus/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@excelmanus/agents": "workspace:*",
+    "@excelmanus/core": "workspace:*",
+    "@excelmanus/files": "workspace:*",
+    "@excelmanus/kernel": "workspace:*",
+    "@excelmanus/mcp": "workspace:*",
+    "@excelmanus/memory": "workspace:*",
+    "@excelmanus/models": "workspace:*",
+    "@excelmanus/protocol": "workspace:*",
+    "@excelmanus/rules": "workspace:*",
+    "@excelmanus/sandbox": "workspace:*",
+    "@excelmanus/skills": "workspace:*",
+    "@excelmanus/web": "workspace:*",
+    "@excelmanus/workbook": "workspace:*",
+    "@hono/node-server": "2.1.1",
+    "@napi-rs/canvas": "0.1.80",
+    "echarts": "6.1.0",
+    "hono": "4.13.8",
+    "undici": "7.29.1",
+    "ws": "8.21.3",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@ai-sdk/provider": "4.0.17",
+    "@types/ws": "8.18.1",
+    "ai": "7.0.108"
+  }
+}

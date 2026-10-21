@@ -1,0 +1,22 @@
+{
+  "name": "@excelmanus/files",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@excelmanus/core": "workspace:*",
+    "@excelmanus/kernel": "workspace:*",
+    "@excelmanus/models": "workspace:*",
+    "@excelmanus/protocol": "workspace:*",
+    "@excelmanus/sandbox": "workspace:*",
+    "@napi-rs/canvas": "0.1.80",
+    "pdfjs-dist": "5.4.149",
+    "zod": "4.6.5"
+  }
+}

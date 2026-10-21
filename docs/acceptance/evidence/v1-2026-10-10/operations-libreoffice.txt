@@ -1,0 +1,1 @@
+convert /tmp/excelmanus-v1-ops-proof/operations.xlsx as a Calc document -> /tmp/excelmanus-v1-ops-proof/converted/operations.xlsx using filter : Calc Office Open XML

@@ -1,0 +1,81 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.11.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Dependency direction
+        run: pnpm check:deps
+
+      - name: Licenses
+        run: pnpm check:licenses
+
+      - name: Web production build
+        run: pnpm build:web
+
+      - name: Unit tests
+        run: pnpm test
+
+  # 13 §4.4：打包后在仓库之外解压并运行 --self-test，同时输出体积报告（预算 250 MB）。
+  # 只在 Actions 页面手动触发时运行（发布前需要时用），不随每次提交运行。签名与公证需要证书，CI 中未配置。
+  desktop:
+    if: github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.11.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Package
+        run: pnpm pack:desktop
+      - name: Self-test outside the repo (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          dest="$RUNNER_TEMP/em-install"
+          mkdir -p "$dest"
+          ditto -x -k packages/desktop/build/out/*.zip "$dest"
+          "$dest/ExcelManus.app/Contents/MacOS/ExcelManus" --self-test --data-dir "$RUNNER_TEMP/em-data"
+      - name: Self-test outside the repo (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dest = Join-Path $env:RUNNER_TEMP "em-install"
+          $zip = Get-ChildItem packages/desktop/build/out/*.zip | Select-Object -First 1
+          Expand-Archive $zip.FullName -DestinationPath $dest
+          & (Join-Path $dest "ExcelManus.exe") --self-test --data-dir (Join-Path $env:RUNNER_TEMP "em-data") | Out-Host
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

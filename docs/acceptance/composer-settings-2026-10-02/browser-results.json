@@ -1,0 +1,49 @@
+{
+  "results": [
+    {
+      "name": "all seven reasoning levels persist through real HTTP",
+      "passed": true
+    },
+    {
+      "name": "reasoning survives page reload",
+      "passed": true
+    },
+    {
+      "name": "failed reasoning save retains previous value",
+      "passed": true
+    },
+    {
+      "name": "mixed multi-file upload sends three path references and one image through real runtime and gateway",
+      "passed": true
+    },
+    {
+      "name": "reasoning selector follows model switch and changes only active profile",
+      "passed": true
+    },
+    {
+      "name": "same-name upload conflicts without overwriting or silently sending old file",
+      "passed": true
+    },
+    {
+      "name": "failed send preserves draft and reference, retry sends reference once",
+      "passed": true
+    },
+    {
+      "name": "late upload cannot attach to switched session",
+      "passed": true
+    },
+    {
+      "name": "narrow layout and keyboard choice work, provider-default reaches gateway without explicit reasoning",
+      "passed": true
+    },
+    {
+      "name": "reasoning selector disabled without model profile",
+      "passed": true
+    },
+    {
+      "name": "no browser runtime errors",
+      "passed": true
+    }
+  ],
+  "errors": []
+}
