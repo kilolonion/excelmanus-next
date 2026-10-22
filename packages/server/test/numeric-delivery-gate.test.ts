@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +11,7 @@ import {
 } from "@excelmanus/kernel";
 import { createGateway } from "@excelmanus/models";
 import { createApiClient, type LogRecord, type StepEvent } from "@excelmanus/protocol";
-import { afterAll, expect, test } from "vitest";
+import { afterAll, expect, test, vi } from "vitest";
 import { WebSocket } from "ws";
 import { type RunningServer, startServer } from "../src/index.ts";
 import { createTestProfile } from "./fixtures/create-model.ts";
@@ -619,4 +619,153 @@ test("停止后显式继续继承未交付义务，新用户消息不继承", as
   } finally {
     db.close();
   }
+});
+
+import { numericEvidence } from "@excelmanus/protocol";
+import { mkdirSync } from "node:fs";
+test.each([{ oversize: false, scoped: true }, { oversize: true, scoped: true }, { oversize: false, scoped: false }])("round eight real HTTP runtime respects terminal summary outcome: %j", async ({ oversize, scoped }) => {
+  let checkedGuidance = false;
+  const path = scoped ? "results/numbers.xlsx" : "numbers.xlsx";
+  const values = [["对象", "净分"], ...Array.from({ length: oversize ? 16 : 2 }, (_, i) => [i === 0 ? "001" : String(i), i * 10])];
+  const t = await boot((request, step) => {
+    if (step === 1) return call("compact-write", "workbook_edit", { path, create: true, ops: [{ op: "cells.set", range: `A1:B${values.length}`, values }, { op: "cells.set", range: "C2", values: [["=SUM(B2:B3)"]] }] });
+    if (step === 2) return call("compact-read", "workbook_read", { path, mode: "range", range: `A1:B${values.length}`, facets: ["values"] });
+    if (step > 3) return text("unexpected later prose");
+    const context = JSON.stringify(request);
+    expect(context).toContain('presentation');
+    expect(context).toContain('summary');
+    expect(context).toContain('bindingId');
+    expect(context).not.toContain('valueRefId,labelRefId,relation');
+    expect(context).toContain('文件内容核验与最终展示');
+    checkedGuidance = true;
+    const receipt = request.history.findLast((item) => item.kind === "toolResult" && item.toolName === "workbook_read");
+    if (!receipt || receipt.kind !== "toolResult") throw Error("missing range receipt");
+    const sources = numericEvidence(receipt.toolCallId, receipt.toolName, receipt.output)?.sources;
+    if (!sources) throw Error(`missing visible sources ${JSON.stringify(receipt)}`);
+    return call("compact-finish", "present", { finalize: { status: "complete", presentation: "summary", sources } });
+  });
+  if (scoped) mkdirSync(join(t.server.workspaceRoot, "results"));
+  await t.send("compact-user", `${scoped ? "仅访问目录 results；" : ""}写入并保存表格，简短报告原文结果。`);
+  const items = await t.wait((rows) => rows.some((row) => ["turn.completed", "turn.failed"].includes(row.type)));
+  const final = items.findLast((row) => row.type === "model.output" && row.data.sourceToolCallId === "compact-finish");
+  const result = items.find((row) => row.type === "tool.result" && row.data.toolCallId === "compact-finish")?.data.result as { data?: { auditText?: string; finalText?: string; finalizationStatus?: string } };
+  expect(checkedGuidance).toBe(true);
+  expect(t.steps()).toBe(3);
+  expect(final?.data.deliveryStatus, JSON.stringify(result)).toBe(oversize || !scoped ? "incomplete" : "complete");
+  expect(final?.data.text).toBe(result.data?.finalText);
+  if (oversize || !scoped) expect(final?.data.text).toContain(result.data?.auditText);
+  expect(items.filter((row) => row.type === "turn.completed")).toHaveLength(1);
+  expect(items.filter((row) => row.type === "turn.failed")).toHaveLength(0);
+  expect(items.filter((row) => row.type === "model.output" && row.data.deliveryStatus === "rejected")).toHaveLength(0);
+  expect(items.some((row) => row.type === "ui.present" && row.data.path === path)).toBe(true);
+});
+
+test.each([false, true])("round nine real HTTP SQL catalog finishes once with both saved cards, oversize=%s", async (oversize) => {
+  const gateway = createGateway();
+  const sql = "SELECT (SELECT COUNT(*) FROM data) AS allRows, (SELECT COUNT(*) FROM other) AS otherRows, 8 AS included, 10 AS exceptions, 140 AS august, 130 AS september" + (oversize ? ", 19 AS reconciliation" : "");
+  const secondSql = "SELECT 19 AS total, 10 AS included, 7 AS excluded, 2 AS missing, 0 AS difference FROM other LIMIT 1";
+  type VisibleReceipt = { data: Record<string, unknown>; numericEvidence: NonNullable<ReturnType<typeof numericEvidence>> };
+  let chosen: VisibleReceipt[] = [];
+  const t = await boot(async (request, step) => {
+    if (step === 3) {
+      const db = new DatabaseSync(join(t.dataDir, "excelmanus.db"));
+      try {
+        await vi.waitFor(() => {
+          const rows = db.prepare("SELECT head_rev,checkpoint_rev FROM documents WHERE path IN ('results/main.xlsx','results/other.xlsx')").all() as { head_rev: number; checkpoint_rev: number }[];
+          expect(rows).toHaveLength(2);
+          for (const row of rows) expect(row.checkpoint_rev).toBe(row.head_rev);
+        }, { timeout: 5000 });
+      } finally { db.close(); }
+    }
+    const fetchModel: typeof fetch = async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { messages: { role: string; content: string }[] };
+      let name: string;
+      let args: unknown;
+      if (step === 1 || step === 2) {
+        name = "workbook_edit";
+        args = { path: step === 1 ? "results/main.xlsx" : "results/other.xlsx", create: true,
+          ops: [{ op: "cells.set", range: step === 1 ? "A1:E3" : "A1:B2",
+            values: step === 1 ? [["月份", "数量", "收入", "净分", "异常"], ["2026-08", 6, 140, 120, 0], ["2026-09", 5, 130, 125, 1]] : [["身份", "数量"], ["001", 7]] }] };
+      } else if (step === 3) {
+        name = "workbook_read";
+        args = { path: "results/main.xlsx", mode: "range", range: "A1:E3", facets: ["values"] };
+      } else if (step === 4 || (oversize && step === 5)) {
+        name = "workbook_analyze";
+        args = { path: "results/main.xlsx", mode: "sql", range: "Sheet1!A1:E3",
+          sources: [{ name: "other", path: "results/other.xlsx", range: "Sheet1!A1:B2" }, { name: "unused", range: "Sheet1!A1:E3" }],
+          sql: step === 4 ? sql : secondSql };
+      } else {
+        if (step !== (oversize ? 6 : 5)) throw Error("present must end the runtime without another provider request");
+        const receipts = body.messages.filter((message) => message.role === "tool")
+          .map((message) => JSON.parse(message.content) as VisibleReceipt)
+          .filter((receipt) => receipt.data?.mode === "range" || receipt.data?.mode === "sql");
+        chosen = receipts;
+        expect(receipts).toHaveLength(oversize ? 3 : 2);
+        const sources = receipts.map((receipt) => {
+          const pointer = receipt.data.mode === "sql" ? "/data/rows" : "/data/values";
+          const root = receipt.numericEvidence.candidates.items.find((item) => item.pointer === pointer);
+          expect(root).toBeDefined();
+          return { refId: root!.refId };
+        });
+        name = "present";
+        args = { finalize: { status: "complete", presentation: "summary", sources } };
+      }
+      const chunk = { id: "round-nine-provider", choices: [{ index: 0, delta: {
+        tool_calls: [{ index: 0, id: "round-nine-step-" + step, type: "function", function: { name, arguments: JSON.stringify(args) } }],
+      }, finish_reason: "tool_calls" }] };
+      return new Response("data: " + JSON.stringify(chunk) + "\n\ndata: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
+    };
+    const events: StepEvent[] = [];
+    for await (const event of gateway.step({ ...request, model: { ...request.model, fetch: fetchModel } })) events.push(event);
+    return events;
+  });
+  mkdirSync(join(t.server.workspaceRoot, "results"));
+  await t.send("round-nine-user", "仅访问目录 results；保存两份结果，核验 SQL 和月汇总后简短交付。");
+  const items = await t.wait((rows) => rows.some((row) => ["turn.completed", "turn.failed"].includes(row.type)));
+  const finalId = "round-nine-step-" + (oversize ? 6 : 5);
+  const result = items.find((row) => row.type === "tool.result" && row.data.toolCallId === finalId)?.data.result as {
+    status: string; data: { finalText: string; auditText: string; finalizationStatus: string; presentationUsed: string;
+      deliveredFiles: { path: string; docId: string; rev: number; sha256: string; saved: boolean }[];
+      summaryDiagnostics: { blockers: { code: string; actual?: number }[] } };
+  };
+  expect(result, JSON.stringify(result)).toMatchObject({ status: "ok", data: {
+    finalizationStatus: oversize ? "incomplete" : "complete", presentationUsed: oversize ? "evidence" : "summary",
+  } });
+  expect(t.steps()).toBe(oversize ? 6 : 5);
+  const final = items.findLast((row) => row.type === "model.output" && row.data.sourceToolCallId === finalId);
+  expect(final?.data.text).toBe(result.data.finalText);
+  expect(final?.data.deliveryStatus).toBe(oversize ? "incomplete" : "complete");
+  expect(items.filter((row) => row.type === "turn.completed")).toHaveLength(1);
+  expect(items.filter((row) => row.type === "turn.failed")).toHaveLength(0);
+  expect(items.filter((row) => row.type === "model.output" && row.data.deliveryStatus === "rejected")).toHaveLength(0);
+  for (const receipt of chosen.filter((entry) => entry.data.mode === "sql")) {
+    const actual = items.filter((row) => row.type === "tool.result")
+      .map((row) => row.data.result as { data?: Record<string, unknown> })
+      .find((output) => output.data?.sql === receipt.data.sql);
+    for (const field of ["sql", "columns", "rows", "rowCount", "truncated", "sources"]) expect(actual?.data?.[field]).toEqual(receipt.data[field]);
+    expect(receipt.data.sources).toMatchObject([{ name: "data" }, { name: "other" }, { name: "unused" }]);
+    for (const label of receipt.data.columns as string[]) expect(result.data.finalText).toContain(label);
+  }
+  if (oversize) {
+    expect(result.data.summaryDiagnostics.blockers).toContainEqual(expect.objectContaining({ code: "SUMMARY_CELL_LIMIT", actual: 39 }));
+    expect(result.data.finalText).toContain(result.data.auditText);
+  } else {
+    expect(result.data.finalText).toContain("| 2 | 1 | 8 | 10 | 140 | 130 |");
+    expect(result.data.finalText).toContain("来源 unused");
+    expect(result.data.finalText).toContain("不证明原始行覆盖");
+  }
+  expect(result.data.deliveredFiles.map((file) => file.path).sort()).toEqual(["results/main.xlsx", "results/other.xlsx"]);
+  const db = new DatabaseSync(join(t.dataDir, "excelmanus.db"));
+  try {
+    for (const file of result.data.deliveredFiles) {
+      const doc = db.prepare("SELECT id,head_rev,checkpoint_rev,checkpoint_hash FROM documents WHERE path=?").get(file.path) as { id: string; head_rev: number; checkpoint_rev: number; checkpoint_hash: string };
+      expect(file).toMatchObject({ docId: doc.id, rev: doc.head_rev, sha256: doc.checkpoint_hash, saved: true });
+      expect(doc.checkpoint_rev).toBe(file.rev);
+      const card = items.find((row) => row.type === "ui.present" && row.data.path === file.path);
+      expect(card?.data.note).toContain(file.sha256);
+      expect(card?.data.note).toContain("rev " + file.rev);
+      const downloaded = await t.api.downloadFile(t.session.workspaceId, file.path);
+      expect(createHash("sha256").update(Buffer.from(await downloaded.arrayBuffer())).digest("hex")).toBe(file.sha256);
+    }
+  } finally { db.close(); }
 });

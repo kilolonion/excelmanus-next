@@ -185,11 +185,12 @@ export function numericDeliveryState(
 
 export const NUMERIC_DELIVERY_GUIDANCE =
   "本轮已产生工作簿数值证据，最终回复必须用 present 的 finalize 分支交付，不再接受自由文本终稿。" +
-  "只能复制当前可见工具正文 numericEvidence.sources 中的 refId；若只报部分指标，从 candidates.items 改选对应 refId，不填写数值、标题或说明，不构造指针。" +
-  "先完成必要回读；额外中间合计、差值、舍入增量或字符数解释必须先用 workbook_analyze SQL 或只读 run_script 实际计算，随后引用结果。" +
-  '例：{finalize:{status:"complete",sources:[{refId:"从工具正文复制的refId"}]}}。' +
-  "完整交付必须包含用户要求的全部结果和解释证据，不能只选主表省略必报项。非数值解释候选须从目录选择并与真实数值来源一起提交。" +
-  '用户要求单位或指标说明时，先读回当前文件的真实表头或行标签，在finalize.bindings中复制{valueRefId,labelRefId,relation:"same_row"或"same_column"}，不自填单位或把SQL别名当业务身份。' +
-  "透视报告同时选择objects结果中reportFacts整体候选，引用真实对象关联及保存总计事实；保存值不等于已刷新，读窗只按各次来源说明，不能把较早的大范围称为最近读取。" +
-  "逐表排序说明使用workbook_analyze mode=sort_preflight的真实整体候选及执行回执，未执行不能说执行失败。文件交付由宿主按选定证据核验当前已保存文件并生成卡片，不能只写文件名或用自由note补事实；若尚未保存，等待已有自动保存后重新回读。" +
-  '无法交付时用 {finalize:{status:"incomplete",sources:[]}} 明确结束为数值交付未完成。';
+  '用户要求简短时，例：{finalize:{status:"complete",presentation:"summary",sources:[{refId:"当前小汇总读窗的refId"}]}}；无简短要求默认 evidence，显式 evidence 仍合法。' +
+  "文件内容核验与最终展示是两件事：先验证全部任务、必需表列及业务来源，再选择终稿须报告的完整原文小窗口，不把全部验证明细当成终稿必选来源。" +
+  "简短窗口须在最后写入并保存后重新读取，保留完整表头、数据行、原文单位和对象身份；合计最多32个标量格。不猜标题、币种或总计，不遗漏必报计数、异常及各文件结果。" +
+  "只能复制当前可见工具正文 numericEvidence.sources 或 candidates.items 的 refId；不能填写值、标题、说明或构造指针。额外中间合计、差值等须先用 workbook_analyze SQL 或只读 run_script 实际计算再引用。" +
+  '绑定只复制 numericEvidence.bindings 或 bindingCandidates.items 中与所选数值同次读取的 {bindingId} 到 finalize.bindings，每值最多一个；无合法候选时不自造关系或单位，不把SQL别名当业务身份。' +
+  "每个必交文件须有当前已保存文档的真实选定证据，宿主按文档身份、修订和SHA核验并生成文件卡；不要求该文件全部表都进入终稿sources，也不因此减免文件内容核验。" +
+  "透视报告选择objects的reportFacts整体候选；保存值不等于已刷新。排序使用sort_preflight真实整体候选与执行回执，未执行不能说执行失败；外链、访问范围和实际失败等必要事实不得省略。" +
+  "finalize成功返回就是终结，由宿主生成最终回复，之后不能追加一条简短文字。若显式summary不能安全呈现，宿主保留完整审计和有效文件卡，终结为incomplete并说明简短呈现未满足，不会另开重试机会。" +
+  '来源不可见或过期须重新获取，原有200格、24000字符等核验不变；任务尚未完成用 {finalize:{status:"incomplete",sources:[]}} 明确结束。';

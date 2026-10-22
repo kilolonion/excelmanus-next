@@ -67,6 +67,7 @@ export const numericFinalization = z.discriminatedUnion("status", [
     status: z.literal("complete"),
     sources: z.array(reference).min(1).max(32),
     bindings: z.array(labelBinding).max(32).optional(),
+    presentation: z.enum(["evidence", "summary"]).optional().describe("默认完整证据；summary仅支持完整 range /data/values 或真实 SQL /data/rows，小表含 SQL 表头合计不超过32格；保留实际查询及全部来源，SQL 列名不认证单位，不能生成自由总结"),
   }),
   z.strictObject({ status: z.literal("incomplete"), sources: z.array(reference).length(0) }),
 ]);
@@ -95,11 +96,33 @@ class EvidenceError extends Error {
 const invalid = (message: string): never => {
   throw new EvidenceError("INVALID_ARGUMENT", message);
 };
-const tooLarge = (): never => {
+const evidenceRecovery =
+  "不要构造或改写 refId；先用 workbook_read 读取保留标签与单位的小范围，获取新的 numericEvidence，再原样复制合法 sources。";
+const tooLarge = (
+  reason:
+    | "selected_cells"
+    | "selected_text"
+    | "rendered_text"
+    | "incomplete_window"
+    | "input_sources",
+  observed?: number,
+  limit?: number,
+): never => {
   throw new EvidenceError(
     "LIMIT_EXCEEDED",
-    "证据结果过大；请缩小引用范围后重新交付，不会截断为完整结果。",
+    `证据不能完整交付：reason=${reason}${limit === undefined ? "" : `；limit=${limit}；observed=${observed}（触发时已累计，非完整选择总量）`}。` +
+      (reason === "selected_cells"
+        ? "整块引用中的表头、字符串和空白也计入标量格预算。"
+        : reason === "incomplete_window"
+          ? "当前读取窗口或保存缓存已截断，不得把局部引用冒称全量。"
+          : "请减少引用范围或重复来源，不会自动截断为完整结果。") +
+      evidenceRecovery,
   );
+};
+const checkRenderedBudget = (count: number, sections: string[]): void => {
+  if (count > MAX_CELLS) tooLarge("selected_cells", count, MAX_CELLS);
+  const length = sections.join("\n\n").length;
+  if (length > MAX_TEXT) tooLarge("rendered_text", length, MAX_TEXT);
 };
 
 /** Only host tool receipts enter this record, never the script's returned value. */
@@ -220,7 +243,7 @@ function renderExternalLinks(details: Json): string[] {
     !Array.isArray(details.formulaCaches)
   )
     return invalid("外链事实不是受支持的保存包读取结果。");
-  if (details.truncated === true) tooLarge();
+  if (details.truncated === true) tooLarge("incomplete_window");
   const sections = ["外链对象与保存缓存（未重新获取目标，不把缓存视为实时值）："];
   const cacheText = (value: Json) =>
     `type=${cell(value.type ?? "未提供")} · present=${cell(value.present)} · rawValue=${cell(scalar(value.rawValue ?? null))}${typeof value.reason === "string" ? ` · reason=${cell(value.reason)}` : ""}`;
@@ -243,7 +266,7 @@ function renderExternalLinks(details: Json): string[] {
       }
       return invalid("外链保存缓存缺少真实来源。");
     }
-    if (cache.truncated === true) tooLarge();
+    if (cache.truncated === true) tooLarge("incomplete_window");
     sections.push(
       `保存外链缓存覆盖：totalCells=${cell(cache.totalCells ?? "未提供")} · returnedCells=${cell(cache.returnedCells ?? "未提供")} · truncated=${cell(cache.truncated ?? "未提供")}。`,
     );
@@ -639,6 +662,7 @@ export async function finalizeNumeric(
     ctx,
     true,
     bindings,
+    parsed.data.status === "complete" ? parsed.data.presentation : undefined,
   );
 }
 /** Internal historical-selector validation only; never connected to present.input or execute. */
@@ -654,6 +678,338 @@ export async function finalizeNumericPointers(
     : rejected("无效历史数值引用。");
 }
 
+
+/** Diagnostics read only the same visible host catalogs; they never authorize a selection. */
+function visibleNumericReceipt(log: SessionLog, ctx: ToolContext, toolCallId: string) {
+  const row = log.dbHandle.prepare(
+    "SELECT c.item, l.data FROM agent_context c JOIN session_log l ON l.session_id=c.session_id AND l.seq=c.from_seq WHERE c.session_id=? AND c.agent_id=? AND c.superseded=0 AND l.agent_id=? AND l.type='tool.result' AND json_extract(c.item,'$.kind')='toolResult' AND json_extract(c.item,'$.toolCallId')=? ORDER BY c.idx DESC LIMIT 1",
+  ).get(ctx.sessionId, ctx.agentId, ctx.agentId, toolCallId) as { item: string; data: string } | undefined;
+  if (!row) return;
+  const visible = object(JSON.parse(row.item)), recorded = object(JSON.parse(row.data));
+  const result = object(recorded.result), output = object(visible.output);
+  const toolName = String(recorded.toolName);
+  if (recorded.toolCallId !== toolCallId || recorded.status !== "ok" || result.status !== "ok" ||
+      output.status !== "ok" || visible.isError === true || visible.toolName !== toolName) return;
+  const shown = numericEvidence(toolCallId, toolName, output);
+  const actual = numericEvidence(toolCallId, toolName, result);
+  if (!shown || !actual || JSON.stringify(shown.sourceScopes) !== JSON.stringify(actual.sourceScopes)) return;
+  return { toolName, result, output, shown, actual };
+}
+function selectedCellDiagnostic(log: SessionLog, ctx: ToolContext, sources: NumericPointer[]): string {
+  try {
+    const seen = new Set<string>(), parts: string[] = [];
+    let visited = 0, count = 0;
+    const grouped = new Map<string, NumericPointer[]>();
+    for (const source of sources) {
+      const group = grouped.get(source.toolCallId) ?? [];
+      group.push(source); grouped.set(source.toolCallId, group);
+    }
+    for (const source of [...grouped.values()].flat()) {
+      const receipt = visibleNumericReceipt(log, ctx, source.toolCallId);
+      if (!receipt || receipt.toolName !== "workbook_read" ||
+          object(receipt.result.data).mode !== "range" ||
+          !/^\/data\/(values|formulas)(\/|$)/.test(source.pointer) ||
+          !receipt.shown.candidates.items.some((item) => item.pointer === source.pointer) ||
+          !receipt.actual.candidates.items.some((item) => item.pointer === source.pointer)) return "";
+      const path = tokens(source.pointer), selected = at(receipt.result, path);
+      if (JSON.stringify(selected) !== JSON.stringify(at(receipt.output, path))) return "";
+      const before = count;
+      const visit = (value: unknown, trail: string[]) => {
+        if (++visited > 20_000 || trail.length > 32) throw new Error("diagnostic bound");
+        if (value !== null && typeof value === "object") {
+          for (const [key, part] of Object.entries(value)) visit(part, [...trail, key]);
+          return;
+        }
+        if (trail.length !== 4) throw new Error("not a range cell");
+        const key = JSON.stringify([source.toolCallId, trail]);
+        if (seen.has(key)) return;
+        seen.add(key); count++;
+        if (trail[1] === "values") {
+          const formulaTrail = ["data", "formulas", trail[2]!, trail[3]!];
+          try {
+            const formula = at(receipt.result, formulaTrail);
+            if (formula !== undefined && formula === at(receipt.output, formulaTrail))
+              seen.add(JSON.stringify([source.toolCallId, formulaTrail]));
+          } catch { /* A missing formula is not an extra verified leaf. */ }
+        }
+      };
+      visit(selected, path);
+      parts.push(`${source.toolCallId}${source.pointer}=${count - before}`);
+    }
+    return ` 实际可见选择去重计数：selectedTotal=${count}；逐项新增标量=${parts.join("，")}。同一call重叠叶子去重，不跨call按同值合并；这不是完成核验或允许超额的证明。`;
+  } catch { return " 完整选择计数未在诊断预算内取得，仍按原限制拒绝，不自动删减来源。"; }
+}
+
+type SummaryBlocker = {
+  code: "SOURCE_WINDOW_UNSUPPORTED" | "WINDOW_HEADERS_INVALID" | "WINDOW_CELLS_INVALID" |
+    "SUMMARY_CELL_LIMIT" | "SUMMARY_TEXT_LIMIT" | "SUMMARY_WINDOW_MISSING" |
+    "EXECUTION_SCOPE_UNKNOWN" | "RECEIPT_INCONSISTENT" | "RECEIPT_WARNINGS" |
+    "FAILURE_STATE_UNKNOWN" | "SCRIPT_PUBLICATION_UNKNOWN" | "SPECIAL_OBLIGATIONS" |
+    "ALIGNMENT_DISCLOSURE_LIMIT" | "ACCESS_FACTS_REQUIRED";
+  category: "selection" | "mandatory-disclosure";
+  reason: string;
+  toolCallId?: string;
+  refId?: string;
+  actual?: number;
+  limit?: number;
+};
+function summaryDiagnostics() {
+  const blockers: SummaryBlocker[] = [];
+  const seen = new Set<string>();
+  let overflow = false;
+  return {
+    add(blocker: SummaryBlocker) {
+      const key = JSON.stringify(blocker);
+      if (seen.has(key)) return;
+      if (blockers.length >= 32) { overflow = true; return; }
+      seen.add(key);
+      blockers.push(blocker);
+    },
+    result: () => ({ blockers, limit: 32, overflow, complete: !overflow }),
+  };
+}
+type SummaryDiagnostics = ReturnType<typeof summaryDiagnostics>;
+type SummaryWindow = {
+  values: unknown; toolCallId: string; refId: string;
+} & ({ kind: "range"; path: string; range: string } |
+  { kind: "sql"; columns: unknown; sql: string; sources: Source[] });
+
+/** SQL receipts record effective ranges only; the matching host intent owns requested bounds. */
+function sqlSummaryInputsComplete(log: SessionLog, ctx: ToolContext, toolCallId: string,
+  fromSeq: number, inputs: Source[]): boolean {
+  const intents = log.dbHandle.prepare(
+    "SELECT data FROM session_log WHERE session_id=? AND agent_id=? AND type='tool.intent' AND seq<? AND seq>COALESCE((SELECT MAX(seq) FROM session_log WHERE session_id=? AND agent_id=? AND type='turn.started' AND seq<?),0) AND json_extract(data,'$.toolCallId')=? ORDER BY seq DESC LIMIT 2",
+  ).all(ctx.sessionId, ctx.agentId, fromSeq, ctx.sessionId, ctx.agentId, fromSeq, toolCallId) as { data: string }[];
+  if (intents.length !== 1) return false;
+  const intent = object(JSON.parse(intents[0]!.data)), args = object(intent.args);
+  if (intent.toolName !== "workbook_analyze" || args.mode !== "sql" ||
+      typeof args.sql !== "string" || (args.sources !== undefined && !Array.isArray(args.sources))) return false;
+  const primary = inputs.find((input) => input.name === "data");
+  if (!primary) return false;
+  const requested: Json[] = [{ ...args, name: "data" }, ...(Array.isArray(args.sources) ? args.sources.map(object) : [])];
+  if (requested.length !== inputs.length || new Set(requested.map((source) => typeof source.name === "string" ? source.name.toLowerCase() : source.name)).size !== inputs.length) return false;
+  return requested.every((source) => {
+    const input = inputs.find((entry) => entry.name === source.name);
+    if (!input || input.scope.kind !== "range") return false;
+    if (source.docId !== undefined && source.docId !== input.docId) return false;
+    if (source.path !== undefined && source.path !== input.path) return false;
+    if (source.docId === undefined && source.path === undefined && input.docId !== primary.docId) return false;
+    try {
+      const effective = parseRange(input.scope.range);
+      if (source.range === undefined)
+        return source.sheet === undefined || source.sheet === effective.sheet;
+      if (typeof source.range !== "string" || !source.range.trim()) return false;
+      const request = parseRange(source.range);
+      return (request.sheet ?? source.sheet ?? effective.sheet) === effective.sheet &&
+        request.startRow === effective.startRow && request.endRow === effective.endRow &&
+        request.startCol === effective.startCol && request.endCol === effective.endCol;
+    } catch { return false; }
+  });
+}
+function sqlSummaryReceiptComplete(data: Json, shown: Json, result: Json, visible: Json,
+  inputs: Source[]): boolean {
+  const metadata = ["columns", "rows", "rowCount", "truncated", "sql", "sources"];
+  if (data.mode !== "sql" || shown.mode !== "sql" ||
+      metadata.some((key) => !Object.hasOwn(data, key) || !Object.hasOwn(shown, key) ||
+        JSON.stringify(data[key]) !== JSON.stringify(shown[key])) ||
+      data.truncated !== false || typeof data.sql !== "string" || !data.sql.trim() ||
+      !Array.isArray(data.rows) || !Number.isInteger(data.rowCount) ||
+      data.rowCount !== data.rows.length || !data.rows.length) return false;
+  // The current SQL producer has one complete result set, never pagination metadata.
+  const receipts = [data, shown, result, visible,
+    ...(Array.isArray(data.sources) ? data.sources.map(object) : []),
+    ...(Array.isArray(shown.sources) ? shown.sources.map(object) : [])];
+  if (receipts.some((receipt) => Object.hasOwn(receipt, "error") ||
+      (Object.hasOwn(receipt, "truncated") && receipt.truncated !== false) ||
+      (Object.hasOwn(receipt, "clipped") && receipt.clipped !== false) ||
+      (Object.hasOwn(receipt, "complete") && receipt.complete !== true) ||
+      (Object.hasOwn(receipt, "warnings") && (!Array.isArray(receipt.warnings) || receipt.warnings.length > 0)) ||
+      ["readWindow", "offset", "page", "cursor", "nextCursor", "nextOffset", "hasMore", "resultSets", "results"]
+        .some((key) => Object.hasOwn(receipt, key)))) return false;
+  return inputs.every((input) => input.scope.kind === "range" && !!input.name &&
+    input.sourceFile.pendingWrite === false &&
+    input.sourceFile.calculation === "no-unpersisted-calculation-observed");
+}
+const sqlIndexHeader = (value: string) =>
+  /^(0|[1-9][0-9]*)$/.test(value) && Number(value) < 4294967295;
+const sqlSummaryCell = (value: unknown) =>
+  (typeof value === "string" && value.trim().length > 0 &&
+    !/^#(?:NULL!|DIV\/0!|VALUE!|REF!|NAME\?|NUM!|N\/A|SPILL!|CALC!|GETTING_DATA|CONNECT!|BLOCKED!|UNKNOWN!|FIELD!)$/i.test(value.trim())) ||
+  (typeof value === "number" && Number.isFinite(value) &&
+    (!Number.isInteger(value) || Number.isSafeInteger(value)));
+
+const sqlSummaryText = (value: unknown) => cell(value).replace(/[\\\u0060*_~[\]]/g, (match) => "\\" + match);
+
+function renderSummaryWindows(windows: SummaryWindow[], diagnostics: SummaryDiagnostics): string | undefined {
+  let count = 0;
+  const sections: string[] = [];
+  for (const window of windows) {
+    const { toolCallId, refId } = window;
+    const values = window.kind === "sql"
+      ? (Array.isArray(window.values) ? [window.columns, ...window.values] : undefined)
+      : window.values;
+    if (Array.isArray(values) && values.every(Array.isArray))
+      count += values.reduce((n, row) => n + row.length, 0);
+    const validHeaders = Array.isArray(values) && values.length >= 2 && Array.isArray(values[0]) &&
+      values[0].length > 0 && values[0].every((v) => typeof v === "string" && v.trim() &&
+        (window.kind !== "sql" || !sqlIndexHeader(v))) &&
+      new Set(values[0]).size === values[0].length;
+    if (!validHeaders)
+      diagnostics.add({ code: "WINDOW_HEADERS_INVALID", category: "selection", toolCallId, refId,
+        reason: "小汇总窗口须完整保留非空且无歧义的原文表头与数据行；SQL 不支持整数索引列名" });
+    const width = Array.isArray(values) && Array.isArray(values[0]) ? values[0].length : undefined;
+    const validCells = Array.isArray(values) && values.slice(1).every((row) =>
+      Array.isArray(row) && (width === undefined || row.length === width) &&
+      (window.kind === "sql"
+        ? Array.from({ length: row.length }, (_, index) => Object.hasOwn(row, index) && sqlSummaryCell(row[index])).every(Boolean)
+        : row.every((v) => (typeof v === "string" && v.trim().length > 0) || (typeof v === "number" && Number.isFinite(v)))));
+    if (!validCells)
+      diagnostics.add({ code: "WINDOW_CELLS_INVALID", category: "selection", toolCallId, refId,
+        reason: "小汇总窗口含缺失、空白、不支持或精度不明确的单元格，不能猜测标签或身份" });
+    if (!validHeaders || !validCells) continue;
+    const renderCell = window.kind === "sql"
+      ? (value: unknown) => sqlSummaryText(typeof value === "string" ? JSON.stringify(value) : value)
+      : cell;
+    const table = values.map((row, index) => "| " + row.map(renderCell).join(" | ") + " |" +
+      (index === 0 ? "\n| " + row.map(() => "---").join(" | ") + " |" : "")).join("\n");
+    sections.push(window.kind === "range" ? cell(window.path) + " · " + cell(window.range) + "\n" + table :
+      ["SQL 查询结果 · " + sqlSummaryText(toolCallId) + "（下列范围上该查询的完整返回结果）：",
+        ...window.sources.map((input) =>
+          "来源 " + sqlSummaryText(input.name) + "：" + sqlSummaryText(input.path) + " · " +
+          sqlSummaryText(input.scope.kind === "range" ? input.scope.range : "") + " · rev " + input.rev +
+          " · calculation=" + cell(input.sourceFile.calculation) + " · pendingWrite=false"),
+        "实际 SQL：" + sqlSummaryText(window.sql), table,
+        "列名/单位仅查询输出原文，不认证业务口径或单位；非 Excel 格式化显示，不证明原始行覆盖。"].join("\n"));
+  }
+  if (count > 32) diagnostics.add({ code: "SUMMARY_CELL_LIMIT", category: "selection", actual: count, limit: 32,
+    reason: "所有小汇总窗口合计超过32个标量格（含 SQL 表头），未自动挑选或删减" });
+  if (!windows.length) diagnostics.add({ code: "SUMMARY_WINDOW_MISSING", category: "selection",
+    reason: "没有可安全压缩的完整小汇总窗口" });
+  const text = sections.join("\n\n");
+  if (text.length > 2000) diagnostics.add({ code: "SUMMARY_TEXT_LIMIT", category: "selection", actual: text.length, limit: 2000,
+    reason: "原文小窗口文本仍过长，未截断内容" });
+  return text || undefined;
+}
+function summaryExecutionNotes(log: SessionLog, ctx: ToolContext, diagnostics: SummaryDiagnostics): string[] {
+  const scope = numericExecutionReceiptScope(log.dbHandle, ctx.sessionId, ctx.agentId, ctx.turnId);
+  if (scope.startSeq === undefined || scope.scopes.length)
+    diagnostics.add({ code: "EXECUTION_SCOPE_UNKNOWN", category: "mandatory-disclosure",
+      reason: "执行范围缺失或含关联轮次状态，保留完整执行事实" });
+  const failures: string[] = [];
+  const warnings: string[] = [];
+  for (const row of scope.receipts) {
+    const receipt = object(JSON.parse(row.data)), result = object(receipt.result), data = object(result.data);
+    const toolCallId = typeof receipt.toolCallId === "string" ? receipt.toolCallId : undefined;
+    const inconsistent = receipt.status !== result.status || result.truncated || data.truncated === true;
+    if (inconsistent) diagnostics.add({ code: "RECEIPT_INCONSISTENT", category: "mandatory-disclosure", toolCallId,
+      reason: "工具回执状态不一致或截断，保留完整执行事实" });
+    if (Array.isArray(result.warnings) && result.warnings.length) {
+      diagnostics.add({ code: "RECEIPT_WARNINGS", category: "mandatory-disclosure", toolCallId,
+        reason: "工具回执含警告，需要完整披露" });
+      warnings.push(`${cell(receipt.toolName)} · ${cell(receipt.toolCallId)}：${cell(JSON.stringify(result.warnings))}`);
+    }
+    // Only the host top-level prepublication receipt is authoritative. Nested value/stdout is not.
+    const prepublication = receipt.toolName === "run_script" && result.status === "error" && !inconsistent &&
+      data.publicationPhase === "not_started" &&
+      ["published", "committedRevs"].every((field) => Array.isArray(data[field]) && (data[field] as unknown[]).length === 0) &&
+      ["rolledBack", "unrecovered"].every((field) => !Object.hasOwn(data, field) ||
+        (Array.isArray(data[field]) && (data[field] as unknown[]).length === 0));
+    if (result.status !== "ok") {
+      const error = object(result.error);
+      failures.push(`${cell(receipt.toolName)}(${cell(error.code ?? result.status)}) · ${cell(receipt.toolCallId)}：${cell(error.message ?? "回执未给出失败详情")}` +
+        (prepublication ? "；宿主确认本次调用未进入发布阶段（可能已有读取或暂存，不证明清理或恢复成功）" : ""));
+      const parameterRejection = result.status === "error" &&
+        ["workbook_read", "workbook_analyze", "present"].includes(String(receipt.toolName)) &&
+        (error.code === "INVALID_ARGUMENT" || (receipt.toolName === "present" && error.code === "LIMIT_EXCEEDED"));
+      if (!parameterRejection && !prepublication)
+        diagnostics.add({ code: "FAILURE_STATE_UNKNOWN", category: "mandatory-disclosure", toolCallId,
+          reason: "失败回执不是明确参数拒绝，执行或恢复状态未知，保留完整执行事实" });
+    }
+    if (receipt.toolName === "run_script" && !prepublication &&
+        (result.status !== "ok" || !Array.isArray(data.published) ||
+         ["rolledBack", "unrecovered"].some((field) => Object.hasOwn(data, field) &&
+           (!Array.isArray(data[field]) || (data[field] as unknown[]).length > 0)))) {
+      diagnostics.add({ code: "SCRIPT_PUBLICATION_UNKNOWN", category: "mandatory-disclosure", toolCallId,
+        reason: "脚本发布、回滚或恢复状态需要完整披露" });
+      warnings.push(`${cell(receipt.toolName)} · ${cell(receipt.toolCallId)}：${["publicationPhase", "published", "committedRevs", "rolledBack", "unrecovered"].map((field) => `${field}=${cell(Object.hasOwn(data, field) ? JSON.stringify(data[field]) : "未提供")}`).join("；")}`);
+    }
+  }
+  return [
+    ...(failures.length ? [`本轮有${failures.length}次工具失败回执：${failures.join("；")}。后续成功读取不等同这些失败已恢复。`] : []),
+    ...(warnings.length ? [`工具警告：${warnings.join("；")}`] : []),
+  ];
+}
+
+
+const alignmentLocation = z.object({
+  docId: z.string().min(1), path: z.string().min(1), rev: z.number().int().nonnegative(),
+  sheet: z.string().optional(), range: z.string().min(1),
+});
+const alignmentReceipt = z.object({
+  docId: z.string().min(1), path: z.string().min(1),
+  docRevs: z.record(z.string(), z.number().int().nonnegative()),
+  verification: z.object({
+    status: z.enum(["verified", "failed", "unverified"]), scope: z.literal("declared_fields_only"),
+    target: alignmentLocation, sources: z.array(alignmentLocation.extend({ name: z.string().min(1) })).min(1),
+    requiredColumns: z.array(z.string().min(1)), coveredColumns: z.array(z.string().min(1)),
+    uncoveredColumns: z.array(z.string().min(1)),
+    declaredCellCount: z.number().int().nonnegative(), checkedCellCount: z.number().int().nonnegative(),
+    failedCount: z.number().int().nonnegative(), unverifiedCount: z.number().int().nonnegative(),
+    conflictKeyCount: z.number().int().nonnegative(), sourcePolicies: z.array(z.object({
+      ruleIndex: z.number().int().nonnegative(), source: z.string().min(1),
+      where: z.array(z.object({ column: z.string().min(1), equals: z.union([z.string(), z.number(), z.boolean(), z.null()]) }).strict()),
+      duplicatePolicy: z.enum(["reject", "identical_rows"]), duplicateColumns: z.array(z.string().min(1)),
+      conflictPolicy: z.enum(["unverified", "expect_blank"]),
+    }).strict()),
+    failures: z.array(z.object({ targetCell: z.string(), ruleIndex: z.number().int(), code: z.string() })),
+    failuresTruncated: z.boolean(), limitation: z.string().min(1),
+  }),
+  versionBindings: z.array(z.object({
+    docId: z.string().min(1), path: z.string().min(1), rev: z.number().int().nonnegative(),
+    sha256: z.string().optional(), checkpointRev: z.number().int().nonnegative().optional(),
+    isCurrentSaved: z.boolean(),
+  })).min(1),
+});
+
+/** Display host declarations only; never promote a historical green receipt to current certification. */
+function alignmentReceiptNotes(log: SessionLog, ctx: ToolContext, documents: DocumentService): string[] {
+  const latest = new Map<string, { text: string; nonSuccess: boolean; priorNonSuccess: number }>();
+  for (const row of numericExecutionReceiptScope(log.dbHandle, ctx.sessionId, ctx.agentId, ctx.turnId).receipts) {
+    const receipt = object(JSON.parse(row.data)), result = object(receipt.result), data = object(result.data);
+    if (receipt.toolName !== "workbook_analyze" || data.mode !== "source_alignment") continue;
+    const raw = object(data.verification);
+    const key = typeof data.docId === "string" ? data.docId : `unknown:${row.seq}`;
+    const previous = latest.get(key);
+    const priorNonSuccess = (previous?.priorNonSuccess ?? 0) + (previous?.nonSuccess ? 1 : 0);
+    const parsed = alignmentReceipt.safeParse(data);
+    const prefix = `字段校验回执 · ${cell(receipt.toolCallId)}`;
+    let text = `字段校验回执未知 · ${cell(receipt.toolCallId)}：缺字段、版本绑定或形状不完整；回执报告status=${cell(raw.status ?? "未提供")}，未作为证明。`;
+    let nonSuccess = true;
+    if (parsed.success && receipt.status === "ok" && result.status === "ok" && !result.truncated) {
+      const { verification: v, versionBindings, docRevs } = parsed.data;
+      const locations = [v.target, ...v.sources];
+      const bound = v.target.docId === data.docId && v.target.path === data.path &&
+        locations.every((loc) => docRevs[loc.docId] === loc.rev &&
+          versionBindings.some((b) => b.docId === loc.docId && b.path === loc.path && b.rev === loc.rev));
+      const greenConsistent = v.status !== "verified" || (v.failedCount === 0 && v.unverifiedCount === 0 &&
+        locations.every((loc) => versionBindings.some((b) => b.docId === loc.docId && b.rev === loc.rev &&
+          b.isCurrentSaved && b.checkpointRev === loc.rev && /^[a-f0-9]{64}$/i.test(b.sha256 ?? ""))));
+      if (bound && greenConsistent) {
+        const current = documents.meta(v.target.docId);
+        const revisionNote = current && current.rev !== v.target.rev
+          ? `；当前修订${current.rev}，该回执不认证此修订` : "";
+        text = `${prefix}：${cell(v.target.path)} · ${cell(v.target.range)} · 基于修订${v.target.rev}的声明字段校验，status=${v.status}${revisionNote}；仅覆盖：${v.coveredColumns.map(cell).join("、") || "无"}；未覆盖：${v.uncoveredColumns.map(cell).join("、") || "无"}；failed=${v.failedCount}，unverified=${v.unverifiedCount}；来源：${v.sources.map((s) => `${cell(s.name)}=${cell(s.path)} · ${cell(s.range)}@${s.rev}`).join("、")}。交付时未重新校验；不证明全部业务要求或未声明列。`;
+        if (v.sourcePolicies.length)
+          text += ` 源策略原文（where按严格类型匹配）：${cell(JSON.stringify(v.sourcePolicies))}。`;
+        nonSuccess = v.status !== "verified";
+      }
+    }
+    latest.set(key, { text, nonSuccess, priorNonSuccess });
+  }
+  return [...latest.values()].map((entry) => entry.text + (entry.priorNonSuccess
+    ? ` 更早还有${entry.priorNonSuccess}次failed/unverified/未知回执，完整事实保留在工具日志中，不推断已恢复。` : ""));
+}
+
 async function finalizeResolved(
   log: SessionLog,
   documents: DocumentService | undefined,
@@ -661,6 +1017,7 @@ async function finalizeResolved(
   ctx: ToolContext,
   requireCandidates: boolean,
   bindings: NumericLabelBinding[] = [],
+  presentation: "evidence" | "summary" = "evidence",
 ): Promise<ToolResult> {
   const accessReport = () =>
     ctx.turnId
@@ -732,6 +1089,8 @@ async function finalizeResolved(
       "以下内容直接来自已执行工具的结果；来源与执行表达式列于下方，不代表业务口径已获独立验证。",
     ];
     const verifiedSources: Source[] = [];
+    const summaryWindows = new Map<string, SummaryWindow>();
+    const diagnostics = summaryDiagnostics();
     const verifySource = async (input: Source) => {
       const currentFile = await documents.sourceStatus(input.docId, ctx.workspaceRoot);
       const meta = documents.meta(input.docId);
@@ -790,8 +1149,35 @@ async function finalizeResolved(
             source.toolCallId === value.toolCallId &&
             (value.pointer === source.pointer || value.pointer.startsWith(`${source.pointer}/`)),
         )
-      )
-        return invalid("标签只能绑定已选择且同一次真实读取的数值。");
+      ) {
+        const repairRefs = new Set<string>();
+        // Same 32-binding cap as the public schema; diagnostics never broaden acceptance.
+        for (const missing of bindings.slice(0, 32)) {
+          const missingValue = decodeNumericRefId(missing.valueRefId);
+          const missingLabel = decodeNumericRefId(missing.labelRefId);
+          if (!missingValue || !missingLabel || missingValue.toolCallId !== missingLabel.toolCallId ||
+              args.sources.some((source) => source.toolCallId === missingValue.toolCallId &&
+                (missingValue.pointer === source.pointer || missingValue.pointer.startsWith(`${source.pointer}/`)))) continue;
+          const receipt = visibleNumericReceipt(log, ctx, missingValue.toolCallId);
+          const matches = (candidate: NumericLabelBinding) =>
+            candidate.valueRefId === missing.valueRefId &&
+            candidate.labelRefId === missing.labelRefId && candidate.relation === missing.relation;
+          if (receipt && receipt.shown.bindingCandidates.items.some(matches) &&
+              receipt.actual.bindingCandidates.items.some(matches) &&
+              receipt.shown.candidates.items.some((entry) => entry.refId === missing.valueRefId) &&
+              receipt.actual.candidates.items.some((entry) => entry.refId === missing.valueRefId) &&
+              JSON.stringify(at(receipt.result, tokens(missingValue.pointer))) ===
+                JSON.stringify(at(receipt.output, tokens(missingValue.pointer)))) {
+            for (const input of receipt.actual.sourceScopes) await verifySource(input);
+            repairRefs.add(missing.valueRefId);
+          }
+        }
+        const repair = repairRefs.size
+          ? ` 当前输入中未覆盖但逐项验证通过的同次读取数值：sources=${JSON.stringify([...repairRefs].map((refId) => ({ refId })))}。仅在确需这些项时显式合并选择并重新核验预算；否则删除相应绑定并从所选来源的可见候选重新选择。`
+          : "";
+        return invalid("标签只能绑定已选择且同一次真实读取的数值。" + repair +
+          "不会自动跨call按相同数值替换来源或绑定。");
+      }
       if (boundLabels.has(binding.valueRefId)) return invalid("同一数值只能选择一个标签关系。");
       boundLabels.set(binding.valueRefId, { text: "", address: "", relation: binding.relation });
     }
@@ -827,7 +1213,12 @@ async function finalizeResolved(
           !actual?.candidates.items.some((candidate) => candidate.pointer === source.pointer) ||
           JSON.stringify(shown.sourceScopes) !== JSON.stringify(actual.sourceScopes)
         )
-          return invalid("引用不在当前可见且真实的候选目录中，请缩小范围重新获取。");
+          return invalid(
+            `引用不在当前可见且真实的候选目录中：selector=${JSON.stringify(source)}；` +
+              `shownCandidatesTruncated=${shown?.candidates.truncated ?? "unknown"}；` +
+              `actualCandidatesTruncated=${actual?.candidates.truncated ?? "unknown"}。` +
+              evidenceRecovery,
+          );
         // A unique, explicitly labelled unit may accompany a selected cell automatically.
         // The relation must exist in both actual and visible host catalogs; no sheet-wide borrowing.
         const automatic = new Map<string, NumericLabelBinding[]>();
@@ -956,11 +1347,12 @@ async function finalizeResolved(
         path.length === 2 &&
         (data.truncated === true || object(data.readWindow).complete === false)
       )
-        tooLarge();
+        tooLarge("incomplete_window");
       // Projection truncation does not give the model access to hidden full-log values.
       if (JSON.stringify(at(visible.output, path)) !== JSON.stringify(selected))
         return invalid("引用结果不在当前可见上下文中，请缩小范围重新获取。");
-      if (JSON.stringify(selected).length > MAX_TEXT) tooLarge();
+      if (JSON.stringify(selected).length > MAX_TEXT)
+        tooLarge("selected_text", JSON.stringify(selected).length, MAX_TEXT);
       if (
         (toolName === "workbook_read" ||
           (toolName === "workbook_analyze" && data.mode === "sort_preflight")) &&
@@ -985,10 +1377,36 @@ async function finalizeResolved(
         ).values(),
       ];
       if (!inputs.length) return invalid("结果没有可验证的输入来源。");
-      if (inputs.length > 32) tooLarge();
+      if (inputs.length > 32) tooLarge("input_sources", inputs.length, 32);
       for (const input of inputs) {
         // meta is refreshed by entry/sourceStatus, including reopened documents after restart.
         await verifySource(input);
+      }
+      if (presentation === "summary") {
+        const window = object(data.readWindow);
+        if (toolName === "workbook_analyze" && data.mode === "sql" && source.pointer === "/data/rows") {
+          if (!sqlSummaryReceiptComplete(data, visibleData, result, object(visible.output), inputs) ||
+              !sqlSummaryInputsComplete(log, ctx, source.toolCallId, row.fromSeq, inputs)) {
+            diagnostics.add({ code: "SOURCE_WINDOW_UNSUPPORTED", category: "selection",
+              toolCallId: source.toolCallId, refId: numericRefId(source),
+              reason: "SQL 须有同次真实可见的完整表头、行数、查询及全部未裁剪来源和保存状态" });
+          } else summaryWindows.set(source.toolCallId, {
+            kind: "sql", columns: data.columns, sql: data.sql as string, sources: inputs,
+            values: selected, toolCallId: source.toolCallId, refId: numericRefId(source),
+          });
+        } else if (toolName !== "workbook_read" || data.mode !== "range" ||
+            source.pointer !== "/data/values" || inputs.length !== 1 ||
+            window.complete !== true || window.clipped === true ||
+            (typeof window.offset === "number" && window.offset !== 0) ||
+            data.truncated === true || result.truncated === true ||
+            (Array.isArray(result.warnings) && result.warnings.length > 0)) {
+          diagnostics.add({ code: "SOURCE_WINDOW_UNSUPPORTED", category: "selection",
+            toolCallId: source.toolCallId, refId: numericRefId(source),
+            reason: "选择含非完整原文小读窗、分页裁剪、警告或特殊证据义务" });
+        } else summaryWindows.set(source.toolCallId, {
+          kind: "range", path: inputs[0]!.path, range: String(window.returnedRange), values: selected,
+          toolCallId: source.toolCallId, refId: numericRefId(source),
+        });
       }
       if (source.pointer === "/data/macroEvidence") {
         const evidence = currentMacroEvidence(selected, inputs[0]!);
@@ -1068,7 +1486,7 @@ async function finalizeResolved(
           count += scalarLeaves(selected);
           reportDocs.add(inputs[0]!.docId);
         }
-        if (count > MAX_CELLS || sections.join("\n\n").length > MAX_TEXT) tooLarge();
+        checkRenderedBudget(count, sections);
         continue;
       }
       if (path[1] === "reportFacts") {
@@ -1080,7 +1498,7 @@ async function finalizeResolved(
           count += report.leaves;
           reportDocs.add(inputs[0]!.docId);
         }
-        if (count > MAX_CELLS || sections.join("\n\n").length > MAX_TEXT) tooLarge();
+        checkRenderedBudget(count, sections);
         continue;
       }
       if (path[1] === "sortPreflight") {
@@ -1089,7 +1507,7 @@ async function finalizeResolved(
           sections.push(renderSortPreflight(object(selected)));
           count += scalarLeaves(selected);
         }
-        if (count > MAX_CELLS || sections.join("\n\n").length > MAX_TEXT) tooLarge();
+        checkRenderedBudget(count, sections);
         continue;
       }
       if (source.pointer === "/data/preserved/externalLinkDetails") {
@@ -1098,7 +1516,7 @@ async function finalizeResolved(
           sections.push(...renderExternalLinks(object(selected)));
           count += scalarLeaves(selected);
         }
-        if (count > MAX_CELLS || sections.join("\n\n").length > MAX_TEXT) tooLarge();
+        checkRenderedBudget(count, sections);
         continue;
       }
       const rows: string[] = [
@@ -1112,7 +1530,7 @@ async function finalizeResolved(
         display = "未提供格式信息",
         raw = scalar(value),
       ) => {
-        if (++count > MAX_CELLS) tooLarge();
+        if (++count > MAX_CELLS) tooLarge("selected_cells", count, MAX_CELLS);
         if (typeof value === "number" && Number.isFinite(value)) numericCount++;
         rows.push(`| ${cell(position)} | ${cell(raw)} | ${cell(formula)} | ${cell(display)} |`);
       };
@@ -1233,7 +1651,7 @@ async function finalizeResolved(
       };
       visit(selected, path);
       if (rows.length > 2) sections.push(`选择：${cell(source.pointer)}`, rows.join("\n"));
-      if (sections.join("\n\n").length > MAX_TEXT) tooLarge();
+      checkRenderedBudget(count, sections);
     }
     for (const readback of completeness?.readbacks ?? []) {
       await verifySource(readback.source);
@@ -1258,7 +1676,7 @@ async function finalizeResolved(
       const rendered = renderSortPreservation(fact);
       count += rendered.leaves;
       sections.push(rendered.text);
-      if (count > MAX_CELLS || sections.join("\n\n").length > MAX_TEXT) tooLarge();
+      checkRenderedBudget(count, sections);
     }
     for (const fact of completeness?.macroPreservations ?? []) {
       await verifySource(fact.before.source);
@@ -1266,7 +1684,7 @@ async function finalizeResolved(
       const rendered = renderMacroPreservation(fact);
       count += rendered.leaves;
       sections.push(rendered.text);
-      if (count > MAX_CELLS || sections.join("\n\n").length > MAX_TEXT) tooLarge();
+      checkRenderedBudget(count, sections);
     }
     const pendingNumeric =
       ctx.turnId !== undefined &&
@@ -1321,12 +1739,48 @@ async function finalizeResolved(
         "VERSION_CONFLICT",
         "本轮仍有工作簿计算或保存未完成，不能通过省略该文件完成交付。请等待已有计算和保存完成，再重新读取来源；不会暗中保存或刷新。",
       );
-    const finalText = [
+    const alignmentNotes = alignmentReceiptNotes(log, ctx, documents);
+    const auditText = [
       ...sections,
+      ...alignmentNotes,
       numericExecutionFacts(log.dbHandle, ctx.sessionId, ctx.agentId, ctx.turnId),
       ...(scopedDelivery && finalAccess ? [renderAccessFacts(finalAccess)] : []),
     ].join("\n\n");
-    if (finalText.length > MAX_TEXT) tooLarge();
+    if (auditText.length > MAX_TEXT) tooLarge("rendered_text", auditText.length, MAX_TEXT);
+    let finalText = auditText;
+    let presentationUsed: "evidence" | "summary" = "evidence";
+    let summaryFallback: string | undefined;
+    if (presentation === "summary") {
+      if (completeness && [completeness.readbacks, completeness.sortExecutions,
+          completeness.sortPreservations, completeness.macroPreservations].some((facts) => facts.length))
+        diagnostics.add({ code: "SPECIAL_OBLIGATIONS", category: "mandatory-disclosure",
+          reason: "本轮存在排序或宏保留义务，需要完整呈现范围和限制" });
+      const compact = renderSummaryWindows([...summaryWindows.values()], diagnostics);
+      const execution = summaryExecutionNotes(log, ctx, diagnostics);
+      if (alignmentNotes.join("\n").length > 2000)
+        diagnostics.add({ code: "ALIGNMENT_DISCLOSURE_LIMIT", category: "mandatory-disclosure",
+          actual: alignmentNotes.join("\n").length, limit: 2000,
+          reason: "声明字段校验状态与范围过长，保留完整披露" });
+      if (finalAccess && (finalAccess.rejected.length || finalAccess.failed.length ||
+          finalAccess.coverage !== "complete" || finalAccess.priorUnscopedActivity ||
+          finalAccess.pendingProducers.length))
+        diagnostics.add({ code: "ACCESS_FACTS_REQUIRED", category: "mandatory-disclosure",
+          reason: "本轮有拒绝、失败或未完整确认的访问事实，保留完整记录" });
+      summaryFallback = diagnostics.result().blockers[0]?.reason;
+      if (summaryFallback) finalText = [`摘要未压缩，简短呈现要求未满足：${summaryFallback}。以下保留完整核验证据；已核验文件仍按实际状态交付，不表示文件缺失或业务核验失败。`, ...execution, auditText].join("\n\n");
+      else {
+        presentationUsed = "summary";
+        finalText = [
+          "已核验的原文小汇总（只呈现所选窗口，不认证全部业务口径；单位与对象按原文保留，不补猜）：",
+          compact!,
+          ...execution,
+          ...alignmentNotes,
+          ...(prepared.files.length ? [`已保存并交付：${prepared.files.map((file) => cell(file.path)).join("、")}。`] : []),
+          "完整来源、公式、执行与访问记录保留在本次工具结果中。",
+        ].join("\n\n");
+      }
+      if (finalText.length > MAX_TEXT) tooLarge("rendered_text", finalText.length, MAX_TEXT);
+    }
     if (prepared.cards.length)
       log.append(
         ctx.sessionId,
@@ -1336,9 +1790,12 @@ async function finalizeResolved(
     return {
       status: "ok",
       data: {
-        finalizationStatus: "complete",
+        finalizationStatus: summaryFallback ? "incomplete" : "complete",
         deliveredFiles: prepared.files,
         finalText,
+        ...(presentation === "summary" ? { auditText, presentationUsed,
+          presentationSatisfied: !summaryFallback, summaryDiagnostics: diagnostics.result(),
+          ...(summaryFallback ? { fallbackReason: summaryFallback } : {}) } : {}),
       },
     };
   } catch (error) {
@@ -1346,7 +1803,10 @@ async function finalizeResolved(
       status: "error",
       error: {
         code: toToolErrorCode(error instanceof EvidenceError ? error.code : "INVALID_ARGUMENT"),
-        message: error instanceof Error ? error.message : "数值证据核验失败，请重新获取来源。",
+        message: error instanceof Error ? error.message +
+          (error instanceof EvidenceError && error.code === "LIMIT_EXCEEDED" &&
+           error.message.includes("reason=selected_cells") ? selectedCellDiagnostic(log, ctx, args.sources) : "")
+          : "数值证据核验失败，请重新获取来源。",
         retryable: false,
       },
     };

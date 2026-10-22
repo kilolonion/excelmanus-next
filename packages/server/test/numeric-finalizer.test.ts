@@ -2190,7 +2190,10 @@ test("finalizer refuses a truncated SQL table rather than calling its preview co
     );
     expect(await f.finalize([{ toolCallId: "large", pointer: "/data/rows" }])).toMatchObject({
       status: "error",
-      error: { code: "LIMIT_EXCEEDED" },
+      error: {
+        code: "LIMIT_EXCEEDED",
+        message: expect.stringContaining("reason=incomplete_window"),
+      },
     });
     expect(await f.finalize([{ toolCallId: "large", pointer: "/data/rows/0/0" }])).toMatchObject({
       status: "ok",
@@ -2228,8 +2231,59 @@ test("finalizer refuses a truncated SQL table rather than calling its preview co
     );
     expect(read.status).toBe("ok");
     expect(await f.finalize([{ toolCallId: "many-cells", pointer: "/data/values" }])).toMatchObject(
-      { status: "error", error: { code: "LIMIT_EXCEEDED" } },
+      {
+        status: "error",
+        error: {
+          code: "LIMIT_EXCEEDED",
+          message: expect.stringContaining("reason=selected_cells；limit=200；observed=201"),
+        },
+      },
     );
+    const catalog = numericEvidence("many-cells", "workbook_read", read)!;
+    expect(catalog.candidates.truncated).toBe(true);
+    const absent = "/data/values/99/2";
+    expect(catalog.candidates.items.some((c) => c.pointer === absent)).toBe(false);
+    const invalidRef = await finalizeNumeric(
+      f.log,
+      f.documents,
+      {
+        status: "complete",
+        sources: [{ refId: numericRefId({ toolCallId: "many-cells", pointer: absent }) }],
+      },
+      f.ctx,
+    );
+    expect(invalidRef).toMatchObject({
+      status: "error",
+      error: {
+        code: "INVALID_ARGUMENT",
+        message: expect.stringContaining('"pointer":"/data/values/99/2"'),
+      },
+    });
+    expect(invalidRef.error?.message).toContain("shownCandidatesTruncated=true");
+    expect(invalidRef.error?.message).toContain("不要构造或改写 refId");
+    const small = await f.execute(
+      "workbook_read",
+      {
+        path: "book.xlsx",
+        mode: "range",
+        range: "Data!A98:C100",
+      },
+      "small-window",
+    );
+    const validRef = numericEvidence("small-window", "workbook_read", small)!.candidates.items.find(
+      (c) => c.pointer === "/data/values",
+    )!.refId;
+    expect(
+      await finalizeNumeric(
+        f.log,
+        f.documents,
+        {
+          status: "complete",
+          sources: [{ refId: validRef }],
+        },
+        f.ctx,
+      ),
+    ).toMatchObject({ status: "ok", data: { finalizationStatus: "complete" } });
   } finally {
     await f.close();
   }
@@ -3183,4 +3237,838 @@ test("file notes cannot bypass the report and an old revision card cannot satisf
   } finally {
     await f.close();
   }
+});
+
+async function roundSevenSummaryFixture(values: (string | number)[][]) {
+  const f = await fixture();
+  f.ctx.turnId = "round-seven-summary";
+  f.log.append("s", "main", [{ type: "turn.started", data: { turnId: f.ctx.turnId } }]);
+  const endCol = String.fromCharCode(69 + values[0]!.length - 1);
+  const range = `Data!E1:${endCol}${values.length}`;
+  await f.execute("workbook_edit", {
+    path: "book.xlsx",
+    ops: [{ op: "cells.set", range, values }],
+  }, "summary-write");
+  await vi.waitFor(() => {
+    const meta = f.documents.meta((f.edit.data as { docId: string }).docId)!;
+    expect(meta.checkpointRev).toBe(meta.rev);
+  }, { timeout: 5000 });
+  await f.execute("workbook_read", {
+    path: "book.xlsx", mode: "range", range, facets: ["values", "formulas"],
+  }, "summary-read");
+  const evidence = (await visibleProviderReceipt(f, "summary-read"))!;
+  const args = { status: "complete" as const,
+    sources: [{ refId: evidence.candidates.items.find((item) => item.pointer === "/data/values")!.refId }] };
+  return { ...f, args, range };
+}
+
+test.each([
+  [["有效账单数", "异常数", "P实收合计分", "V实收合计分", "差额合计分"], [12, 1, 3400, 2400, 1000]],
+  [["有效交易数", "异常数", "销售额分", "正式应付L分", "对照A分", "差额分"], [13, 1, 602, 24, 19, 5]],
+  [["指标", "值"], ["合法退单数", 9], ["异常数", 5], ["本期认可退款分", 25004], ["超额退款分", 1001], ["冲回分", 827], ["净调整分", -827]],
+  [["销售员", "本期认可退款分", "本期冲回分"], ["001", 25001, 825], ["1", 3, 2]],
+])("round seven summary retains every literal small-window cell and full audit %#", async (...rows) => {
+  const values = rows as (string | number)[][];
+  const f = await roundSevenSummaryFixture(values);
+  try {
+    const old = await finalizeNumeric(f.log, f.documents, f.args, f.ctx);
+    expect(old).toMatchObject({ status: "ok" });
+    const result = await finalizeNumeric(f.log, f.documents, {
+      ...f.args, presentation: "summary",
+    } as Parameters<typeof finalizeNumeric>[2], f.ctx);
+    expect(result, JSON.stringify(result)).toMatchObject({ status: "ok", data: {
+      presentationUsed: "summary", auditText: (old.data as { finalText: string }).finalText,
+      deliveredFiles: [expect.objectContaining({ path: "book.xlsx" })],
+    } });
+    const text = (result.data as { finalText: string }).finalText;
+    for (const value of values.flat()) expect(text).toContain(String(value));
+    expect(text).toContain(f.range);
+    expect(text).toContain("book.xlsx");
+    expect(text).not.toContain("CNY");
+    expect(text).not.toContain("from_seq");
+    expect(text.length).toBeLessThan(900);
+  } finally { await f.close(); }
+});
+
+test("round seven summary uses a total 32-cell budget and explicitly falls back", async () => {
+  const f = await roundSevenSummaryFixture([["指标", "值"], ...Array.from({ length: 16 }, (_, i) => [`指标${i}`, i])]);
+  try {
+    const result = await finalizeNumeric(f.log, f.documents, {
+      ...f.args, presentation: "summary",
+    } as Parameters<typeof finalizeNumeric>[2], f.ctx);
+    expect(result).toMatchObject({ status: "ok", data: {
+      presentationUsed: "evidence", fallbackReason: expect.stringContaining("32"),
+      finalText: expect.stringContaining("未压缩"),
+    } });
+  } finally { await f.close(); }
+});
+
+test("round seven summary never hides failed tool receipts after a successful read", async () => {
+  const f = await roundSevenSummaryFixture([["冲回分", "异常数"], [827, 5]]);
+  try {
+    f.log.append("s", "main", [{ type: "tool.result", data: {
+      toolName: "workbook_read", toolCallId: "earlier-failure", status: "error",
+      result: { status: "error", error: { code: "NOT_FOUND", message: "missing", retryable: false } },
+    } }]);
+    const result = await finalizeNumeric(f.log, f.documents, {
+      ...f.args, presentation: "summary",
+    } as Parameters<typeof finalizeNumeric>[2], f.ctx);
+    expect(result).toMatchObject({ status: "ok", data: {
+      presentationUsed: "evidence",
+      finalText: expect.stringContaining("NOT_FOUND"),
+      auditText: expect.stringContaining("earlier-failure"),
+    } });
+    expect((result.data as { finalText: string }).finalText).toContain("失败");
+  } finally { await f.close(); }
+});
+
+test.each([282, 251])("round seven budget diagnostics report actual bounded total %i rather than cutoff 201", async (count) => {
+  const firstCount = Math.ceil(count / 2);
+  const f = await roundSevenSummaryFixture([["指标"], ...Array.from({ length: firstCount - 1 }, (_, i) => [i])]);
+  try {
+    await f.execute("workbook_read", { path: "book.xlsx", mode: "range", range: `Data!E1:E${count - firstCount}`, facets: ["values"] }, "second-budget");
+    const second = (await visibleProviderReceipt(f, "second-budget"))!;
+    const secondSource = { refId: second.candidates.items.find((item) => item.pointer === "/data/values")!.refId };
+    const result = await finalizeNumeric(f.log, f.documents, {
+      ...f.args, sources: [...f.args.sources, secondSource, ...f.args.sources],
+    }, f.ctx);
+    expect(result).toMatchObject({ status: "error", error: { code: "LIMIT_EXCEEDED" } });
+    expect(result.error?.message).toContain(`selectedTotal=${count}`);
+    expect(result.error?.message).toContain("200");
+  } finally { await f.close(); }
+});
+
+
+test.each(["", "   "])("round seven summary falls back for blank object identity %j", async (identity) => {
+  const f = await roundSevenSummaryFixture([["销售员", "冲回分"], [identity, 827]]);
+  try {
+    const result = await finalizeNumeric(f.log, f.documents, {
+      ...f.args, presentation: "summary",
+    } as Parameters<typeof finalizeNumeric>[2], f.ctx);
+    expect(result).toMatchObject({ status: "ok", data: {
+      presentationUsed: "evidence", fallbackReason: expect.stringMatching(/空白|缺失/),
+    } });
+  } finally { await f.close(); }
+});
+
+test.each(["workbook_read", "workbook_analyze", "present"])("round seven summary retains unknown failure message for %s", async (name) => {
+  const f = await roundSevenSummaryFixture([["冲回分", "异常数"], [827, 5]]);
+  try {
+    f.log.append("s", "main", [{ type: "tool.result", data: {
+      toolName: name, toolCallId: "unknown-execution", status: "error",
+      result: { status: "error", error: { code: "INTERNAL", message: "执行状态未知，不能确认是否完成", retryable: false } },
+    } }]);
+    const result = await finalizeNumeric(f.log, f.documents, {
+      ...f.args, presentation: "summary",
+    } as Parameters<typeof finalizeNumeric>[2], f.ctx);
+    expect(result).toMatchObject({ status: "ok", data: {
+      presentationUsed: "evidence", fallbackReason: expect.any(String),
+      finalText: expect.stringContaining("执行状态未知，不能确认是否完成"),
+    } });
+    expect((result.data as { finalText: string }).finalText).toContain("INTERNAL");
+  } finally { await f.close(); }
+});
+
+
+test("round seven summary preserves explicit parameter rejection detail without claiming recovery", async () => {
+  const f = await roundSevenSummaryFixture([["冲回分", "异常数"], [827, 5]]);
+  try {
+    f.log.append("s", "main", [{ type: "tool.result", data: {
+      toolName: "present", toolCallId: "rejected-parameter", status: "error",
+      result: { status: "error", error: { code: "INVALID_ARGUMENT", message: "binding未选择同次来源", retryable: false } },
+    } }]);
+    const result = await finalizeNumeric(f.log, f.documents, { ...f.args, presentation: "summary" }, f.ctx);
+    expect(result).toMatchObject({ status: "ok", data: { presentationUsed: "summary",
+      finalText: expect.stringContaining("binding未选择同次来源") } });
+    expect((result.data as { finalText: string }).finalText).toContain("不等同这些失败已恢复");
+  } finally { await f.close(); }
+});
+
+test("round seven summary preserves recovery facts even when a script reports no publications", async () => {
+  const f = await roundSevenSummaryFixture([["冲回分", "异常数"], [827, 5]]);
+  try {
+    f.log.append("s", "main", [{ type: "tool.result", data: {
+      toolName: "run_script", toolCallId: "recovery-facts", status: "ok",
+      result: { status: "ok", data: { published: [], rolledBack: ["rollback.xlsx"], unrecovered: ["unrecovered.xlsx"] } },
+    } }]);
+    const result = await finalizeNumeric(f.log, f.documents, { ...f.args, presentation: "summary" }, f.ctx);
+    expect(result).toMatchObject({ status: "ok", data: { presentationUsed: "evidence",
+      finalText: expect.stringContaining("unrecovered.xlsx") } });
+    expect((result.data as { finalText: string }).finalText).toContain("rollback.xlsx");
+  } finally { await f.close(); }
+});
+
+
+async function appendRoundSevenAlignmentReceipt(
+  f: Awaited<ReturnType<typeof roundSevenSummaryFixture>>,
+  status: "verified" | "failed" | "unverified",
+  rev: number,
+  malformed = false,
+  sourcePolicies: unknown[] = [],
+) {
+  const meta = f.documents.meta((f.edit.data as { docId: string }).docId)!;
+  const sourceFile = await f.documents.sourceStatus(meta.id, f.ctx.workspaceRoot);
+  const payload = {
+    docId: meta.id, path: "book.xlsx", mode: "source_alignment", docRevs: { [meta.id]: rev }, sourceFile,
+    verification: {
+      status, scope: "declared_fields_only",
+      target: { docId: meta.id, path: "book.xlsx", rev, sheet: "Data", range: f.range },
+      sources: [{ name: "original", docId: meta.id, path: "book.xlsx", rev, range: f.range }],
+      requiredColumns: ["E", "F"], coveredColumns: status === "verified" ? ["E", "F"] : ["E"],
+      uncoveredColumns: status === "verified" ? [] : ["F"],
+      declaredCellCount: 2, checkedCellCount: 2, failedCount: status === "failed" ? 1 : 0,
+      unverifiedCount: status === "unverified" ? 1 : 0, conflictKeyCount: 0, sourcePolicies,
+      failures: status === "verified" ? [] : [{ targetCell: "Data!F2", ruleIndex: 0, code: "VALUE_MISMATCH" }],
+      failuresTruncated: false, limitation: "只校验声明字段，不证明全部业务要求或未声明列",
+    },
+    ...(!malformed ? { versionBindings: [{ docId: meta.id, path: "book.xlsx", rev,
+      sha256: sourceFile.currentSha256, checkpointRev: rev, isCurrentSaved: true }] } : {}),
+  };
+  f.log.append("s", "main", [{ type: "tool.result", data: {
+    toolName: "workbook_analyze", toolCallId: `alignment-${status}-${rev}`, status: "ok",
+    result: { status: "ok", data: payload },
+  } }]);
+}
+
+test.each(["failed", "unverified"] as const)("round seven alignment %s and uncovered fields remain visible in summary and evidence", async (status) => {
+  const f = await roundSevenSummaryFixture([["冲回分", "异常数"], [827, 5]]);
+  try {
+    const rev = f.documents.meta((f.edit.data as { docId: string }).docId)!.rev;
+    await appendRoundSevenAlignmentReceipt(f, status, rev);
+    for (const presentation of ["summary", "evidence"] as const) {
+      const result = await finalizeNumeric(f.log, f.documents, { ...f.args, presentation }, f.ctx);
+      expect(result).toMatchObject({ status: "ok", data: { finalText: expect.stringContaining(status) } });
+      const text = (result.data as { finalText: string }).finalText;
+      expect(text).toContain("未覆盖：F");
+      expect(text).toContain("交付时未重新校验");
+    }
+  } finally { await f.close(); }
+});
+
+test("round seven alignment stale green never certifies newer file or hides previous failure", async () => {
+  const f = await roundSevenSummaryFixture([["冲回分", "异常数"], [827, 5]]);
+  try {
+    const rev = f.documents.meta((f.edit.data as { docId: string }).docId)!.rev;
+    await appendRoundSevenAlignmentReceipt(f, "failed", rev - 1);
+    await appendRoundSevenAlignmentReceipt(f, "verified", rev - 1);
+    const result = await finalizeNumeric(f.log, f.documents, { ...f.args, presentation: "summary" }, f.ctx);
+    expect(result).toMatchObject({ status: "ok" });
+    const text = (result.data as { finalText: string }).finalText;
+    expect(text).toContain(`基于修订${rev - 1}`);
+    expect(text).toContain(`当前修订${rev}`);
+    expect(text).toContain("更早还有1次failed/unverified/未知回执");
+    expect(text).toContain("交付时未重新校验");
+  } finally { await f.close(); }
+});
+
+test("round seven alignment malformed host receipt is explicitly unknown", async () => {
+  const f = await roundSevenSummaryFixture([["冲回分", "异常数"], [827, 5]]);
+  try {
+    await appendRoundSevenAlignmentReceipt(f, "verified", 1, true);
+    const result = await finalizeNumeric(f.log, f.documents, { ...f.args, presentation: "summary" }, f.ctx);
+    expect(result).toMatchObject({ status: "ok", data: { finalText: expect.stringContaining("字段校验回执未知") } });
+  } finally { await f.close(); }
+});
+
+
+test("round seven summary shares its 32-cell budget across distinct tool calls", async () => {
+  const f = await roundSevenSummaryFixture([["指标", "值"], ...Array.from({ length: 8 }, (_, i) => [`项${i}`, i])]);
+  try {
+    await f.execute("workbook_read", { path: "book.xlsx", mode: "range", range: f.range, facets: ["values"] }, "second-window");
+    const second = (await visibleProviderReceipt(f, "second-window"))!;
+    const refId = second.candidates.items.find((item) => item.pointer === "/data/values")!.refId;
+    const result = await finalizeNumeric(f.log, f.documents, {
+      ...f.args, sources: [...f.args.sources, { refId }], presentation: "summary",
+    }, f.ctx);
+    expect(result).toMatchObject({ status: "ok", data: { presentationUsed: "evidence", fallbackReason: expect.stringContaining("32") } });
+  } finally { await f.close(); }
+});
+
+test("round seven alignment does not trust script-returned lookalike data", async () => {
+  const f = await roundSevenSummaryFixture([["冲回分", "异常数"], [827, 5]]);
+  try {
+    f.log.append("s", "main", [{ type: "tool.result", data: {
+      toolName: "run_script", toolCallId: "script-lookalike", status: "ok",
+      result: { status: "ok", data: { published: [], value: {
+        mode: "source_alignment", verification: { status: "verified", coveredColumns: ["FORGED"] },
+      } } },
+    } }]);
+    const result = await finalizeNumeric(f.log, f.documents, { ...f.args, presentation: "summary" }, f.ctx);
+    expect(result).toMatchObject({ status: "ok", data: { presentationUsed: "summary" } });
+    const text = (result.data as { finalText: string }).finalText;
+    expect(text).not.toContain("字段校验回执");
+    expect(text).not.toContain("FORGED");
+  } finally { await f.close(); }
+});
+
+
+test("round seven three foreign-call bindings receive one complete verified repair list", async () => {
+  const f = await roundSevenSummaryFixture([["指标（元）", "金额（元）"], ["项目甲", 1], ["项目乙", 2], ["项目丙", 3]]);
+  try {
+    await f.execute("workbook_read", { path: "book.xlsx", mode: "range", range: f.range, facets: ["values"] }, "three-binding-read");
+    const other = (await visibleProviderReceipt(f, "three-binding-read"))!;
+    const unique = new Map(other.bindingCandidates.items.filter((item) => item.unit.sourcePointer).map((item) => [item.valueRefId, item]));
+    const selected = [...unique.values()].slice(0, 3);
+    expect(selected).toHaveLength(3);
+    const result = await finalizeNumeric(f.log, f.documents, { ...f.args,
+      bindings: selected.map((item) => ({ bindingId: item.bindingId })),
+    }, f.ctx);
+    expect(result).toMatchObject({ status: "error", error: { code: "INVALID_ARGUMENT" } });
+    expect(result.error?.message).toContain(JSON.stringify(selected.map((item) => ({ refId: item.valueRefId }))));
+    expect(result.error?.message).toContain("不会自动");
+  } finally { await f.close(); }
+});
+
+
+test("round seven alignment discloses exact filter duplicate conflict policy and source range", async () => {
+  const f = await roundSevenSummaryFixture([["冲回分", "异常数"], [827, 5]]);
+  try {
+    const rev = f.documents.meta((f.edit.data as { docId: string }).docId)!.rev;
+    const policies = [{ ruleIndex: 0, source: "original", where: [{ column: "状态", equals: "纳入" }],
+      duplicatePolicy: "identical_rows", duplicateColumns: ["标识", "状态"], conflictPolicy: "expect_blank" }];
+    await appendRoundSevenAlignmentReceipt(f, "verified", rev, false, policies);
+    const result = await finalizeNumeric(f.log, f.documents, { ...f.args, presentation: "summary" }, f.ctx);
+    expect(result).toMatchObject({ status: "ok", data: { presentationUsed: "summary" } });
+    const text = (result.data as { finalText: string }).finalText;
+    expect(text).toContain(JSON.stringify(policies));
+    expect(text).toContain("original=book.xlsx");
+    expect(text).toContain(f.range);
+    expect(text).toContain("严格类型");
+  } finally { await f.close(); }
+});
+
+test("round seven binding mismatch rejects and suggests only its verified same-call value ref", async () => {
+  const f = await roundSevenSummaryFixture([["指标（元）", "金额（元）"], ["合计", 827]]);
+  try {
+    await f.execute("workbook_read", { path: "book.xlsx", mode: "range", range: f.range, facets: ["values"] }, "other-read");
+    const other = (await visibleProviderReceipt(f, "other-read"))!;
+    const binding = other.bindingCandidates.items.find((item) => item.unit.sourcePointer)!;
+    const result = await finalizeNumeric(f.log, f.documents, {
+      ...f.args, bindings: [{ bindingId: binding.bindingId }],
+    }, f.ctx);
+    expect(result).toMatchObject({ status: "error", error: { code: "INVALID_ARGUMENT" } });
+    expect(result.error?.message).toContain("other-read");
+    expect(result.error?.message).toContain(JSON.stringify([{ refId: binding.valueRefId }]));
+    expect(result.error?.message).toContain("不会自动");
+  } finally { await f.close(); }
+});
+
+
+test("round eight summary collects independent blockers and ends incomplete with full audit and files", async () => {
+  const f = await roundSevenSummaryFixture([["指标", "值"], ...Array.from({ length: 16 }, (_, i) => [`指标${i}`, i])]);
+  try {
+    f.log.append("s", "main", [{ type: "tool.result", data: {
+      toolName: "run_script", toolCallId: "historical-failure", status: "error",
+      result: { status: "error", error: { code: "SANDBOX_ERROR", message: "invalid edit at=0", retryable: false } },
+    } }]);
+    const result = await finalizeNumeric(f.log, f.documents, { ...f.args, presentation: "summary" }, f.ctx);
+    expect(result).toMatchObject({ status: "ok", data: {
+      finalizationStatus: "incomplete", presentationUsed: "evidence", presentationSatisfied: false,
+      summaryDiagnostics: { complete: true, overflow: false, blockers: expect.arrayContaining([
+        expect.objectContaining({ code: "SUMMARY_CELL_LIMIT", actual: 34, limit: 32 }),
+        expect.objectContaining({ code: "SCRIPT_PUBLICATION_UNKNOWN", toolCallId: "historical-failure" }),
+      ]) },
+      deliveredFiles: [expect.objectContaining({ path: "book.xlsx" })],
+    } });
+    const data = result.data as { finalText: string; auditText: string };
+    expect(data.finalText).toContain(data.auditText);
+    expect(data.finalText).toContain("简短呈现要求未满足");
+    expect(data.finalText).toContain("invalid edit at=0");
+    expect(f.log.readAfter("s", 0, 1000).some((row) => row.type === "ui.present" && row.data.path === "book.xlsx")).toBe(true);
+  } finally { await f.close(); }
+});
+
+test("round eight summary diagnostics are finite and hard evidence gates do not claim complete diagnostics", async () => {
+  const f = await roundSevenSummaryFixture([["指标", "值"], ["净分", 827]]);
+  try {
+    for (let i = 0; i < 45; i++) f.log.append("s", "main", [{ type: "tool.result", data: {
+      toolName: "run_script", toolCallId: `unknown-${i}`, status: "error",
+      result: { status: "error", error: { code: "SANDBOX_ERROR", message: "x", retryable: false } },
+    } }]);
+    const result = await finalizeNumeric(f.log, f.documents, { ...f.args, presentation: "summary" }, f.ctx);
+    expect(result).toMatchObject({ status: "ok", data: { finalizationStatus: "incomplete",
+      summaryDiagnostics: { complete: false, overflow: true, limit: 32 } } });
+    expect((result.data as { summaryDiagnostics: { blockers: unknown[] } }).summaryDiagnostics.blockers).toHaveLength(32);
+    const hard = await finalizeNumeric(f.log, f.documents, { status: "complete", presentation: "summary", sources: [{ refId: "invented" }] }, f.ctx);
+    expect(hard.status).toBe("error");
+    expect(hard.data).toBeUndefined();
+  } finally { await f.close(); }
+});
+
+test("round eight A2-shaped 30+9+91+45 selection reports 175 cells and the independent historical publication blocker", async () => {
+  const f = await fixture();
+  try {
+    f.ctx.turnId = "a2-shaped";
+    f.log.append("s", "main", [{ type: "turn.started", data: { turnId: f.ctx.turnId } }]);
+    const windows = [["Data!E1:F15", 15, 2], ["Data!H1:J3", 3, 3], ["Data!L1:X7", 7, 13], ["Data!Z1:AH5", 5, 9]] as const;
+    const write = await f.execute("workbook_edit", { path: "book.xlsx", ops: windows.map(([range, rows, cols]) => ({
+      op: "cells.set", range, values: Array.from({ length: rows }, (_, row) => Array.from({ length: cols }, (_, col) => row === 0 ? `原文列${col}` : row * 10 + col)),
+    })) }, "a2-write");
+    expect(write.status).toBe("ok");
+    const id = (f.edit.data as { docId: string }).docId;
+    await vi.waitFor(() => expect(f.documents.meta(id)!.checkpointRev).toBe(f.documents.meta(id)!.rev), { timeout: 5000 });
+    const sources: { refId: string }[] = [];
+    for (const [i, [range]] of windows.entries()) {
+      await f.execute("workbook_read", { path: "book.xlsx", mode: "range", range, facets: ["values"] }, `a2-read-${i}`);
+      const evidence = (await visibleProviderReceipt(f, `a2-read-${i}`))!;
+      sources.push({ refId: evidence.candidates.items.find((item) => item.pointer === "/data/values")!.refId });
+    }
+    f.log.append("s", "main", [{ type: "tool.result", data: { toolName: "run_script", toolCallId: "a2-old-failure", status: "error", result: {
+      status: "error", error: { code: "SANDBOX_ERROR", message: "at=0 rejected", retryable: false },
+    } } }]);
+    const result = await finalizeNumeric(f.log, f.documents, { status: "complete", presentation: "summary", sources }, f.ctx);
+    expect(result, JSON.stringify(result)).toMatchObject({ status: "ok", data: { finalizationStatus: "incomplete", summaryDiagnostics: {
+      complete: true, blockers: expect.arrayContaining([
+        expect.objectContaining({ code: "SUMMARY_CELL_LIMIT", actual: 175, limit: 32 }),
+        expect.objectContaining({ code: "SCRIPT_PUBLICATION_UNKNOWN", toolCallId: "a2-old-failure" }),
+      ]),
+    } } });
+  } finally { await f.close(); }
+});
+
+test("round eight invalid heading and body report independent blockers before complete diagnostics", async () => {
+  const f = await roundSevenSummaryFixture([["", "金额"], ["001", null], ["002", 2]] as (string | number)[][]);
+  try {
+    const result = await finalizeNumeric(f.log, f.documents, { ...f.args, presentation: "summary" }, f.ctx);
+    expect(result).toMatchObject({ status: "ok", data: { finalizationStatus: "incomplete", summaryDiagnostics: { complete: true,
+      blockers: expect.arrayContaining([expect.objectContaining({ code: "WINDOW_HEADERS_INVALID" }), expect.objectContaining({ code: "WINDOW_CELLS_INVALID" })]),
+    } } });
+  } finally { await f.close(); }
+});
+
+test("round eight present schema only accepts current bindingId objects, not obsolete relationship advice", async () => {
+  const f = await roundSevenSummaryFixture([["对象", "金额（分）"], ["001", 827]]);
+  try {
+    const evidence = (await visibleProviderReceipt(f, "summary-read"))!;
+    const binding = evidence.bindingCandidates.items[0]!;
+    expect(binding).toBeDefined();
+    expect(f.present.input.safeParse({ finalize: { ...f.args, presentation: "summary", bindings: [{ bindingId: binding.bindingId }] } }).success).toBe(true);
+    expect(f.present.input.safeParse({ finalize: { ...f.args, bindings: [{ valueRefId: binding.valueRefId, labelRefId: binding.labelRefId, relation: "same_column" }] } }).success).toBe(false);
+    expect(f.present.description.slice(0, 120)).toContain('"presentation":"summary"');
+  } finally { await f.close(); }
+});
+
+test.each([
+  'await wb.edit({path:"book.xlsx",ops:[{op:"cols.width",sheet:"Data",at:0,count:1,mode:"pixels",pixels:60}]});',
+  'await wb.edit({path:"book.xlsx",ops:[{op:"cells.set",range:"Data!A2",values:[[999]]}]}); await wb.edit({path:"book.xlsx",ops:[{op:"cols.width",sheet:"Data",at:0,count:1,mode:"pixels",pixels:60}]});',
+  'await files.writeText({path:"staged.txt",content:"temporary"}); throw new Error("after staging");',
+])("round eight actual prepublication failure is host-owned and supports an accurate short failure note %#", async (code) => {
+  const f = await roundSevenSummaryFixture([["指标", "值"], ["净分", 827]]);
+  try {
+    const id = (f.edit.data as { docId: string }).docId, rev = f.documents.meta(id)!.rev;
+    const script = await f.execute("run_script", { code }, "prepublish");
+    expect(script).toMatchObject({ status: "error", data: { publicationPhase: "not_started", published: [], committedRevs: [] } });
+    expect(f.documents.meta(id)!.rev).toBe(rev);
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM doc_ops WHERE tool_call_id='prepublish'").get()).toMatchObject({ n: 0 });
+    const result = await finalizeNumeric(f.log, f.documents, { ...f.args, presentation: "summary" }, f.ctx);
+    expect(result).toMatchObject({ status: "ok", data: { finalizationStatus: "complete", presentationUsed: "summary" } });
+    const text = (result.data as { finalText: string }).finalText;
+    expect(text).toContain("未进入发布阶段");
+    expect(text.replaceAll("&gt;", ">")).toContain(script.error!.message.replaceAll("\n", "\\n"));
+    expect(text).toContain("不等同这些失败已恢复");
+    expect(text).not.toContain("无副作用");
+    expect(text).not.toContain("清理成功");
+  } finally { await f.close(); }
+});
+
+test("round eight cleanup failure does not turn prepublication into a recovery or cleanup claim", async () => {
+  const fs = (await import("node:fs")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const f = await fixture();
+  const original = fs.rmSync;
+  let cleanupAttempted = false;
+  const spy = vi.spyOn(fs, "rmSync").mockImplementation((path, options) => {
+    if (String(path).endsWith("script-cleanup-probe")) { cleanupAttempted = true; throw Error("synthetic cleanup failure"); }
+    original(path, options);
+  });
+  syncBuiltinESMExports();
+  try {
+    const result = await f.execute("run_script", { code: 'await files.writeText({path:"staged.txt",content:"temp"}); throw Error("before publish");' }, "cleanup-probe");
+    expect(cleanupAttempted).toBe(true);
+    expect(result).toMatchObject({ status: "error", data: { publicationPhase: "not_started", published: [], committedRevs: [] } });
+    expect(result.error?.message).toContain("before publish");
+    expect(result.data).not.toHaveProperty("cleanupSucceeded");
+  } finally { spy.mockRestore(); syncBuiltinESMExports(); await f.close(); }
+});
+
+test("round eight concurrent script calls keep host prepublication metadata isolated", async () => {
+  const f = await fixture();
+  try {
+    const [failed, succeeded] = await Promise.all([
+      f.execute("run_script", { code: 'await files.writeText({path:"staged.txt",content:"temp"}); throw Error("isolated failure");' }, "concurrent-failure"),
+      f.execute("run_script", { code: 'return {publicationPhase:"not_started",published:[]};' }, "concurrent-success"),
+    ]);
+    expect(failed).toMatchObject({ status: "error", data: { publicationPhase: "not_started", published: [], committedRevs: [] } });
+    expect(succeeded).toMatchObject({ status: "ok", data: { published: [] } });
+    expect((succeeded.data as Record<string, unknown>).publicationPhase).toBeUndefined();
+  } finally { await f.close(); }
+});
+
+test("round eight successful no-write script cannot promote script-returned or stdout publication phase", async () => {
+  const f = await roundSevenSummaryFixture([["指标", "值"], ["净分", 827]]);
+  try {
+    const result = await f.execute("run_script", { code: 'console.log(JSON.stringify({publicationPhase:"not_started"})); return {publicationPhase:"not_started",published:[],committedRevs:[]};' }, "no-write");
+    expect(result).toMatchObject({ status: "ok", data: { published: [], value: { publicationPhase: "not_started" } } });
+    expect((result.data as Record<string, unknown>).publicationPhase).toBeUndefined();
+  } finally { await f.close(); }
+});
+
+test.each([
+  { value: { publicationPhase: "not_started", published: [], committedRevs: [] }, stdout: ['{"publicationPhase":"not_started"}'] },
+  { publicationPhase: "not_started", published: [{ path: "partial.xlsx" }], committedRevs: [] },
+  { publicationPhase: "not_started", published: [], committedRevs: [{ path: "committed.xlsx", rev: 2 }] },
+  { publicationPhase: "not_started", published: [], committedRevs: [], rolledBack: ["rollback.xlsx"] },
+  { publicationPhase: "not_started", published: [], committedRevs: [], unrecovered: ["unrecovered.xlsx"] },
+])("round eight unknown or contradictory script phase never suppresses mandatory disclosures %#", async (data) => {
+  const f = await roundSevenSummaryFixture([["指标", "值"], ["净分", 827]]);
+  try {
+    f.log.append("s", "main", [{ type: "tool.result", data: { toolName: "run_script", toolCallId: "contradiction", status: "error", result: {
+      status: "error", error: { code: "SANDBOX_ERROR", message: "historical failure", retryable: false }, data,
+    } } }]);
+    const result = await finalizeNumeric(f.log, f.documents, { ...f.args, presentation: "summary" }, f.ctx);
+    expect(result).toMatchObject({ status: "ok", data: { finalizationStatus: "incomplete", presentationUsed: "evidence",
+      summaryDiagnostics: { blockers: expect.arrayContaining([expect.objectContaining({ code: "SCRIPT_PUBLICATION_UNKNOWN" })]) } } });
+    expect((result.data as { finalText: string }).finalText).toContain("historical failure");
+  } finally { await f.close(); }
+});
+
+test.each([false, true])("round eight actual partial commit rollback retains conservative receipt: rollbackFailure=%s", async (rollbackFailure) => {
+  const f = await fixture();
+  try {
+    const id = (f.edit.data as { docId: string }).docId;
+    await vi.waitFor(() => expect(f.documents.meta(id)!.checkpointRev).toBe(f.documents.meta(id)!.rev));
+    mkdirSync(join(f.dir, "notes"));
+    writeFileSync(join(f.dir, "notes/out.txt"), "before");
+    if (rollbackFailure) vi.spyOn(f.documents, "revert").mockRejectedValueOnce(new Error("injected rollback failure"));
+    f.ctx.requestApproval = async () => { rmSync(join(f.dir, "notes"), { recursive: true }); return { decision: "approved" }; };
+    const result = await f.execute("run_script", { code: 'await wb.edit({path:"book.xlsx",ops:[{op:"cells.set",range:"Data!A2",values:[[999]]}]}); await files.writeText({path:"notes/out.txt",content:"after"});' }, "partial-publish");
+    expect(result).toMatchObject({ status: rollbackFailure ? "uncertain" : "error", data: {
+      committedRevs: [expect.objectContaining({ docId: id })], published: [expect.objectContaining({ path: "book.xlsx" })],
+      [rollbackFailure ? "unrecovered" : "rolledBack"]: ["book.xlsx"],
+    } });
+    expect((result.data as Record<string, unknown>).publicationPhase).toBeUndefined();
+  } finally { vi.restoreAllMocks(); await f.close(); }
+});
+
+async function roundNineSqlFixture(sql = 'SELECT COUNT(*) AS "记录数", SUM("Qty") AS "总量" FROM data', args: Record<string, unknown> = {}) {
+  const f = await roundSevenSummaryFixture([["对象", "净分"], ["001", 25]]);
+  const result = await f.execute("workbook_analyze", {
+    path: "book.xlsx", mode: "sql", range: "Data!A1:B3", sql, ...args,
+  }, "sql-summary");
+  expect(result, JSON.stringify(result)).toMatchObject({ status: "ok" });
+  const evidence = (await visibleProviderReceipt(f, "sql-summary"))!;
+  const root = evidence.candidates.items.find((item) => item.pointer === "/data/rows")!;
+  expect(root).toBeDefined();
+  return { ...f, sqlResult: result, sqlEvidence: evidence, sqlArgs: {
+    status: "complete" as const, presentation: "summary" as const, sources: [{ refId: root.refId }],
+  } };
+}
+
+test("round nine real SQL aggregate present renders same-call headers and saved file without losing audit", async () => {
+  const f = await roundNineSqlFixture();
+  try {
+    const audit = await finalizeNumeric(f.log, f.documents, { ...f.sqlArgs, presentation: "evidence" }, f.ctx);
+    const result = await f.present.execute({ finalize: f.sqlArgs }, f.ctx);
+    expect(result, JSON.stringify(result)).toMatchObject({ status: "ok", data: {
+      finalizationStatus: "complete", presentationUsed: "summary",
+      auditText: (audit.data as { finalText: string }).finalText,
+      deliveredFiles: [{ path: "book.xlsx" }],
+    } });
+    const rendered = (result.data as { finalText: string }).finalText;
+    for (const value of ["SQL 查询结果", "sql-summary", "记录数", "总量", "| 2 | 5 |", "SELECT COUNT(\\*)", "data", "Data!A1:B3", "rev", "非 Excel 格式化显示", "不证明原始行覆盖"])
+      expect(rendered).toContain(value);
+    expect(f.sqlEvidence.bindingCandidates.items).toEqual([]);
+    expect((result.data as { auditText: string }).auditText).toContain("未提供格式信息");
+  } finally { await f.close(); }
+});
+
+type RoundNineFixture = Awaited<ReturnType<typeof roundNineSqlFixture>>;
+function roundNineMutateReceipt(f: RoundNineFixture, mutate: (data: Record<string, unknown>) => void, visibleOnly = false) {
+  const row = f.db.prepare("SELECT seq,data FROM session_log WHERE type='tool.result' AND json_extract(data,'$.toolCallId')='sql-summary'").get() as { seq: number; data: string };
+  const receipt = JSON.parse(row.data);
+  mutate(receipt.result.data);
+  if (!visibleOnly) f.db.prepare("UPDATE session_log SET data=? WHERE seq=?").run(JSON.stringify(receipt), row.seq);
+  const itemRow = f.db.prepare("SELECT idx,item FROM agent_context WHERE from_seq=? AND session_id='s' AND agent_id='main'").get(row.seq) as { idx: number; item: string };
+  const item = JSON.parse(itemRow.item);
+  item.output = receipt.result;
+  f.db.prepare("UPDATE agent_context SET item=? WHERE idx=? AND session_id='s' AND agent_id='main'").run(JSON.stringify(item), itemRow.idx);
+}
+function roundNineFallback(result: ToolResult, code: string) {
+  expect(result, JSON.stringify(result)).toMatchObject({ status: "ok", data: {
+    finalizationStatus: "incomplete", presentationUsed: "evidence",
+    deliveredFiles: [{ path: "book.xlsx" }],
+    summaryDiagnostics: { blockers: expect.arrayContaining([expect.objectContaining({ code })]) },
+  } });
+  const data = result.data as { finalText: string; auditText: string };
+  expect(data.finalText).toContain(data.auditText);
+}
+
+test.each([
+  ["long form", "SELECT '明细条数' AS 项目, COUNT(*) AS 值 FROM data UNION ALL SELECT '异常条数', 1 UNION ALL SELECT '2026-08 数量件合计', 6 UNION ALL SELECT '2026-08 收入元合计', 140 UNION ALL SELECT '2026-09 数量件合计', 5 UNION ALL SELECT '2026-09 收入元合计', 130", ['| "项目" | "值" |', '| "明细条数" | 2 |', '| "2026-09 收入元合计" | 130 |']],
+  ["typed cells", "SELECT '001' AS identifier, '9007199254740993' AS largeId, 0 AS zero, -2.5 AS net, 2 AS '001', 2026 AS month2026", ['| "001" | "9007199254740993" | 0 | -2.5 | 2 | 2026 |', '"month2026"', '"001"']],
+  ["zero count", "SELECT COUNT(*) AS 'COUNT(*)' FROM data WHERE Qty < 0", ['| 0 |']],
+  ["literal unit alias", "SELECT SUM(Amount) AS 'total(USD)' FROM data WHERE Qty > 1 LIMIT 1", ['"total(USD)"', "WHERE Qty &gt; 1 LIMIT 1", "不认证业务口径或单位"]],
+])("round nine real SQL preserves %s", async (_name, sql, expected) => {
+  const f = await roundNineSqlFixture(sql);
+  try {
+    const result = await finalizeNumeric(f.log, f.documents, f.sqlArgs, f.ctx);
+    expect(result, JSON.stringify(result)).toMatchObject({ status: "ok", data: { finalizationStatus: "complete", presentationUsed: "summary" } });
+    const text = (result.data as { finalText: string }).finalText;
+    for (const part of expected) expect(text).toContain(part);
+    expect(text).not.toContain("单位：USD");
+    expect(f.sqlEvidence.bindingCandidates.items).toEqual([]);
+  } finally { await f.close(); }
+});
+
+test("round nine SQL string and query Markdown remain literal rather than links or images", async () => {
+  const tick = String.fromCharCode(96);
+  const f = await roundNineSqlFixture("SELECT '[claimed](https://example.invalid)' AS '[header]', '![999](x)' AS image, '" + tick + "code" + tick + "*bold*~~100~~|<x>' AS text, 7 AS metric");
+  try {
+    const result = await finalizeNumeric(f.log, f.documents, f.sqlArgs, f.ctx);
+    expect(result, JSON.stringify(result)).toMatchObject({ status: "ok", data: { presentationUsed: "summary" } });
+    const text = (result.data as { finalText: string }).finalText;
+    for (const literal of ["\\[claimed\\]", "!\\[999\\]", "\\" + tick + "code\\" + tick + "\\*bold\\*", "&#124;&lt;x&gt;", "\\[header\\]", "\\~\\~100\\~\\~"]) expect(text).toContain(literal);
+    expect(text).not.toContain("[claimed](https://example.invalid)");
+  } finally { await f.close(); }
+});
+
+test.each(["NULL", "''", "'   '", "'#DIV/0!'", "9007199254740992.0", "1e999"])(
+  "round nine SQL unsupported real cell %s retains complete audit and cards", async (value) => {
+    const f = await roundNineSqlFixture("SELECT " + value + " AS identity, 7 AS metric");
+    try { roundNineFallback(await finalizeNumeric(f.log, f.documents, f.sqlArgs, f.ctx), "WINDOW_CELLS_INVALID"); }
+    finally { await f.close(); }
+  });
+
+test.each(["'2'", "'1'", "'0'", "'4294967294'"])(
+  "round nine real SQL rejects canonical index header %s without repairing producer order", async (header) => {
+    const f = await roundNineSqlFixture("SELECT 'actual text' AS label, 7 AS " + header);
+    try { roundNineFallback(await finalizeNumeric(f.log, f.documents, f.sqlArgs, f.ctx), "WINDOW_HEADERS_INVALID"); }
+    finally { await f.close(); }
+  });
+
+test.each([
+  ["boolean", (d: Record<string, unknown>) => { d.rows = [[true, 5]]; }, "WINDOW_CELLS_INVALID"],
+  ["object", (d: Record<string, unknown>) => { d.rows = [[{ misleading: 2 }, 5]]; }, "WINDOW_CELLS_INVALID"],
+  ["nested array", (d: Record<string, unknown>) => { d.rows = [[[2], 5]]; }, "WINDOW_CELLS_INVALID"],
+  ["ragged", (d: Record<string, unknown>) => { d.rows = [[2]]; }, "WINDOW_CELLS_INVALID"],
+  ["missing columns", (d: Record<string, unknown>) => { delete d.columns; }, "SOURCE_WINDOW_UNSUPPORTED"],
+  ["duplicate columns", (d: Record<string, unknown>) => { d.columns = ["same", "same"]; }, "WINDOW_HEADERS_INVALID"],
+  ["empty column", (d: Record<string, unknown>) => { d.columns = ["", "total"]; }, "WINDOW_HEADERS_INVALID"],
+  ["missing count", (d: Record<string, unknown>) => { delete d.rowCount; }, "SOURCE_WINDOW_UNSUPPORTED"],
+  ["wrong count", (d: Record<string, unknown>) => { d.rowCount = 2; }, "SOURCE_WINDOW_UNSUPPORTED"],
+  ["missing truncation", (d: Record<string, unknown>) => { delete d.truncated; }, "SOURCE_WINDOW_UNSUPPORTED"],
+  ["page marker", (d: Record<string, unknown>) => { d.nextCursor = "page2"; }, "SOURCE_WINDOW_UNSUPPORTED"],
+  ["contradictory error", (d: Record<string, unknown>) => { d.error = { code: "FAILED", message: "not complete" }; }, "SOURCE_WINDOW_UNSUPPORTED"],
+  ["multiple result sets", (d: Record<string, unknown>) => { d.resultSets = []; }, "SOURCE_WINDOW_UNSUPPORTED"],
+] as const)("round nine malformed same-call SQL %s cannot become a complete summary", async (_name, mutate, code) => {
+  const f = await roundNineSqlFixture();
+  try { roundNineMutateReceipt(f, mutate); roundNineFallback(await finalizeNumeric(f.log, f.documents, f.sqlArgs, f.ctx), code); }
+  finally { await f.close(); }
+});
+
+test.each(["columns", "sql", "rowCount", "truncated"])(
+  "round nine hidden or mismatching visible SQL %s cannot borrow recorded metadata", async (field) => {
+    const f = await roundNineSqlFixture();
+    try {
+      roundNineMutateReceipt(f, (data) => { if (field === "columns") data.columns = ["fake", "headers"]; else delete data[field]; }, true);
+      roundNineFallback(await finalizeNumeric(f.log, f.documents, f.sqlArgs, f.ctx), "SOURCE_WINDOW_UNSUPPORTED");
+    } finally { await f.close(); }
+  });
+
+test.each(["missing", "other agent", "duplicate"])("round nine %s SQL intent is not an input-scope proof", async (kind) => {
+  const f = await roundNineSqlFixture();
+  try {
+    const row = f.db.prepare("SELECT seq,data FROM session_log WHERE type='tool.intent' AND json_extract(data,'$.toolCallId')='sql-summary'").get() as { seq: number; data: string };
+    if (kind === "duplicate") {
+      // Preserve the before-result order while duplicating the call identity on an earlier real intent.
+      f.db.prepare("UPDATE session_log SET data=? WHERE type='tool.intent' AND json_extract(data,'$.toolCallId')='summary-read'").run(row.data);
+    } else if (kind === "other agent") f.db.prepare("UPDATE session_log SET agent_id='other' WHERE seq=?").run(row.seq);
+    else f.db.prepare("UPDATE session_log SET data=json_set(data,'$.toolCallId','missing') WHERE seq=?").run(row.seq);
+    roundNineFallback(await finalizeNumeric(f.log, f.documents, f.sqlArgs, f.ctx), "SOURCE_WINDOW_UNSUPPORTED");
+  } finally { await f.close(); }
+});
+
+test.each([
+  ["unclipped explicit", { range: "'Data'!A1:B3", sheet: "ignored" }, true],
+  ["whole sheet", { range: undefined }, true],
+  ["clipped explicit", { range: "Data!A1:XFD1048576" }, false],
+  ["clipped unused alias", { sources: [{ name: "unused", range: "Data!A1:XFD1048576" }] }, false],
+])("round nine actual input intent detects %s", async (_name, args, complete) => {
+  const f = await roundNineSqlFixture(undefined, args);
+  try {
+    const result = await finalizeNumeric(f.log, f.documents, f.sqlArgs, f.ctx);
+    if (complete) expect(result, JSON.stringify(result)).toMatchObject({ status: "ok", data: { finalizationStatus: "complete" } });
+    else roundNineFallback(result, "SOURCE_WINDOW_UNSUPPORTED");
+  } finally { await f.close(); }
+});
+
+test.each([23, 24, 27, 32, 33, 39])("round nine combined SQL and range header budget is %i, without pruning", async (cells) => {
+  const layout: Record<number, [number, number, number[]]> = { 23: [3, 3, [7]], 24: [2, 6, [6]], 27: [5, 3, [6]], 32: [2, 13, [3]], 33: [3, 9, [3]], 39: [5, 3, [7, 5]] };
+  const [width, rows, counts] = layout[cells]!;
+  const values = [Array.from({ length: width }, (_, i) => "column" + i),
+    ...Array.from({ length: rows - 1 }, (_, r) => Array.from({ length: width }, (_, c) => r + c))];
+  const f = await roundSevenSummaryFixture(values);
+  try {
+    const sources = [...f.args.sources];
+    for (const [index, count] of counts.entries()) {
+      const id = "budget-sql-" + index;
+      await f.execute("workbook_analyze", { path: "book.xlsx", mode: "sql", range: "Data!A1:B3",
+        sql: "SELECT " + Array.from({ length: count }, (_, i) => (i + 10) + " AS column" + i).join(", ") }, id);
+      const receipt = (await visibleProviderReceipt(f, id))!;
+      sources.push({ refId: receipt.candidates.items.find((item) => item.pointer === "/data/rows")!.refId });
+    }
+    const result = await finalizeNumeric(f.log, f.documents, { ...f.args, sources: [...sources, ...sources], presentation: "summary" }, f.ctx);
+    if (cells <= 32) expect(result, JSON.stringify(result)).toMatchObject({ status: "ok", data: { finalizationStatus: "complete" } });
+    else {
+      roundNineFallback(result, "SUMMARY_CELL_LIMIT");
+      expect(result).toMatchObject({ data: { summaryDiagnostics: { blockers: expect.arrayContaining([
+        expect.objectContaining({ code: "SUMMARY_CELL_LIMIT", actual: cells, limit: 32 }),
+      ]) } } });
+    }
+  } finally { await f.close(); }
+});
+
+test("round nine root-only SQL does not promote scalar subset or a truncated preview", async () => {
+  const f = await roundNineSqlFixture();
+  try {
+    const scalar = f.sqlEvidence.candidates.items.find((item) => item.pointer === "/data/rows/0/0")!;
+    roundNineFallback(await finalizeNumeric(f.log, f.documents, { ...f.sqlArgs, sources: [{ refId: scalar.refId }] }, f.ctx), "SOURCE_WINDOW_UNSUPPORTED");
+    roundNineMutateReceipt(f, (data) => { data.truncated = true; });
+    expect(await finalizeNumeric(f.log, f.documents, f.sqlArgs, f.ctx)).toMatchObject({ status: "error", error: { code: "INVALID_ARGUMENT", message: expect.stringContaining("候选目录") } });
+  } finally { await f.close(); }
+});
+
+test("round nine SQL preserves an earlier parameter failure without claiming recovery", async () => {
+  const f = await roundNineSqlFixture();
+  try {
+    await f.execute("workbook_analyze", { path: "book.xlsx", mode: "sql", sql: "DELETE FROM data" }, "bad-sql");
+    const result = await finalizeNumeric(f.log, f.documents, f.sqlArgs, f.ctx);
+    expect(result, JSON.stringify(result)).toMatchObject({ status: "ok", data: { finalizationStatus: "complete", presentationUsed: "summary" } });
+    const text = (result.data as { finalText: string }).finalText;
+    expect(text).toContain("INVALID_ARGUMENT");
+    expect(text).not.toContain("恢复成功");
+  } finally { await f.close(); }
+});
+
+test("round nine same-valued distinct SQL calls count separately but exact roots deduplicate", async () => {
+  const sql = "SELECT 10 AS a, 11 AS b, 12 AS c, 13 AS d, 14 AS e, 15 AS f, 16 AS g";
+  const f = await roundNineSqlFixture(sql);
+  try {
+    const sources = [...f.sqlArgs.sources];
+    for (const id of ["same-two", "same-three"]) {
+      await f.execute("workbook_analyze", { path: "book.xlsx", mode: "sql", range: "Data!A1:B3", sql }, id);
+      const evidence = (await visibleProviderReceipt(f, id))!;
+      sources.push({ refId: evidence.candidates.items.find((item) => item.pointer === "/data/rows")!.refId });
+    }
+    const result = await finalizeNumeric(f.log, f.documents, { ...f.sqlArgs, sources: [...sources, ...sources] }, f.ctx);
+    roundNineFallback(result, "SUMMARY_CELL_LIMIT");
+    expect(result).toMatchObject({ data: { summaryDiagnostics: { blockers: expect.arrayContaining([
+      expect.objectContaining({ code: "SUMMARY_CELL_LIMIT", actual: 42, limit: 32 }),
+    ]) } } });
+  } finally { await f.close(); }
+});
+
+test("round nine combined SQL text budget includes all query, provenance, caveat and range text", async () => {
+  const sql = "SELECT 7 AS metric", caveat = "列名/单位仅查询输出原文，不认证业务口径或单位；非 Excel 格式化显示，不证明原始行覆盖。";
+  const base = await roundNineSqlFixture(sql);
+  let bodyLength = 0;
+  try {
+    const result = await finalizeNumeric(base.log, base.documents, { ...base.sqlArgs, sources: [...base.args.sources, ...base.sqlArgs.sources] }, base.ctx);
+    expect(result).toMatchObject({ status: "ok", data: { presentationUsed: "summary" } });
+    const text = (result.data as { finalText: string }).finalText;
+    const start = text.indexOf("book.xlsx · " + base.range), end = text.indexOf(caveat) + caveat.length;
+    expect(start).toBeGreaterThanOrEqual(0); expect(end).toBeGreaterThan(start);
+    bodyLength = text.slice(start, end).length;
+  } finally { await base.close(); }
+  for (const size of [2000, 2001]) {
+    const f = await roundNineSqlFixture(sql.replace("SELECT ", "SELECT " + " ".repeat(size - bodyLength)));
+    try {
+      const result = await finalizeNumeric(f.log, f.documents, { ...f.sqlArgs, sources: [...f.args.sources, ...f.sqlArgs.sources] }, f.ctx);
+      if (size === 2000) expect(result, JSON.stringify(result)).toMatchObject({ status: "ok", data: { finalizationStatus: "complete", presentationUsed: "summary" } });
+      else {
+        roundNineFallback(result, "SUMMARY_TEXT_LIMIT");
+        expect(result).toMatchObject({ data: { summaryDiagnostics: { blockers: expect.arrayContaining([
+          expect.objectContaining({ code: "SUMMARY_TEXT_LIMIT", actual: 2001, limit: 2000 }),
+        ]) } } });
+      }
+    } finally { await f.close(); }
+  }
+});
+
+test.each(["revision", "SHA"])("round nine SQL retains secondary source %s hard gate", async (kind) => {
+  const f = await roundNineSqlFixture();
+  try {
+    const other = await f.execute("workbook_edit", { path: "secondary.xlsx", create: true, sheetNames: ["Extra"],
+      ops: [{ op: "cells.set", range: "Extra!A1:A2", values: [["factor"], [2]] }] }, "secondary-write");
+    const id = (other.data as { docId: string }).docId;
+    await vi.waitFor(() => expect(f.documents.meta(id)!.checkpointRev).toBe(f.documents.meta(id)!.rev), { timeout: 5000 });
+    await f.execute("workbook_analyze", { path: "book.xlsx", mode: "sql", range: "Data!A1:B3",
+      sources: [{ name: "extra", path: "secondary.xlsx", range: "Extra!A1:A2" }],
+      sql: "SELECT SUM(Qty) * MAX(factor) AS total FROM data CROSS JOIN extra" }, "joined-summary");
+    const evidence = (await visibleProviderReceipt(f, "joined-summary"))!;
+    const args = { ...f.sqlArgs, sources: [{ refId: evidence.candidates.items.find((item) => item.pointer === "/data/rows")!.refId }] };
+    const current = await finalizeNumeric(f.log, f.documents, args, f.ctx);
+    expect(current, JSON.stringify(current)).toMatchObject({ status: "ok", data: { presentationUsed: "summary", deliveredFiles: [{ path: "book.xlsx" }, { path: "secondary.xlsx" }] } });
+    const file = join(f.dir, "secondary.xlsx"), original = readFileSync(file);
+    try {
+      if (kind === "revision") await f.execute("workbook_edit", { path: "secondary.xlsx", ops: [{ op: "cells.set", range: "Extra!A2", values: [[3]] }] }, "secondary-change");
+      else writeFileSync(file, Buffer.concat([original, Buffer.from("external")]));
+      expect(await finalizeNumeric(f.log, f.documents, args, f.ctx)).toMatchObject({ status: "error", error: { code: "VERSION_CONFLICT" } });
+    } finally { if (kind === "SHA") writeFileSync(file, original); }
+  } finally { await f.close(); }
+});
+
+test("round nine empty SQL rows are not certified as a numeric zero", async () => {
+  const f = await roundNineSqlFixture("SELECT Qty FROM data WHERE Qty < 0");
+  try {
+    expect(f.sqlResult).toMatchObject({ status: "ok", data: { rows: [], rowCount: 0, truncated: false } });
+    expect(await finalizeNumeric(f.log, f.documents, f.sqlArgs, f.ctx)).toMatchObject({ status: "error", error: { code: "INVALID_ARGUMENT" } });
+  } finally { await f.close(); }
+});
+
+test.each([
+  ["warnings string", { warnings: "not complete" }],
+  ["truncated object", { truncated: { shown: 1, total: 2, cursor: "more" } }],
+  ["truncated string", { truncated: "false" }],
+  ["complete string", { complete: "true" }],
+  ["visible error", { error: { code: "FAILED", message: "contradiction" } }],
+])("round nine visible-only top-level %s cannot hide behind intact SQL rows", async (_name, patch) => {
+  const f = await roundNineSqlFixture();
+  try {
+    const row = f.db.prepare("SELECT idx,item FROM agent_context WHERE session_id='s' AND agent_id='main' AND json_extract(item,'$.toolCallId')='sql-summary'").get() as { idx: number; item: string };
+    const item = JSON.parse(row.item); Object.assign(item.output, patch);
+    f.db.prepare("UPDATE agent_context SET item=? WHERE session_id='s' AND agent_id='main' AND idx=?").run(JSON.stringify(item), row.idx);
+    roundNineFallback(await finalizeNumeric(f.log, f.documents, f.sqlArgs, f.ctx), "SOURCE_WINDOW_UNSUPPORTED");
+  } finally { await f.close(); }
+});
+
+test.each(["failed", "unverified"] as const)("round nine SQL does not turn %s alignment or uncovered columns into a semantic pass", async (status) => {
+  const f = await roundNineSqlFixture();
+  try {
+    const rev = f.documents.meta((f.edit.data as { docId: string }).docId)!.rev;
+    const policies = [{ ruleIndex: 0, source: "original", where: [{ column: "状态", equals: "纳入" }], duplicatePolicy: "identical_rows", duplicateColumns: ["标识", "状态"], conflictPolicy: "expect_blank" }];
+    await appendRoundSevenAlignmentReceipt(f, status, rev, false, policies);
+    const result = await finalizeNumeric(f.log, f.documents, f.sqlArgs, f.ctx);
+    expect(result, JSON.stringify(result)).toMatchObject({ status: "ok", data: { presentationUsed: "summary" } });
+    const text = (result.data as { finalText: string }).finalText;
+    for (const fact of [status, "未覆盖：F", "交付时未重新校验", JSON.stringify(policies), "original=book.xlsx"]) expect(text).toContain(fact);
+    expect(text).not.toContain("全部业务要求已验证");
+  } finally { await f.close(); }
+});
+
+test.each(["cells", "text"])("round nine SQL summary cannot bypass the existing full-audit %s gate", async (kind) => {
+  const sql = kind === "cells"
+    ? "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<101) SELECT x FROM n"
+    : "SELECT " + " ".repeat(12000) + "7 AS metric";
+  const f = await roundNineSqlFixture(sql);
+  try {
+    await f.execute("workbook_analyze", { path: "book.xlsx", mode: "sql", range: "Data!A1:B3", sql }, "audit-two");
+    const evidence = (await visibleProviderReceipt(f, "audit-two"))!;
+    const root = evidence.candidates.items.find((item) => item.pointer === "/data/rows")!;
+    expect(root).toBeDefined();
+    const result = await finalizeNumeric(f.log, f.documents, { ...f.sqlArgs, sources: [...f.sqlArgs.sources, { refId: root.refId }] }, f.ctx);
+    expect(result, JSON.stringify(result)).toMatchObject({ status: "error", error: { code: "LIMIT_EXCEEDED" } });
+    expect(result.error?.message).toContain(kind === "cells" ? "limit=200" : "24000");
+    expect(result.data).toBeUndefined();
+  } finally { await f.close(); }
 });

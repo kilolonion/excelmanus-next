@@ -527,7 +527,14 @@ console.log 可输出行数、合计等摘要；逐格 SDK 调用会增加往返
       );
 
       try {
-        if (outcome.kind !== "ok") return mapOutcome(outcome);
+        if (outcome.kind !== "ok") {
+          // Host phase fact only: staging/reads may have occurred, but buildPlan/publish have not.
+          const failure = mapOutcome(outcome);
+          return { ...failure, data: {
+            ...((failure.data ?? {}) as Record<string, unknown>),
+            publicationPhase: "not_started", published: [], committedRevs: [],
+          } };
+        }
         // 发布时审批（08 §6、02 §1 先看见再同意）：先 dryRun 预演构建待发布清单，
         // 再请求审批，批准后走原有发布管线；预演失败按现有错误返回、什么都不发布。
         let planned: { items: Record<string, unknown>[]; hashMaterial: Record<string, unknown>[] };
