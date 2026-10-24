@@ -264,20 +264,59 @@ const promptSystem = (prompt: PromptMsg[]): string => {
 async function waitLog(
   api: ReturnType<typeof createApiClient>,
   sessionId: string,
-  match: (items: { type: string; agentId: string | null; data: unknown }[]) => boolean,
+  match: (items: { seq: number; type: string; agentId: string | null; data: unknown }[]) => boolean,
   tries = 800,
-): Promise<{ type: string; agentId: string | null; data: unknown }[]> {
+): Promise<{ seq: number; type: string; agentId: string | null; data: unknown }[]> {
   for (let i = 0; i < tries; i += 1) {
-    const logs = await api.getSessionLog(sessionId, { limit: 500 });
-    const items = logs.items as { type: string; agentId: string | null; data: unknown }[];
+    const items: { seq: number; type: string; agentId: string | null; data: unknown }[] = [];
+    let before: number | undefined;
+    for (;;) {
+      const page = await api.getSessionLog(sessionId, { limit: 500, before });
+      if (!page.items.length) break;
+      const next = page.items[0]!.seq;
+      if (before !== undefined && next >= before) throw new Error("nonadvancing log cursor");
+      items.unshift(...page.items);
+      before = next;
+      if (page.items.length < 500) break;
+    }
     if (match(items)) return items;
     await sleep(15);
   }
   return (await api.getSessionLog(sessionId, { limit: 500 })).items as {
+    seq: number;
     type: string;
     agentId: string | null;
     data: unknown;
   }[];
+}
+
+
+/** Read host handles only from the latest provider-visible inspect result. */
+function partialCall(prompt: Array<{ role: string; content: unknown }>, prefix: string, expectedPath?: string) {
+  const results = prompt.filter(m => m.role === "tool" && Array.isArray(m.content))
+    .flatMap(m => m.content as Array<{ type: string; toolName?: string; output?: { type: string; value?: unknown } }>)
+    .filter(p => p.type === "tool-result");
+  const last = results.at(-1);
+  const value = last?.output?.type === "json" ? last.output.value as {
+    status?: string; data?: { action?: string; allowedOutcomes?: string[]; unverifiedObligationCount?: number;
+      factSets?: Array<{ id: string }>; artifacts?: Array<{ id: string; path: string; persistence: string; validation: string }> };
+  } : undefined;
+  if (last?.toolName !== "deliver" || value?.data?.action !== "inspect")
+    return { id: `${prefix}-inspect-${results.length}`, tool: "deliver", input: { action: "inspect" } };
+  expect(value.status).toBe("ok");
+  const data = value.data;
+  expect(data.allowedOutcomes).toContain("partial");
+  if (expectedPath) {
+    expect(data.artifacts?.find(a => a.path === expectedPath)).toMatchObject({ persistence: "saved", validation: "unverified" });
+    expect(data.allowedOutcomes).not.toContain("completed");
+    expect(data.unverifiedObligationCount).toBeGreaterThan(0);
+  }
+  if ((data.unverifiedObligationCount ?? 0) > 0) expect(data.allowedOutcomes).not.toContain("completed");
+  return { id: `${prefix}-partial-${results.length}`, tool: "deliver", input: {
+    action: "finalize", outcome: "partial",
+    artifactIds: (data.artifacts ?? []).map(a => a.id),
+    factSetIds: (data.factSets ?? []).map(f => f.id),
+  } };
 }
 
 describe("M4 多代理：并发闸门 / 完成报告 / 租约 / 用户控制", () => {
@@ -322,7 +361,9 @@ describe("M4 多代理：并发闸门 / 完成报告 / 租约 / 用户控制", (
               ),
             };
           }
-          return { stream: textReply(`完成 ${file ?? ""}`) };
+          if (userText.includes("补充")) return { stream: textReply(`完成 ${file ?? ""}`) };
+          const delivery = partialCall(prompt, `child-${file}`, file);
+          return { stream: stream(toolCall(delivery.id, delivery.tool, JSON.stringify(delivery.input))) };
         }
         mainPrompts.push(promptText(prompt));
         const hasTool = prompt.some((m) => m.role === "tool");
@@ -343,7 +384,8 @@ describe("M4 多代理：并发闸门 / 完成报告 / 租约 / 用户控制", (
             ]),
           };
         }
-        return { stream: textReply("已汇总") };
+        const delivery = partialCall(prompt, "main");
+        return { stream: stream(toolCall(delivery.id, delivery.tool, JSON.stringify(delivery.input))) };
       },
     });
     const server = await startServer({
@@ -395,6 +437,38 @@ describe("M4 多代理：并发闸门 / 完成报告 / 租约 / 用户控制", (
       // 报告含该子代理输出文件路径与"修订"字样（05 §4.3）
       expect(data.message).toMatch(/out-\d+\.xlsx（修订 rev\d+）/);
     }
+    expect(items.some(r => r.type === "turn.failed")).toBe(false);
+    const deliveries = items.filter(r => r.type === "tool.result" && String((r.data as { toolCallId?: string }).toolCallId).includes("-partial-"));
+    const successful = deliveries.filter(r => (r.data as { status?: string }).status === "ok");
+    const childSuccesses = successful.filter(r => r.agentId !== "main");
+    expect(childSuccesses).toHaveLength(12);
+    expect(new Set(childSuccesses.map(r => r.agentId)).size).toBe(12);
+    expect(successful.some(r => r.agentId === "main")).toBe(true);
+    for (const child of spawned) {
+      expect(childSuccesses.filter(r => r.agentId === child.agentId)).toHaveLength(1);
+      expect(reports.filter(r => (r.data as { fromAgentId: string }).fromAgentId === child.agentId)).toHaveLength(1);
+      expect(items.filter(r => r.agentId === child.agentId && r.type === "turn.completed")).toHaveLength(1);
+    }
+    for (const row of successful) expect((row.data as { result: unknown }).result).toMatchObject({ status: "ok", data: { finalizationStatus: "incomplete" } });
+    for (const row of deliveries.filter(r => (r.data as { status?: string }).status !== "ok")) {
+      const data = row.data as { toolCallId: string; result: { error?: unknown; data?: { finalText?: unknown; deliveredFiles?: unknown } } };
+      expect(data.result).toMatchObject({ status: "error", error: { code: "VERSION_CONFLICT", retryable: true, message: "交付核验期间来源、文件、权限或检查状态改变，请重新检查交付目录。" } });
+      expect(data.result.data?.finalText).toBeUndefined();
+      expect(data.result.data?.deliveredFiles).toBeUndefined();
+      const intent = items.find(r => r.type === "tool.intent" && r.agentId === row.agentId && (r.data as { toolCallId?: string }).toolCallId === data.toolCallId);
+      expect(intent).toBeDefined();
+      expect(items.filter(r => r.agentId === row.agentId && r.seq > intent!.seq && r.seq < row.seq && r.type === "ui.present" && (r.data as { kind?: string }).kind === "file")).toHaveLength(0);
+      expect(items.filter(r => r.type === "model.output" && r.agentId === row.agentId && (r.data as { sourceToolCallId?: string }).sourceToolCallId === data.toolCallId)).toHaveLength(0);
+      const later = successful.find(r => r.agentId === row.agentId && r.seq > row.seq);
+      expect(later).toBeDefined();
+      expect(items.some(r => r.type === "tool.result" && r.agentId === row.agentId && r.seq > row.seq && r.seq < later!.seq && (r.data as { result?: { status?: string; data?: { action?: string } } }).result?.status === "ok" && (r.data as { result?: { data?: { action?: string } } }).result?.data?.action === "inspect")).toBe(true);
+    }
+    expect(items.filter(r => r.type === "model.output" && (r.data as { deliveryStatus?: string }).deliveryStatus === "verified")).toHaveLength(0);
+    const parentInspect = items.filter(r => r.type === "tool.result" && r.agentId === "main" && String((r.data as { toolCallId?: string }).toolCallId).startsWith("main-inspect-")).at(-1);
+    const parentState = (parentInspect?.data as { result?: { data?: { allowedOutcomes?: string[]; unverifiedObligationCount?: number; artifacts?: Array<{ path: string }> } } } | undefined)?.result?.data;
+    expect(parentState?.unverifiedObligationCount).toBeGreaterThan(0);
+    expect(parentState?.allowedOutcomes).not.toContain("completed");
+    expect(parentState?.artifacts?.map(a => a.path).sort()).toEqual([...outFiles].sort());
     // 十二个输出文件真实落盘并校验内容
     for (const f of outFiles) {
       expect(existsSync(join(server.workspaceRoot, f))).toBe(true);
@@ -642,3 +716,4 @@ describe("M4 多代理：并发闸门 / 完成报告 / 租约 / 用户控制", (
     ).toBe(true);
   }, 60_000);
 });
+

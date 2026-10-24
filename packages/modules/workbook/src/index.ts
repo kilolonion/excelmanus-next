@@ -3,7 +3,9 @@
 
 import type { BackupService, CapabilityModule, DatabaseSync } from "@excelmanus/kernel";
 import {
-  CHECKPOINT_MIGRATION, DOC_MOVES_MIGRATION, DOC_PATH_MOVES_MIGRATION,
+  CHECKPOINT_MIGRATION,
+  DOC_MOVES_MIGRATION,
+  DOC_PATH_MOVES_MIGRATION,
   DOC_OPS_MIGRATION,
   DOC_OPS_REVERTS_MIGRATION,
   DOCUMENTS_MIGRATION,
@@ -23,7 +25,9 @@ export function workbookModule(db: DatabaseSync, backups?: BackupService): Workb
     migrations: [
       DOCUMENTS_MIGRATION,
       DOC_OPS_MIGRATION,
-      CHECKPOINT_MIGRATION, DOC_MOVES_MIGRATION, DOC_PATH_MOVES_MIGRATION,
+      CHECKPOINT_MIGRATION,
+      DOC_MOVES_MIGRATION,
+      DOC_PATH_MOVES_MIGRATION,
       DOC_OPS_REVERTS_MIGRATION,
     ],
     tools: workbookTools(service),
@@ -47,7 +51,9 @@ export {
 } from "./ops.ts";
 export { buildLayout, displayText, workbookRenderTool } from "./render.ts";
 export {
-  CHECKPOINT_MIGRATION, DOC_MOVES_MIGRATION, DOC_PATH_MOVES_MIGRATION,
+  CHECKPOINT_MIGRATION,
+  DOC_MOVES_MIGRATION,
+  DOC_PATH_MOVES_MIGRATION,
   DOC_OPS_MIGRATION,
   DOC_OPS_REVERTS_MIGRATION,
   DOCUMENTS_MIGRATION,
@@ -79,3 +85,7 @@ export { type DerivedWriteSet, deriveWriteSet, deriveWriteSetAll } from "./write
 export { type ImportedWorkbook, importXlsx, XlsxImportError } from "./xlsx.ts";
 
 export { importLegacyFile } from "./legacy-import.ts";
+
+export { WorkbookQueryInput, WorkbookQueryJsonSchema, workbookQueryTool } from "./tools.ts";
+export { runSourceChecks, type SheetDomain } from "./source-checks.ts";
+export { extractSourceCheckDomain, type SourceCheckSnapshot } from "./source-check-domain.ts";

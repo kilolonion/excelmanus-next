@@ -24,10 +24,30 @@ export const COMPACTION_PROMPT = `以上是需要压缩的较早对话记录。�
 
 export type CompactionTrigger = "auto" | "manual" | "overflow";
 
+function visualContent(item: ContextItem): { text: unknown; images: number } {
+  if (item.kind === "user" && item.images?.length) {
+    return {
+      text: { ...item, images: item.images.map(({ data: _bytes, ...ref }) => ref) },
+      images: item.images.length,
+    };
+  }
+  if (item.kind === "toolResult" && item.output && typeof item.output === "object") {
+    const { images, ...output } = item.output as Record<string, unknown>;
+    if (Array.isArray(images) && images.length)
+      return { text: { ...item, output }, images: images.length };
+  }
+  return { text: item, images: 0 };
+}
+
 /** 字符估算 token（无提供商用量时的兜底，04 §6.1）：ceil(字符数 / 4)。 */
 export function estimateTokens(items: ContextItem[]): number {
   let chars = 0;
-  for (const item of items) chars += JSON.stringify(item).length;
+  // Images consume vision tokens, not base64 text tokens. This is a fallback estimate;
+  // provider-reported input usage remains authoritative and overflow remains bounded.
+  for (const item of items) {
+    const content = visualContent(item);
+    chars += JSON.stringify(content.text).length + content.images * 4096 * 4;
+  }
   return Math.ceil(chars / 4);
 }
 
@@ -64,6 +84,20 @@ export function planCompaction(rows: CompactionRow[], keepBudget: number): Compa
     cut -= 1;
   }
   while (cut < rows.length && rows[cut]?.item.kind === "toolResult") cut += 1;
+  // An image produced after the last successful model output has not been consumed.
+  // Keep its complete call/result group even across failures, retries and log replay.
+  // Once a following assistant output exists the normal bounded tail policy applies.
+  const lastAssistant = rows.findLastIndex((row) => row.item.kind === "assistant");
+  if (
+    lastAssistant >= 0 &&
+    rows
+      .slice(lastAssistant + 1)
+      .some(
+        (row) =>
+          row.item.kind === "toolResult" && !row.item.isError && visualContent(row.item).images > 0,
+      )
+  )
+    cut = Math.min(cut, lastAssistant);
   const old = rows.slice(0, cut);
   if (old.length < 2) return null;
   return { old, keepFromSeq: rows[cut]?.fromSeq ?? null };
@@ -103,7 +137,13 @@ export function transcriptForSummary(items: ContextItem[]): string {
       }
       entries.push(truncateEntry(entry));
     } else {
-      entries.push(truncateEntry(`【工具结果 ${item.toolName}】${JSON.stringify(item.output)}`));
+      const content = visualContent(item);
+      const output = (content.text as Extract<ContextItem, { kind: "toolResult" }>).output;
+      entries.push(truncateEntry(`【工具结果 ${item.toolName}】${JSON.stringify(output)}`));
+      if (content.images)
+        entries.push(
+          `【图片未保留】${content.images} 张图片的像素不在摘要中；需要视觉核对时，按上面的文档、工作表、区域重新调用工具，不能把文字摘要当作看过图片。`,
+        );
     }
   }
   return entries.join("\n\n");

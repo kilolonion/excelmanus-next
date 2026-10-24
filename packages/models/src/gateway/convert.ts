@@ -34,6 +34,26 @@ export function toModelMessages(
   } = {},
 ): ModelMessage[] {
   const raw: ModelMessage[] = [];
+  let toolImageWireBytes = 0;
+  const checkToolImages = (images: { mediaType: string; data: string }[]) => {
+    for (const image of images) {
+      if (
+        !image ||
+        typeof image.data !== "string" ||
+        typeof image.mediaType !== "string" ||
+        !image.mediaType.startsWith("image/")
+      )
+        throw new Error("工具图片字段无效，图片未发送");
+      const padding = image.data.endsWith("==") ? 2 : image.data.endsWith("=") ? 1 : 0;
+      if (Math.floor((image.data.length * 3) / 4) - padding > 8 * 1024 * 1024)
+        throw new Error("单张工具图片超过8MiB，请缩小截图范围；图片未发送");
+      toolImageWireBytes += image.data.length;
+      if (toolImageWireBytes > 16 * 1024 * 1024)
+        throw new Error(
+          "本次请求工具图片编码总量超过16MiB，请压缩已消费历史或缩小截图范围；图片未发送",
+        );
+    }
+  };
   // toolImagesAsUser 时暂存的工具结果图片：遇到下一条非 tool 消息前作为 user 消息发出
   let pendingImages: ImagePart[] = [];
   const flushImages = () => {
@@ -55,12 +75,12 @@ export function toModelMessages(
       case "user": {
         // 01 §3 / 04 §7：图片附件发给支持视觉的模型；否则（或内容缺失）以文字说明代替
         const images = item.images ?? [];
-        const sendable = opts.vision === false ? [] : images.filter((img) => img.data);
+        const sendable = opts.vision !== true ? [] : images.filter((img) => img.data);
         const skipped = images.length - sendable.length;
         const note =
           skipped > 0
-            ? opts.vision === false
-              ? `\n\n（附件图片 ${skipped} 张未发送：当前模型不支持图片）`
+            ? opts.vision !== true
+              ? `\n\n（附件图片 ${skipped} 张未发送：${opts.vision === false ? "当前模型不支持图片" : "视觉能力尚未确认，请在模型设置中确认视觉能力或选择支持图片的模型"}）`
               : `\n\n（附件图片 ${skipped} 张已不可用，未发送）`
             : "";
         out.push({
@@ -105,12 +125,12 @@ export function toModelMessages(
         const outputValue = withNumericEvidence(item);
         // 06 §2.3：ToolResult.images 作为视觉输入；其余字段仍以 JSON 文本给模型。
         const images =
-          outputValue && typeof outputValue === "object" && !item.isError
+          outputValue && typeof outputValue === "object"
             ? ((outputValue as { images?: unknown }).images as
                 | { mediaType: string; data: string }[]
                 | undefined)
             : undefined;
-        if (Array.isArray(images) && images.length > 0 && opts.vision === false) {
+        if (Array.isArray(images) && images.length > 0 && (opts.vision !== true || item.isError)) {
           const { images: _drop, ...rest } = outputValue as Record<string, unknown>;
           out.push({
             role: "tool",
@@ -120,14 +140,22 @@ export function toModelMessages(
                 toolCallId: item.toolCallId,
                 toolName: item.toolName,
                 output: {
-                  type: "json",
-                  value: { ...rest, note: "当前模型不支持视觉，图片未发送" } as never,
+                  type: item.isError ? "error-json" : "json",
+                  value: {
+                    ...rest,
+                    note: item.isError
+                      ? "工具失败，图片未作为视觉输入发送"
+                      : opts.vision === false
+                        ? "当前模型不支持视觉，图片未发送"
+                        : "视觉能力尚未确认，图片未发送；请在模型设置中确认视觉能力或选择支持图片的模型",
+                  } as never,
                 },
               },
             ],
           });
           break;
         }
+        if (Array.isArray(images) && images.length > 0) checkToolImages(images);
         if (Array.isArray(images) && images.length > 0 && opts.toolImagesAsUser) {
           const { images: _drop, ...rest } = outputValue as Record<string, unknown>;
           out.push({

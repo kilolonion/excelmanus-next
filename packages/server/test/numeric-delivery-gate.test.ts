@@ -18,6 +18,11 @@ import { createTestProfile } from "./fixtures/create-model.ts";
 
 const servers: RunningServer[] = [];
 const dirs: string[] = [];
+// Only the round-nine cases register timing diagnostics; cleanup order is unchanged.
+type RoundNineDiagnostic = (phase: string, detail?: Record<string, string | number | boolean>) => void;
+const roundNineServerDiagnostics = new Map<RunningServer, RoundNineDiagnostic>();
+const roundNineDirDiagnostics = new Map<string, RoundNineDiagnostic>();
+const roundNineBeforeClose = new Map<RunningServer, () => void>();
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const text = (value: string): StepEvent[] => [
   { kind: "text.delta", text: value },
@@ -27,6 +32,14 @@ const call = (id: string, toolName: string, args: unknown): StepEvent[] => [
   { kind: "tool.call", toolCallId: id, toolName, args, rawArgs: JSON.stringify(args) },
   { kind: "finish", reason: "tool-calls" },
 ];
+// Handles are copied only from the model-visible inspect payload, never private host state.
+function inspectedFactSetIds(request: StepRequest): string[] {
+  const receipt = request.history.findLast(item => item.kind === "toolResult" && item.toolName === "deliver");
+  if (!receipt || receipt.kind !== "toolResult") throw new Error("missing visible inspect receipt");
+  const output = receipt.output as { data?: { action?: string; factSets?: { id: string }[] } };
+  if (output.data?.action !== "inspect" || !output.data.factSets?.length) throw new Error("missing visible fact sets");
+  return output.data.factSets.map(fact => fact.id);
+}
 const create = (id = "write"): StepEvent[] =>
   call(id, "workbook_edit", {
     path: "numbers.xlsx",
@@ -46,7 +59,7 @@ const create = (id = "write"): StepEvent[] =>
   });
 
 for (const encodedFinalize of [false, true]) {
-  test(`真实 provider 正文 receipt 足以完成交付，不从协议外层调用 ID 作弊：string=${encodedFinalize}`, async () => {
+  test(`真实 provider 正文引用不能认证未计划写入；事实集可部分交付且不借外层 ID：string=${encodedFinalize}`, async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "numeric-receipt-"));
     dirs.push(dataDir);
     let requests = 0;
@@ -71,6 +84,16 @@ for (const encodedFinalize of [false, true]) {
           range: "A1:C3",
           facets: ["values", "formulas", "styles"],
         };
+      } else if (requests === 4) {
+        name = "deliver";
+        args = { action: "inspect" };
+      } else if (requests === 5) {
+        const inspected = body.messages.filter(message => message.role === "tool")
+          .map(message => JSON.parse(message.content) as { data?: { action?: string; factSets?: { id: string }[] } })
+          .findLast(output => output.data?.action === "inspect");
+        if (!inspected?.data?.factSets?.length) throw new Error("missing provider-visible inspect handles");
+        name = "deliver";
+        args = { action: "finalize", outcome: "partial", factSetIds: inspected.data.factSets.map(fact => fact.id) };
       } else {
         // The model only sees tool content. Never inspect messages[].tool_call_id,
         // assistant tool_calls, StepRequest.history, or any ID generated below.
@@ -146,21 +169,34 @@ for (const encodedFinalize of [false, true]) {
     }
     expect(items.some((row) => row.type === "turn.failed")).toBe(false);
     expect(items.some((row) => row.type === "turn.completed")).toBe(true);
-    expect(requests).toBe(3);
+    expect(requests).toBe(5);
+    expect(items.some(row => row.type === "tool.result" && row.data.toolName === "present" && row.data.status === "error")).toBe(true);
     expect(copiedSources.length).toBeGreaterThan(0);
     expect(
       items.filter((row) => row.type === "model.output" && row.data.sourceToolCallId).at(-1)?.data,
-    ).toMatchObject({ deliveryStatus: "complete", text: expect.stringContaining("2.35") });
+    ).toMatchObject({ deliveryStatus: "incomplete", text: expect.stringContaining("2.35") });
   });
 }
 
 afterAll(async () => {
-  for (const server of servers) await server.close();
-  for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  for (const server of servers) {
+    const diagnostic = roundNineServerDiagnostics.get(server);
+    diagnostic?.("cleanup.server.start");
+    roundNineBeforeClose.get(server)?.();
+    await server.close();
+    diagnostic?.("cleanup.server.end");
+  }
+  for (const dir of dirs) {
+    const diagnostic = roundNineDirDiagnostics.get(dir);
+    diagnostic?.("cleanup.directory.start");
+    rmSync(dir, { recursive: true, force: true });
+    diagnostic?.("cleanup.directory.end");
+  }
 });
 
 async function boot(
   handler: (request: StepRequest, step: number) => StepEvent[] | Promise<StepEvent[]>,
+  diagnostic?: RoundNineDiagnostic,
 ) {
   const dataDir = mkdtempSync(join(tmpdir(), "numeric-delivery-"));
   dirs.push(dataDir);
@@ -181,7 +217,15 @@ async function boot(
     apiKey: "test",
   });
   const { session } = await api.createSession({});
-  const log = async () => (await api.getSessionLog(session.id, { limit: 1000 })).items;
+  const log = async () => {
+    diagnostic?.("http.log.start");
+    const items = (await api.getSessionLog(session.id, { limit: 1000 })).items;
+    diagnostic?.("http.log.end", {
+      rows: items.length,
+      terminals: items.filter(row => ["turn.completed", "turn.failed"].includes(row.type)).length,
+    });
+    return items;
+  };
   const wait = async (predicate: (items: LogRecord[]) => boolean) => {
     const end = Date.now() + 20_000;
     for (;;) {
@@ -196,9 +240,9 @@ async function boot(
   return { server, api, session, dataDir, wait, send, log, steps: () => steps };
 }
 
-test("真实公式之后拒绝自由算理 final，实际计算解释证据再服务端完成且不流出错句", async () => {
+test("真实公式拒绝自由算理 final，实际计算事实部分交付且不认证未检查输出", async () => {
   const bad = "这两个尾数合并为 12406.335，整体进位 0.005。";
-  const t = await boot((_request, step) => {
+  const t = await boot((request, step) => {
     if (step === 1) return create();
     if (step === 2) return text(bad);
     if (step === 3)
@@ -208,13 +252,8 @@ test("真实公式之后拒绝自由算理 final，实际计算解释证据再�
         range: "A1:C3",
         sql: 'SELECT SUM("原值") AS "原始合计", SUM("舍入值") AS "逐行舍入合计", ROUND(SUM("原值"),2)-SUM("原值") AS "整体舍入增量", SUM("舍入值"-"原值") AS "逐行舍入增量" FROM data',
       });
-    if (step === 4)
-      return call("finish", "present", {
-        finalize: {
-          status: "complete",
-          sources: [{ refId: 'nr1:["explanation","/data/rows"]' }],
-        },
-      });
+    if (step === 4) return call("inspect", "deliver", { action: "inspect" });
+    if (step === 5) return call("finish", "deliver", { action: "finalize", outcome: "partial", factSetIds: inspectedFactSetIds(request) });
     throw new Error("证据终稿后不应再次调用模型");
   });
   const { ticket } = await t.api.createTicket();
@@ -243,7 +282,9 @@ test("真实公式之后拒绝自由算理 final，实际计算解释证据再�
     expect(final?.data.text).toContain("整体舍入增量");
     expect(final?.data.text).toContain("逐行舍入增量");
     expect(final?.data.text).toContain("8.02");
-    expect(t.steps()).toBe(4);
+    expect(t.steps()).toBe(5);
+    expect(final?.data.deliveryStatus).toBe("incomplete");
+    expect(final?.data.text).toContain("unverified");
     expect(items.some((r) => r.type === "model.output" && r.data.withheldText === bad)).toBe(true);
     expect(
       messages.filter((m) => m.type === "delta").some((m) => JSON.stringify(m).includes(bad)),
@@ -407,6 +448,8 @@ for (const numericChild of [true, false]) {
             range: "A1:C3",
             facets: ["values", "formulas", "styles"],
           });
+        if (childSteps === 4) return call("child-inspect", "deliver", { action: "inspect" });
+        if (childSteps === 5) return call("child-partial", "deliver", { action: "finalize", outcome: "partial", factSetIds: inspectedFactSetIds(request) });
         return call("child-complete", "present", {
           finalize: {
             status: "complete",
@@ -433,12 +476,8 @@ for (const numericChild of [true, false]) {
           range: "A1:C3",
           facets: ["values", "formulas", "styles"],
         });
-      return call("parent-finish", "present", {
-        finalize: {
-          status: "complete",
-          sources: [{ refId: 'nr1:["parent-read","/data/values"]' }],
-        },
-      });
+      if (reportedSteps === 3) return call("parent-inspect", "deliver", { action: "inspect" });
+      return call("parent-finish", "deliver", { action: "finalize", outcome: "partial", factSetIds: inspectedFactSetIds(request) });
     });
     await t.send();
     const items = await t.wait((all) =>
@@ -457,6 +496,9 @@ for (const numericChild of [true, false]) {
         (r) => r.type === "model.output" && r.data.sourceToolCallId === "parent-finish",
       );
       expect(final?.agentId).toBe("main");
+      expect(final?.data.deliveryStatus).toBe("incomplete");
+      expect(final?.data.text).toContain("unverified");
+      expect(items.find(row => row.type === "tool.result" && row.data.toolCallId === "child-complete")?.data.result).toMatchObject({ status: "error" });
       expect(final?.data.text).toContain("2.35");
       expect(final?.data.text).toContain("parent-read");
     } else {
@@ -623,61 +665,77 @@ test("停止后显式继续继承未交付义务，新用户消息不继承", as
 
 import { numericEvidence } from "@excelmanus/protocol";
 import { mkdirSync } from "node:fs";
-test.each([{ oversize: false, scoped: true }, { oversize: true, scoped: true }, { oversize: false, scoped: false }])("round eight real HTTP runtime respects terminal summary outcome: %j", async ({ oversize, scoped }) => {
+test.each([{ oversize: false, scoped: true }, { oversize: true, scoped: true }, { oversize: false, scoped: false }])("round eight HTTP delivery keeps unchecked writes partial independent of presentation size: %j", async ({ oversize, scoped }) => {
   let checkedGuidance = false;
   const path = scoped ? "results/numbers.xlsx" : "numbers.xlsx";
   const values = [["对象", "净分"], ...Array.from({ length: oversize ? 16 : 2 }, (_, i) => [i === 0 ? "001" : String(i), i * 10])];
   const t = await boot((request, step) => {
     if (step === 1) return call("compact-write", "workbook_edit", { path, create: true, ops: [{ op: "cells.set", range: `A1:B${values.length}`, values }, { op: "cells.set", range: "C2", values: [["=SUM(B2:B3)"]] }] });
     if (step === 2) return call("compact-read", "workbook_read", { path, mode: "range", range: `A1:B${values.length}`, facets: ["values"] });
-    if (step > 3) return text("unexpected later prose");
-    const context = JSON.stringify(request);
-    expect(context).toContain('presentation');
-    expect(context).toContain('summary');
-    expect(context).toContain('bindingId');
-    expect(context).not.toContain('valueRefId,labelRefId,relation');
-    expect(context).toContain('文件内容核验与最终展示');
-    checkedGuidance = true;
-    const receipt = request.history.findLast((item) => item.kind === "toolResult" && item.toolName === "workbook_read");
-    if (!receipt || receipt.kind !== "toolResult") throw Error("missing range receipt");
-    const sources = numericEvidence(receipt.toolCallId, receipt.toolName, receipt.output)?.sources;
-    if (!sources) throw Error(`missing visible sources ${JSON.stringify(receipt)}`);
-    return call("compact-finish", "present", { finalize: { status: "complete", presentation: "summary", sources } });
+    if (step === 3) {
+      const context = JSON.stringify(request);
+      expect(context).toContain("deliver");
+      expect(context).toContain("factSetIds");
+      expect(context).toContain("unverified");
+      checkedGuidance = true;
+      return call("compact-inspect", "deliver", { action: "inspect" });
+    }
+    if (step === 4) return call("compact-finish", "deliver", { action: "finalize", outcome: "partial", factSetIds: inspectedFactSetIds(request) });
+    throw new Error("typed partial delivery must end the turn");
   });
   if (scoped) mkdirSync(join(t.server.workspaceRoot, "results"));
   await t.send("compact-user", `${scoped ? "仅访问目录 results；" : ""}写入并保存表格，简短报告原文结果。`);
-  const items = await t.wait((rows) => rows.some((row) => ["turn.completed", "turn.failed"].includes(row.type)));
-  const final = items.findLast((row) => row.type === "model.output" && row.data.sourceToolCallId === "compact-finish");
-  const result = items.find((row) => row.type === "tool.result" && row.data.toolCallId === "compact-finish")?.data.result as { data?: { auditText?: string; finalText?: string; finalizationStatus?: string } };
+  const items = await t.wait(rows => rows.some(row => ["turn.completed", "turn.failed"].includes(row.type)));
+  const final = items.findLast(row => row.type === "model.output" && row.data.sourceToolCallId === "compact-finish");
+  const result = items.find(row => row.type === "tool.result" && row.data.toolCallId === "compact-finish")?.data.result as { data?: { finalText?: string; finalizationStatus?: string } };
   expect(checkedGuidance).toBe(true);
-  expect(t.steps()).toBe(3);
-  expect(final?.data.deliveryStatus, JSON.stringify(result)).toBe(oversize || !scoped ? "incomplete" : "complete");
+  expect(t.steps()).toBe(4);
+  expect(final?.data.deliveryStatus, JSON.stringify(result)).toBe("incomplete");
   expect(final?.data.text).toBe(result.data?.finalText);
-  if (oversize || !scoped) expect(final?.data.text).toContain(result.data?.auditText);
-  expect(items.filter((row) => row.type === "turn.completed")).toHaveLength(1);
-  expect(items.filter((row) => row.type === "turn.failed")).toHaveLength(0);
-  expect(items.filter((row) => row.type === "model.output" && row.data.deliveryStatus === "rejected")).toHaveLength(0);
-  expect(items.some((row) => row.type === "ui.present" && row.data.path === path)).toBe(true);
+  expect(final?.data.text).toContain("001");
+  expect(result).toMatchObject({ status: "ok", data: { outcome: "partial", finalizationStatus: "incomplete", artifacts: [{ path, persistence: "saved", validation: "unverified" }] } });
+  expect(items.filter(row => row.type === "turn.completed")).toHaveLength(1);
+  expect(items.filter(row => row.type === "turn.failed")).toHaveLength(0);
+  expect(items.filter(row => row.type === "model.output" && row.data.deliveryStatus === "rejected")).toHaveLength(0);
+  expect(items.some(row => row.type === "ui.present" && row.data.path === path)).toBe(true);
 });
 
-test.each([false, true])("round nine real HTTP SQL catalog finishes once with both saved cards, oversize=%s", async (oversize) => {
+test.each([false, true])("round nine real HTTP SQL facts reject unchecked completion then deliver partial with both saved cards, oversize=%s", async (oversize) => {
+  const diagnosticStart = performance.now();
+  const diagnostic: RoundNineDiagnostic = (phase, detail = {}) => {
+    process.stderr.write(JSON.stringify({
+      diagnostic: "round-nine-phase", oversize, phase,
+      elapsedMs: Number((performance.now() - diagnosticStart).toFixed(3)), ...detail,
+    }) + "\n");
+  };
+  diagnostic("test.start");
   const gateway = createGateway();
   const sql = "SELECT (SELECT COUNT(*) FROM data) AS allRows, (SELECT COUNT(*) FROM other) AS otherRows, 8 AS included, 10 AS exceptions, 140 AS august, 130 AS september" + (oversize ? ", 19 AS reconciliation" : "");
   const secondSql = "SELECT 19 AS total, 10 AS included, 7 AS excluded, 2 AS missing, 0 AS difference FROM other LIMIT 1";
   type VisibleReceipt = { data: Record<string, unknown>; numericEvidence: NonNullable<ReturnType<typeof numericEvidence>> };
   let chosen: VisibleReceipt[] = [];
+  diagnostic("boot.start");
   const t = await boot(async (request, step) => {
+    diagnostic("provider.step.start", { step });
     if (step === 3) {
+      diagnostic("checkpoint.start", { step });
       const db = new DatabaseSync(join(t.dataDir, "excelmanus.db"));
       try {
+        diagnostic("checkpoint.wait.start", { step });
         await vi.waitFor(() => {
           const rows = db.prepare("SELECT head_rev,checkpoint_rev FROM documents WHERE path IN ('results/main.xlsx','results/other.xlsx')").all() as { head_rev: number; checkpoint_rev: number }[];
           expect(rows).toHaveLength(2);
           for (const row of rows) expect(row.checkpoint_rev).toBe(row.head_rev);
         }, { timeout: 5000 });
-      } finally { db.close(); }
+        diagnostic("checkpoint.wait.end", { step });
+      } finally {
+        db.close();
+        diagnostic("checkpoint.database.closed", { step });
+      }
+      diagnostic("checkpoint.end", { step });
     }
     const fetchModel: typeof fetch = async (_url, init) => {
+      diagnostic("provider.fetch.start", { step });
       const body = JSON.parse(String(init?.body)) as { messages: { role: string; content: string }[] };
       let name: string;
       let args: unknown;
@@ -695,49 +753,131 @@ test.each([false, true])("round nine real HTTP SQL catalog finishes once with bo
           sources: [{ name: "other", path: "results/other.xlsx", range: "Sheet1!A1:B2" }, { name: "unused", range: "Sheet1!A1:E3" }],
           sql: step === 4 ? sql : secondSql };
       } else {
-        if (step !== (oversize ? 6 : 5)) throw Error("present must end the runtime without another provider request");
-        const receipts = body.messages.filter((message) => message.role === "tool")
-          .map((message) => JSON.parse(message.content) as VisibleReceipt)
-          .filter((receipt) => receipt.data?.mode === "range" || receipt.data?.mode === "sql");
-        chosen = receipts;
-        expect(receipts).toHaveLength(oversize ? 3 : 2);
-        const sources = receipts.map((receipt) => {
-          const pointer = receipt.data.mode === "sql" ? "/data/rows" : "/data/values";
-          const root = receipt.numericEvidence.candidates.items.find((item) => item.pointer === pointer);
-          expect(root).toBeDefined();
-          return { refId: root!.refId };
-        });
-        name = "present";
-        args = { finalize: { status: "complete", presentation: "summary", sources } };
+        const attemptStep = oversize ? 6 : 5;
+        if (step === attemptStep + 1) {
+          name = "deliver";
+          args = { action: "inspect" };
+        } else if (step === attemptStep + 2) {
+          const inspected = body.messages.filter(message => message.role === "tool")
+            .map(message => JSON.parse(message.content) as { data?: { action?: string; factSets?: { id: string }[] } })
+            .findLast(output => output.data?.action === "inspect");
+          if (!inspected?.data?.factSets?.length) throw Error("missing visible inspect facts");
+          name = "deliver";
+          args = { action: "finalize", outcome: "partial", factSetIds: inspected.data.factSets.map(fact => fact.id) };
+        } else {
+          if (step !== attemptStep) throw Error("typed partial must end the runtime without another provider request");
+          const receipts = body.messages.filter((message) => message.role === "tool")
+            .map((message) => JSON.parse(message.content) as VisibleReceipt)
+            .filter((receipt) => receipt.data?.mode === "range" || receipt.data?.mode === "sql");
+          chosen = receipts;
+          expect(receipts).toHaveLength(oversize ? 3 : 2);
+          const sources = receipts.map((receipt) => {
+            const pointer = receipt.data.mode === "sql" ? "/data/rows" : "/data/values";
+            const root = receipt.numericEvidence.candidates.items.find((item) => item.pointer === pointer);
+            expect(root).toBeDefined();
+            return { refId: root!.refId };
+          });
+          name = "present";
+          args = { finalize: { status: "complete", presentation: "summary", sources } };
+        }
       }
       const chunk = { id: "round-nine-provider", choices: [{ index: 0, delta: {
         tool_calls: [{ index: 0, id: "round-nine-step-" + step, type: "function", function: { name, arguments: JSON.stringify(args) } }],
       }, finish_reason: "tool_calls" }] };
+      diagnostic("provider.fetch.response", { step, toolName: name });
       return new Response("data: " + JSON.stringify(chunk) + "\n\ndata: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
     };
     const events: StepEvent[] = [];
+    diagnostic("provider.gateway.start", { step });
     for await (const event of gateway.step({ ...request, model: { ...request.model, fetch: fetchModel } })) events.push(event);
+    diagnostic("provider.gateway.end", { step, events: events.length });
+    diagnostic("provider.step.end", { step });
     return events;
+  }, diagnostic);
+  diagnostic("boot.end");
+  roundNineServerDiagnostics.set(t.server, diagnostic);
+  roundNineDirDiagnostics.set(t.dataDir, diagnostic);
+  roundNineBeforeClose.set(t.server, () => {
+    // Read only this generated fixture session, before the original close/removal.
+    // Diagnostic read failure is reported, never substituted for an assertion.
+    try {
+      const db = new DatabaseSync(join(t.dataDir, "excelmanus.db"), { readOnly: true });
+      try {
+        const fields = "seq,type,created_at,length(data) AS dataChars," +
+          "json_extract(data,'$.toolCallId') AS toolCallId," +
+          "json_extract(data,'$.toolName') AS toolName," +
+          "json_extract(data,'$.status') AS status," +
+          "json_extract(data,'$.result.status') AS resultStatus," +
+          "json_extract(data,'$.result.error.code') AS errorCode," +
+          "json_extract(data,'$.result.data.finalizationStatus') AS finalizationStatus";
+        const head = db.prepare("SELECT COUNT(*) AS rowCount,MAX(seq) AS maxSeq,MAX(created_at) AS latestCreatedAt,SUM(length(CAST(data AS BLOB))) AS dataBytes FROM session_log WHERE session_id=?").get(t.session.id);
+        const byType = db.prepare("SELECT type,COUNT(*) AS rowCount,SUM(length(CAST(data AS BLOB))) AS dataBytes FROM session_log WHERE session_id=? GROUP BY type ORDER BY type").all(t.session.id);
+        const recent = db.prepare("SELECT " + fields + " FROM session_log WHERE session_id=? ORDER BY seq DESC LIMIT 12").all(t.session.id);
+        const finalCallId = "round-nine-step-" + (oversize ? 8 : 7);
+        const finalCall = db.prepare("SELECT " + fields + " FROM session_log WHERE session_id=? AND type IN ('tool.intent','tool.result') AND json_extract(data,'$.toolCallId')=? ORDER BY seq DESC LIMIT 12").all(t.session.id, finalCallId);
+        const intent = finalCall.find(row => row.type === "tool.intent");
+        const result = finalCall.find(row => row.type === "tool.result");
+        const resultSeq = typeof result?.seq === "number" ? result.seq : null;
+        const finalInterval = typeof intent?.seq === "number" ? db.prepare(
+          "SELECT COUNT(*) AS rowCount,SUM(length(CAST(data AS BLOB))) AS dataBytes," +
+          "SUM(CASE WHEN type IN ('access.fact','access.batch','access.unscoped') THEN 1 ELSE 0 END) AS accessRows," +
+          "SUM(CASE WHEN type IN ('access.fact','access.batch','access.unscoped') THEN length(CAST(data AS BLOB)) ELSE 0 END) AS accessDataBytes " +
+          "FROM session_log WHERE session_id=? AND seq>=? AND (? IS NULL OR seq<=?)",
+        ).get(t.session.id, intent.seq, resultSeq, resultSeq) : null;
+        diagnostic("cleanup.session_log.snapshot", {
+          finalCallId, head: JSON.stringify(head), byType: JSON.stringify(byType),
+          recent: JSON.stringify(recent), finalCall: JSON.stringify(finalCall), finalInterval: JSON.stringify(finalInterval),
+        });
+      } finally { db.close(); }
+    } catch (error) {
+      diagnostic("cleanup.session_log.error", { errorName: error instanceof Error ? error.name : typeof error });
+    }
   });
   mkdirSync(join(t.server.workspaceRoot, "results"));
+  diagnostic("send.start");
   await t.send("round-nine-user", "仅访问目录 results；保存两份结果，核验 SQL 和月汇总后简短交付。");
-  const items = await t.wait((rows) => rows.some((row) => ["turn.completed", "turn.failed"].includes(row.type)));
-  const finalId = "round-nine-step-" + (oversize ? 6 : 5);
+  diagnostic("send.end");
+  diagnostic("turn.wait.start");
+  await t.wait((rows) => rows.some((row) => ["turn.completed", "turn.failed"].includes(row.type)));
+  diagnostic("turn.wait.end", { steps: t.steps() });
+  // Large typed receipts can exceed the API tail window; assertions page the real log.
+  // The fake model above still consumes only its actual provider-visible messages.
+  const items: LogRecord[] = [];
+  let before: number | undefined;
+  let pageNumber = 0;
+  diagnostic("pagination.start");
+  for (;;) {
+    diagnostic("pagination.page.start", { page: ++pageNumber });
+    const page = await t.api.getSessionLog(t.session.id, { limit: 1000, ...(before === undefined ? {} : { before }) });
+    diagnostic("pagination.page.end", { page: pageNumber, rows: page.items.length });
+    if (!page.items.length) break;
+    items.push(...page.items);
+    const next = Math.min(...page.items.map(row => row.seq));
+    if (next <= 1) break;
+    if (before !== undefined && next >= before) throw new Error("session log cursor did not advance");
+    before = next;
+  }
+  items.sort((a, b) => a.seq - b.seq);
+  diagnostic("pagination.end", { pages: pageNumber, rows: items.length });
+  diagnostic("assertions.start");
+  const attemptedId = "round-nine-step-" + (oversize ? 6 : 5);
+  expect(items.find(row => row.type === "tool.result" && row.data.toolCallId === attemptedId)?.data.result, JSON.stringify({ steps: t.steps(), events: items.filter(row => row.type === "tool.result" || row.type === "turn.failed").map(row => ({ type: row.type, id: row.data.toolCallId, name: row.data.toolName, status: row.data.status, error: (row.data.result as { error?: unknown } | undefined)?.error, message: row.data.message })) }, null, 2)).toMatchObject({ status: "error" });
+  const finalId = "round-nine-step-" + (oversize ? 8 : 7);
   const result = items.find((row) => row.type === "tool.result" && row.data.toolCallId === finalId)?.data.result as {
-    status: string; data: { finalText: string; auditText: string; finalizationStatus: string; presentationUsed: string;
-      deliveredFiles: { path: string; docId: string; rev: number; sha256: string; saved: boolean }[];
-      summaryDiagnostics: { blockers: { code: string; actual?: number }[] } };
+    status: string; data: { finalText: string; finalizationStatus: string;
+      deliveredFiles: { path: string; docId: string; rev: number; sha256: string; saved: boolean }[] };
   };
   expect(result, JSON.stringify(result)).toMatchObject({ status: "ok", data: {
-    finalizationStatus: oversize ? "incomplete" : "complete", presentationUsed: oversize ? "evidence" : "summary",
+    outcome: "partial", finalizationStatus: "incomplete", artifacts: [{ validation: "unverified" }, { validation: "unverified" }],
   } });
-  expect(t.steps()).toBe(oversize ? 6 : 5);
+  expect(t.steps()).toBe(oversize ? 8 : 7);
   const final = items.findLast((row) => row.type === "model.output" && row.data.sourceToolCallId === finalId);
   expect(final?.data.text).toBe(result.data.finalText);
-  expect(final?.data.deliveryStatus).toBe(oversize ? "incomplete" : "complete");
+  expect(final?.data.deliveryStatus).toBe("incomplete");
   expect(items.filter((row) => row.type === "turn.completed")).toHaveLength(1);
   expect(items.filter((row) => row.type === "turn.failed")).toHaveLength(0);
-  expect(items.filter((row) => row.type === "model.output" && row.data.deliveryStatus === "rejected")).toHaveLength(0);
+  expect(items.filter((row) => row.type === "model.output" && row.data.deliveryStatus === "rejected")).toHaveLength(1);
+  expect(items.find(row => row.type === "model.output" && row.data.deliveryStatus === "rejected")!.seq).toBeLessThan(final!.seq);
   for (const receipt of chosen.filter((entry) => entry.data.mode === "sql")) {
     const actual = items.filter((row) => row.type === "tool.result")
       .map((row) => row.data.result as { data?: Record<string, unknown> })
@@ -746,14 +886,10 @@ test.each([false, true])("round nine real HTTP SQL catalog finishes once with bo
     expect(receipt.data.sources).toMatchObject([{ name: "data" }, { name: "other" }, { name: "unused" }]);
     for (const label of receipt.data.columns as string[]) expect(result.data.finalText).toContain(label);
   }
-  if (oversize) {
-    expect(result.data.summaryDiagnostics.blockers).toContainEqual(expect.objectContaining({ code: "SUMMARY_CELL_LIMIT", actual: 39 }));
-    expect(result.data.finalText).toContain(result.data.auditText);
-  } else {
-    expect(result.data.finalText).toContain("| 2 | 1 | 8 | 10 | 140 | 130 |");
-    expect(result.data.finalText).toContain("来源 unused");
-    expect(result.data.finalText).toContain("不证明原始行覆盖");
-  }
+  expect(result.data.finalText).toContain("unverified");
+  expect(result.data.finalText).toContain("unused");
+  // Small/large presentation never supplies the missing business checks.
+  expect(result.data.finalizationStatus).toBe("incomplete");
   expect(result.data.deliveredFiles.map((file) => file.path).sort()).toEqual(["results/main.xlsx", "results/other.xlsx"]);
   const db = new DatabaseSync(join(t.dataDir, "excelmanus.db"));
   try {
@@ -763,9 +899,14 @@ test.each([false, true])("round nine real HTTP SQL catalog finishes once with bo
       expect(doc.checkpoint_rev).toBe(file.rev);
       const card = items.find((row) => row.type === "ui.present" && row.data.path === file.path);
       expect(card?.data.note).toContain(file.sha256);
-      expect(card?.data.note).toContain("rev " + file.rev);
+      expect(result.data.finalText).toContain("修订=" + file.rev);
+      diagnostic("download.start", { path: file.path });
       const downloaded = await t.api.downloadFile(t.session.workspaceId, file.path);
+      diagnostic("download.response", { path: file.path });
       expect(createHash("sha256").update(Buffer.from(await downloaded.arrayBuffer())).digest("hex")).toBe(file.sha256);
+      diagnostic("download.verified", { path: file.path });
     }
   } finally { db.close(); }
+  diagnostic("assertions.end");
+  diagnostic("test.body.end");
 });

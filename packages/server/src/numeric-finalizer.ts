@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { closeSync, constants as fsConstants, fstatSync, openSync, readFileSync } from "node:fs";
+import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import { formatRange, indexToCol, parseRange } from "@excelmanus/core";
 import {
+  assertToolAccess,
   currentToolAccess,
   numericDeliveryState,
   numericExecutionFacts,
@@ -17,6 +18,7 @@ import {
   currentMacroEvidence,
   decodeNumericBindingId,
   decodeNumericRefId,
+  type HarnessBinding,
   type MacroEvidence,
   type NumericLabelBinding,
   type NumericPointer,
@@ -24,6 +26,7 @@ import {
   numericEvidence,
   numericLabelUnit,
   numericReadSources,
+  numericResultContract,
   numericRefId,
   type ToolResult,
   toToolErrorCode,
@@ -119,11 +122,7 @@ const tooLarge = (
       evidenceRecovery,
   );
 };
-const checkRenderedBudget = (count: number, sections: string[]): void => {
-  if (count > MAX_CELLS) tooLarge("selected_cells", count, MAX_CELLS);
-  const length = sections.join("\n\n").length;
-  if (length > MAX_TEXT) tooLarge("rendered_text", length, MAX_TEXT);
-};
+
 
 /** Only host tool receipts enter this record, never the script's returned value. */
 export function captureNumericRead(toolName: string, result: ToolResult): Json | undefined {
@@ -453,12 +452,13 @@ function downloadableSha(abs: string): string {
     },
   );
 }
-async function verifiedFile(
+export async function verifiedDeliveryFile(
   log: SessionLog,
   documents: DocumentService | undefined,
   path: string,
   ctx: ToolContext,
 ): Promise<VerifiedFile> {
+  documents?.assertSavedReadOpen(ctx.workspaceId, ctx.workspaceRoot, { path });
   const resolved = resolveWorkspacePath(ctx.workspaceRoot, path);
   const sha256 = downloadableSha(resolved.abs);
   const row = documents
@@ -500,6 +500,29 @@ async function verifiedFile(
 function fileNote(file: VerifiedFile): string {
   return `已保存工作区文件${file.rev === undefined ? "" : ` · rev ${file.rev}`} · SHA256 ${file.sha256}。可下载；不代表业务核验或刷新已完成。`;
 }
+
+/** Last synchronous pass after all awaits: every source and output remains current and permitted. */
+export function assertDeliveryBindings(
+  documents: DocumentService,
+  bindings: Pick<HarnessBinding, "path" | "docId" | "rev" | "sha256" | "expectedAbsent">[],
+  ctx: ToolContext,
+): void {
+  for (const binding of bindings) {
+    assertToolAccess(binding.path, ctx.workspaceRoot);
+    if (binding.expectedAbsent) {
+      const path = resolveWorkspacePath(ctx.workspaceRoot, binding.path);
+      const present = withFileAccessSync({ kind: "file-metadata", path: path.abs, purpose: "final-delivery-move-source-absence" }, () => lstatSync(path.abs, { throwIfNoEntry: false }));
+      if (present) throw new EvidenceError("VERSION_CONFLICT", "移动前来源路径重新出现，请重新检查字节转移事实。");
+      continue;
+    }
+    documents.assertSavedReadOpen(ctx.workspaceId, ctx.workspaceRoot, { path: binding.path, ...(binding.docId ? { docId: binding.docId } : {}) });
+    if (binding.docId) {
+      const meta = documents.meta(binding.docId);
+      if (!meta || meta.workspaceId !== ctx.workspaceId || meta.path !== binding.path || meta.rev !== binding.rev || meta.checkpointRev !== meta.rev || meta.externalConflict || meta.checkpointError) throw new EvidenceError("VERSION_CONFLICT", "交付前来源或输出修订发生变化。");
+    }
+    if (downloadableSha(resolveWorkspacePath(ctx.workspaceRoot, binding.path).abs) !== binding.sha256) throw new EvidenceError("VERSION_CONFLICT", "交付前来源或输出字节发生变化。");
+  }
+}
 /** File-card notes are host-rendered, not a second unverified final-answer channel. */
 export async function presentVerifiedFile(
   log: SessionLog,
@@ -508,7 +531,7 @@ export async function presentVerifiedFile(
   ctx: ToolContext,
 ): Promise<ToolResult> {
   try {
-    const file = await verifiedFile(log, documents, path, ctx);
+    const file = await verifiedDeliveryFile(log, documents, path, ctx);
     log.append(ctx.sessionId, ctx.agentId, [
       { type: "ui.present", data: { kind: "file", path: file.path, note: fileNote(file) } },
     ]);
@@ -517,7 +540,7 @@ export async function presentVerifiedFile(
     return {
       status: "error",
       error: {
-        code: toToolErrorCode(error instanceof EvidenceError ? error.code : "INVALID_ARGUMENT"),
+        code: toToolErrorCode(error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : "INVALID_ARGUMENT"),
         message: error instanceof Error ? error.message : "交付文件核验失败。",
         retryable: false,
       },
@@ -567,7 +590,7 @@ async function prepareSelectedFiles(
         ))
     )
       written.add(data.docId);
-    if (receipt.toolName === "workbook_analyze" && data.mode === "sql") {
+    if (["workbook_analyze", "workbook_query"].includes(String(receipt.toolName)) && data.mode === "sql") {
       const saved = object(data.saved);
       if (
         typeof saved.docId === "string" &&
@@ -587,7 +610,7 @@ async function prepareSelectedFiles(
   const files: VerifiedFile[] = [];
   for (const source of new Map(sources.map((source) => [source.docId, source])).values()) {
     if (!scopedDelivery && !written.has(source.docId) && !reportDocs.has(source.docId)) continue;
-    const file = await verifiedFile(log, documents, source.path, ctx);
+    const file = await verifiedDeliveryFile(log, documents, source.path, ctx);
     if (
       file.docId !== source.docId ||
       file.rev !== source.rev ||
@@ -634,6 +657,7 @@ export async function finalizeNumeric(
   documents: DocumentService | undefined,
   args: Finalization,
   ctx: ToolContext,
+  options: { suppressCards?: boolean } = {},
 ): Promise<ToolResult> {
   const parsed = numericFinalization.safeParse(args);
   if (!parsed.success) return rejected("只接受当前可见候选的 refId，不接受旧指针或自报内容。");
@@ -663,6 +687,8 @@ export async function finalizeNumeric(
     true,
     bindings,
     parsed.data.status === "complete" ? parsed.data.presentation : undefined,
+    undefined,
+    options.suppressCards,
   );
 }
 /** Internal historical-selector validation only; never connected to present.input or execute. */
@@ -694,6 +720,86 @@ function visibleNumericReceipt(log: SessionLog, ctx: ToolContext, toolCallId: st
   const actual = numericEvidence(toolCallId, toolName, result);
   if (!shown || !actual || JSON.stringify(shown.sourceScopes) !== JSON.stringify(actual.sourceScopes)) return;
   return { toolName, result, output, shown, actual };
+}
+
+/** Public fact sets expose typed values and provenance, never model-authored pointers or units. */
+export interface NumericFactSet {
+  id: string;
+  toolName: string;
+  sourceToolCallId: string;
+  field: string;
+  value: unknown;
+  valueType: string;
+  provenance: NumericSource[];
+  unit: "not_asserted";
+}
+type ResolvedFactSet = { fact: NumericFactSet; source: NumericPointer };
+
+async function resolveNumericFactSets(
+  log: SessionLog,
+  documents: DocumentService,
+  ctx: ToolContext,
+): Promise<ResolvedFactSet[]> {
+  const rows = log.dbHandle.prepare(
+    "SELECT DISTINCT json_extract(item,'$.toolCallId') AS id FROM agent_context WHERE session_id=? AND agent_id=? AND superseded=0 AND json_extract(item,'$.kind')='toolResult' ORDER BY idx DESC",
+  ).all(ctx.sessionId, ctx.agentId) as { id: string }[];
+  const sets: ResolvedFactSet[] = [];
+  for (const row of rows) {
+    const receipt = visibleNumericReceipt(log, ctx, row.id);
+    if (!receipt) continue;
+    const contract = numericResultContract(receipt.toolName, receipt.result);
+    const visibleContract = numericResultContract(receipt.toolName, receipt.output);
+    if (!contract || !visibleContract || JSON.stringify(contract.sources) !== JSON.stringify(visibleContract.sources)) continue;
+    try {
+      for (const source of contract.sources) {
+        const current = await verifiedDeliveryFile(log, documents, source.path, ctx);
+        if (current.docId !== source.docId || current.rev !== source.rev || current.sha256 !== source.sourceFile.currentSha256) throw new Error("stale fact source");
+      }
+      for (const field of contract.fields) {
+        if (!visibleContract.fields.includes(field)) continue;
+        const pointer = `/data/${field}`;
+        const value = at(receipt.result, tokens(pointer));
+        if (JSON.stringify(value) !== JSON.stringify(at(receipt.output, tokens(pointer)))) continue;
+        const data = object(receipt.result.data);
+        if (data.truncated === true || object(data.readWindow).complete === false) continue;
+        const identity = [ctx.sessionId, ctx.agentId, row.id, field, value, contract.sources];
+        const fact: NumericFactSet = {
+          id: `hfs1_${createHash("sha256").update(JSON.stringify(identity)).digest("hex")}`,
+          toolName: receipt.toolName, sourceToolCallId: row.id, field, value,
+          valueType: value === null ? "null" : Array.isArray(value) ? "array" : typeof value,
+          provenance: contract.sources, unit: "not_asserted",
+        };
+        sets.push({ fact, source: { toolCallId: row.id, pointer } });
+      }
+    } catch {
+      // Old visible receipts are not a continuing read grant or current fact. Re-read to restore.
+    }
+  }
+  // A later awaited read can change a prior source. Return no mixed-version fact sets.
+  return sets.filter(({ fact }) => fact.provenance.every((source) => {
+    try {
+      documents.assertSavedReadOpen(ctx.workspaceId, ctx.workspaceRoot, { docId: source.docId, path: source.path });
+      const meta = documents.meta(source.docId);
+      return meta?.workspaceId === ctx.workspaceId && meta.path === source.path && meta.rev === source.rev &&
+        meta.checkpointRev === meta.rev && !meta.externalConflict && !meta.checkpointError &&
+        downloadableSha(resolveWorkspacePath(ctx.workspaceRoot, source.path).abs) === source.sourceFile.currentSha256;
+    } catch { return false; }
+  }));
+}
+
+export async function numericFactSets(log: SessionLog, documents: DocumentService, ctx: ToolContext): Promise<NumericFactSet[]> {
+  return (await resolveNumericFactSets(log, documents, ctx)).map(({ fact }) => fact);
+}
+
+/** Only reconstructed host roots enter this adapter; public legacy selectors retain old checks. */
+export async function finalizeNumericFactSets(
+  log: SessionLog, documents: DocumentService, factSetIds: string[], ctx: ToolContext,
+): Promise<ToolResult> {
+  const current = await resolveNumericFactSets(log, documents, ctx);
+  const selected = [...new Set(factSetIds)].map((id) => current.find(({ fact }) => fact.id === id));
+  if (!selected.length || selected.some((entry) => !entry)) return rejected("事实集不可见、已过期或权限已变化；请重新读取并检查交付目录。");
+  const sources = selected.map((entry) => entry!.source);
+  return finalizeResolved(log, documents, { status: "complete", sources }, ctx, true, [], "evidence", new Set(sources.map(numericRefId)), true);
 }
 function selectedCellDiagnostic(log: SessionLog, ctx: ToolContext, sources: NumericPointer[]): string {
   try {
@@ -919,7 +1025,7 @@ function summaryExecutionNotes(log: SessionLog, ctx: ToolContext, diagnostics: S
       failures.push(`${cell(receipt.toolName)}(${cell(error.code ?? result.status)}) · ${cell(receipt.toolCallId)}：${cell(error.message ?? "回执未给出失败详情")}` +
         (prepublication ? "；宿主确认本次调用未进入发布阶段（可能已有读取或暂存，不证明清理或恢复成功）" : ""));
       const parameterRejection = result.status === "error" &&
-        ["workbook_read", "workbook_analyze", "present"].includes(String(receipt.toolName)) &&
+        ["workbook_read", "workbook_analyze", "workbook_query", "present", "deliver"].includes(String(receipt.toolName)) &&
         (error.code === "INVALID_ARGUMENT" || (receipt.toolName === "present" && error.code === "LIMIT_EXCEEDED"));
       if (!parameterRejection && !prepublication)
         diagnostics.add({ code: "FAILURE_STATE_UNKNOWN", category: "mandatory-disclosure", toolCallId,
@@ -1018,6 +1124,8 @@ async function finalizeResolved(
   requireCandidates: boolean,
   bindings: NumericLabelBinding[] = [],
   presentation: "evidence" | "summary" = "evidence",
+  hostRoots?: ReadonlySet<string>,
+  suppressCards = false,
 ): Promise<ToolResult> {
   const accessReport = () =>
     ctx.turnId
@@ -1092,6 +1200,7 @@ async function finalizeResolved(
     const summaryWindows = new Map<string, SummaryWindow>();
     const diagnostics = summaryDiagnostics();
     const verifySource = async (input: Source) => {
+      documents.assertSavedReadOpen(ctx.workspaceId, ctx.workspaceRoot, { docId: input.docId, path: input.path });
       const currentFile = await documents.sourceStatus(input.docId, ctx.workspaceRoot);
       const meta = documents.meta(input.docId);
       if (currentFile.pendingWrite)
@@ -1102,6 +1211,8 @@ async function finalizeResolved(
       if (
         !meta ||
         meta.externalConflict ||
+        meta.checkpointError ||
+        meta.checkpointRev !== meta.rev ||
         meta.workspaceId !== ctx.workspaceId ||
         meta.rev !== input.rev ||
         meta.path !== input.path ||
@@ -1209,8 +1320,9 @@ async function finalizeResolved(
         const shown = numericEvidence(source.toolCallId, toolName, visible.output);
         const actual = numericEvidence(source.toolCallId, toolName, result);
         if (
-          !shown?.candidates.items.some((candidate) => candidate.pointer === source.pointer) ||
-          !actual?.candidates.items.some((candidate) => candidate.pointer === source.pointer) ||
+          !shown || !actual ||
+          (!hostRoots?.has(numericRefId(source)) && (!shown?.candidates.items.some((candidate) => candidate.pointer === source.pointer) ||
+          !actual?.candidates.items.some((candidate) => candidate.pointer === source.pointer))) ||
           JSON.stringify(shown.sourceScopes) !== JSON.stringify(actual.sourceScopes)
         )
           return invalid(
@@ -1254,6 +1366,7 @@ async function finalizeResolved(
             c > 0 ? rowValues[c - 1] : undefined,
             r > 0 ? headerValues[c] : undefined,
           ].filter((label) => typeof label === "string" && numericLabelUnit(label) !== undefined);
+          if (possible.length > 1 && hostRoots) continue;
           if (possible.length > 1)
             return invalid(
               "所选数值存在多个标签单位关系，不能自动择一；请从该值当前可见 bindingCandidates 复制一个 bindingId，无法确认则交付 incomplete。",
@@ -1318,14 +1431,14 @@ async function finalizeResolved(
         (toolName === "workbook_read" &&
           ["objects", "overview"].includes(String(data.mode)) &&
           source.pointer === "/data/macroEvidence") ||
-        (toolName === "workbook_analyze" &&
+        (["workbook_analyze", "workbook_query"].includes(toolName) &&
           data.mode === "sort_preflight" &&
           path[1] === "sortPreflight" &&
           path.length === 2)
       ) {
         reads = [{ ...data, toolName, docRevs: result.docRevs ?? data.docRevs }];
       } else if (
-        toolName === "workbook_analyze" &&
+        ["workbook_analyze", "workbook_query"].includes(toolName) &&
         ((data.mode === "sql" && path[1] === "rows") ||
           (data.mode === "profile" && ["columns", "dataRows"].includes(path[1] ?? "")))
       ) {
@@ -1351,11 +1464,9 @@ async function finalizeResolved(
       // Projection truncation does not give the model access to hidden full-log values.
       if (JSON.stringify(at(visible.output, path)) !== JSON.stringify(selected))
         return invalid("引用结果不在当前可见上下文中，请缩小范围重新获取。");
-      if (JSON.stringify(selected).length > MAX_TEXT)
-        tooLarge("selected_text", JSON.stringify(selected).length, MAX_TEXT);
       if (
         (toolName === "workbook_read" ||
-          (toolName === "workbook_analyze" && data.mode === "sort_preflight")) &&
+          (["workbook_analyze", "workbook_query"].includes(toolName) && data.mode === "sort_preflight")) &&
         scalarLeaves(selected) > 0
       )
         hasDirectWorkbookFacts = true;
@@ -1384,7 +1495,7 @@ async function finalizeResolved(
       }
       if (presentation === "summary") {
         const window = object(data.readWindow);
-        if (toolName === "workbook_analyze" && data.mode === "sql" && source.pointer === "/data/rows") {
+        if (["workbook_analyze", "workbook_query"].includes(toolName) && data.mode === "sql" && source.pointer === "/data/rows") {
           if (!sqlSummaryReceiptComplete(data, visibleData, result, object(visible.output), inputs) ||
               !sqlSummaryInputsComplete(log, ctx, source.toolCallId, row.fromSeq, inputs)) {
             diagnostics.add({ code: "SOURCE_WINDOW_UNSUPPORTED", category: "selection",
@@ -1449,7 +1560,7 @@ async function finalizeResolved(
               `来源：${cell(input.path)} · ${cell(input.scope.kind === "range" ? input.scope.range : "document metadata (" + input.scope.mode + ")")} · rev ${input.rev}${input.name ? ` · 来源名称 ${cell(input.name)}` : ""}`,
           ),
         );
-        if (toolName === "workbook_analyze" && data.mode === "sql") {
+        if (["workbook_analyze", "workbook_query"].includes(toolName) && data.mode === "sql") {
           if (typeof data.sql !== "string")
             return invalid("SQL 结果缺少实际执行语句，请重新分析。");
           sections.push(`实际 SQL：${cell(data.sql)}`);
@@ -1486,8 +1597,7 @@ async function finalizeResolved(
           count += scalarLeaves(selected);
           reportDocs.add(inputs[0]!.docId);
         }
-        checkRenderedBudget(count, sections);
-        continue;
+          continue;
       }
       if (path[1] === "reportFacts") {
         if (!renderedLeaves.has(`${source.toolCallId}:reportFacts`)) {
@@ -1498,8 +1608,7 @@ async function finalizeResolved(
           count += report.leaves;
           reportDocs.add(inputs[0]!.docId);
         }
-        checkRenderedBudget(count, sections);
-        continue;
+          continue;
       }
       if (path[1] === "sortPreflight") {
         if (!renderedLeaves.has(`${source.toolCallId}:sortPreflight`)) {
@@ -1507,8 +1616,7 @@ async function finalizeResolved(
           sections.push(renderSortPreflight(object(selected)));
           count += scalarLeaves(selected);
         }
-        checkRenderedBudget(count, sections);
-        continue;
+          continue;
       }
       if (source.pointer === "/data/preserved/externalLinkDetails") {
         if (!renderedLeaves.has(`${source.toolCallId}:externalLinkDetails`)) {
@@ -1516,8 +1624,7 @@ async function finalizeResolved(
           sections.push(...renderExternalLinks(object(selected)));
           count += scalarLeaves(selected);
         }
-        checkRenderedBudget(count, sections);
-        continue;
+          continue;
       }
       const rows: string[] = [
         "| 位置／指标 | 原始值 | 公式 | 格式化显示 |",
@@ -1530,7 +1637,7 @@ async function finalizeResolved(
         display = "未提供格式信息",
         raw = scalar(value),
       ) => {
-        if (++count > MAX_CELLS) tooLarge("selected_cells", count, MAX_CELLS);
+        count += 1;
         if (typeof value === "number" && Number.isFinite(value)) numericCount++;
         rows.push(`| ${cell(position)} | ${cell(raw)} | ${cell(formula)} | ${cell(display)} |`);
       };
@@ -1634,7 +1741,7 @@ async function finalizeResolved(
             sections.push(
               `标签绑定：${cell(ref)} ← ${cell(label.address)} 原文“${cell(label.text)}”（${label.relation === "same_row" ? "同一行紧邻左侧" : "同一列上方读窗首行"}，仅位置关系，不认证业务口径）；单位：${cell(label.unit ?? "未提供，不能推断")}。`,
             );
-        } else if (toolName === "workbook_analyze" && data.mode === "sql") {
+        } else if (["workbook_analyze", "workbook_query"].includes(toolName) && data.mode === "sql") {
           const column = Array.isArray(data.columns) ? data.columns[Number(trail[3])] : undefined;
           add(
             `结果行 ${Number(trail[2]) + 1} · ${String(column ?? indexToCol(Number(trail[3]) + 1))}`,
@@ -1651,7 +1758,6 @@ async function finalizeResolved(
       };
       visit(selected, path);
       if (rows.length > 2) sections.push(`选择：${cell(source.pointer)}`, rows.join("\n"));
-      checkRenderedBudget(count, sections);
     }
     for (const readback of completeness?.readbacks ?? []) {
       await verifySource(readback.source);
@@ -1676,7 +1782,6 @@ async function finalizeResolved(
       const rendered = renderSortPreservation(fact);
       count += rendered.leaves;
       sections.push(rendered.text);
-      checkRenderedBudget(count, sections);
     }
     for (const fact of completeness?.macroPreservations ?? []) {
       await verifySource(fact.before.source);
@@ -1684,7 +1789,6 @@ async function finalizeResolved(
       const rendered = renderMacroPreservation(fact);
       count += rendered.leaves;
       sections.push(rendered.text);
-      checkRenderedBudget(count, sections);
     }
     const pendingNumeric =
       ctx.turnId !== undefined &&
@@ -1718,7 +1822,10 @@ async function finalizeResolved(
         meta.externalConflict ||
         meta.workspaceId !== ctx.workspaceId ||
         meta.rev !== source.rev ||
-        meta.path !== source.path
+        meta.path !== source.path ||
+        meta.checkpointRev !== meta.rev ||
+        meta.checkpointError ||
+        downloadableSha(resolveWorkspacePath(ctx.workspaceRoot, source.path).abs) !== source.sourceFile.currentSha256
       )
         throw new EvidenceError(
           "VERSION_CONFLICT",
@@ -1746,7 +1853,6 @@ async function finalizeResolved(
       numericExecutionFacts(log.dbHandle, ctx.sessionId, ctx.agentId, ctx.turnId),
       ...(scopedDelivery && finalAccess ? [renderAccessFacts(finalAccess)] : []),
     ].join("\n\n");
-    if (auditText.length > MAX_TEXT) tooLarge("rendered_text", auditText.length, MAX_TEXT);
     let finalText = auditText;
     let presentationUsed: "evidence" | "summary" = "evidence";
     let summaryFallback: string | undefined;
@@ -1779,9 +1885,8 @@ async function finalizeResolved(
           "完整来源、公式、执行与访问记录保留在本次工具结果中。",
         ].join("\n\n");
       }
-      if (finalText.length > MAX_TEXT) tooLarge("rendered_text", finalText.length, MAX_TEXT);
     }
-    if (prepared.cards.length)
+    if (!suppressCards && prepared.cards.length)
       log.append(
         ctx.sessionId,
         ctx.agentId,
@@ -1790,8 +1895,10 @@ async function finalizeResolved(
     return {
       status: "ok",
       data: {
-        finalizationStatus: summaryFallback ? "incomplete" : "complete",
+        finalizationStatus: "complete",
+        presentationOverflow: { cells: count > MAX_CELLS, text: finalText.length > MAX_TEXT },
         deliveredFiles: prepared.files,
+        sourceDependencies: verifiedSources,
         finalText,
         ...(presentation === "summary" ? { auditText, presentationUsed,
           presentationSatisfied: !summaryFallback, summaryDiagnostics: diagnostics.result(),
@@ -1802,7 +1909,7 @@ async function finalizeResolved(
     return {
       status: "error",
       error: {
-        code: toToolErrorCode(error instanceof EvidenceError ? error.code : "INVALID_ARGUMENT"),
+        code: toToolErrorCode(error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : "INVALID_ARGUMENT"),
         message: error instanceof Error ? error.message +
           (error instanceof EvidenceError && error.code === "LIMIT_EXCEEDED" &&
            error.message.includes("reason=selected_cells") ? selectedCellDiagnostic(log, ctx, args.sources) : "")

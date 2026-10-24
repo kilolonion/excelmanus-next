@@ -31,6 +31,11 @@ import { displayText } from "./render.ts";
 import { pivotReportFacts, savedSheetFingerprint, sortPreflight } from "./report-facts.ts";
 import { CF_RESOURCE, DV_RESOURCE, rulesResource } from "./rule-codec.ts";
 import { DocNotFoundError, type DocumentService } from "./service.ts";
+import {
+  type AlignmentSource,
+  SourceAlignmentInput,
+  verifySourceAlignment,
+} from "./source-alignment.ts";
 import { runSql, type SqlTable } from "./sql-runner.ts";
 import { workbookSheets } from "./summary.ts";
 
@@ -167,7 +172,9 @@ function readRegion(
   if (region.c1 - region.c0 + 1 > MAX_CELLS)
     throw new Error("单次读取区域最多2000列，请拆分列范围读取");
   let cells = 0;
-  let chars = 0;
+  // Include the new worksheetRows receipt in the same whole-row page budget.
+  // Like values, a single row may exceed the budget, but each page makes progress.
+  let chars = 2; // JSON array brackets
   let consumedRows = 0;
   let truncated = false;
 
@@ -228,6 +235,7 @@ function readRegion(
     }
     if (wantFormulas) formulas.push(fRow);
     if (facets.includes("styles")) styles.push(sRow);
+    chars += String(r + 1).length + (consumedRows > 0 ? 1 : 0);
     consumedRows += 1;
   }
   if (wantValues) {
@@ -352,7 +360,22 @@ function readRegion(
     out.layout = {
       rowVisibility,
       freeze: sheet.freeze ?? { xSplit: 0, ySplit: 0, startRow: 0, startColumn: 0 },
-      merges,
+      mergesScope: "effective_range_intersections",
+      merges: merges.map((m) => ({
+        ...m,
+        range: `${indexToCol(m.startColumn + 1)}${m.startRow + 1}:${indexToCol(m.endColumn + 1)}${m.endRow + 1}`,
+        anchor: `${indexToCol(m.startColumn + 1)}${m.startRow + 1}`,
+        intersectsReturnedWindow:
+          consumedRows > 0 &&
+          m.startRow < region.r0 + offset + consumedRows &&
+          m.endRow >= region.r0 + offset,
+        anchorInReturnedWindow:
+          consumedRows > 0 &&
+          m.startRow >= region.r0 + offset &&
+          m.startRow < region.r0 + offset + consumedRows &&
+          m.startColumn >= region.c0 &&
+          m.startColumn <= region.c1,
+      })),
       columnWidths,
       rowHeights,
       outline: {
@@ -577,7 +600,10 @@ const readInput = z.object({
 const analyzeInput = z.object({
   docId: z.string().optional(),
   path: z.string().optional(),
-  mode: z.enum(["sql", "profile", "diff", "check", "sort_preflight"]),
+  mode: z.enum(["sql", "profile", "diff", "check", "sort_preflight", "source_alignment"]),
+  alignment: SourceAlignmentInput.optional().describe(
+    '仅 mode=source_alignment 必填。目标 range 不含表头，headerRow 为实际表头行；sources 每项需明确 range，source 必须精确匹配别名。完整调用示例：{"path":"result.xlsx","mode":"source_alignment","range":"明细!A2:C3","sources":[{"name":"src","path":"source.xlsx","range":"原表!A1:B8"}],"alignment":{"headerRow":1,"requiredColumns":["客户ID"],"bindings":[{"kind":"cell","column":"客户ID","source":"src","referenceColumn":"客户来源","rowColumn":"源行","mergeAnchor":true}]}}',
+  ),
   hasHeader: z.boolean().default(false),
   right: z
     .object({
@@ -594,7 +620,7 @@ const analyzeInput = z.object({
     .max(20)
     .optional()
     .describe(
-      'mode=check 必填的规则对象数组，不是字符串数组。例如 [{"kind":"required","column":"订单号"},{"kind":"formula_errors"}]；column 使用表头原文。',
+      'mode=check 必填的规则对象数组，不是字符串数组；column 用表头原文，range 首行含表头。row_expression 返回 passed/failedCount，失败不能因工具 status=ok 而忽略；并列 SELECT 数字不等于校验，单表等式通过也不证明来源完整。完整调用示例：{"path":"result.xlsx","mode":"check","range":"月表!A1:E3","checks":[{"kind":"row_expression","expression":"\\"净变动分\\" = \\"订单分\\" - \\"退款分\\" - \\"回款分\\""}]}',
     ),
   offset: z.int().nonnegative().default(0),
   sheet: z.string().optional(),
@@ -614,6 +640,136 @@ const analyzeInput = z.object({
     .max(12)
     .optional(),
 });
+
+const queryTarget = z
+  .strictObject({
+    docId: z.string().min(1).optional(),
+    path: z.string().min(1).optional(),
+    sheet: z.string().min(1).optional(),
+    range: z.string().min(1).optional(),
+  })
+  .refine((a) => a.path !== undefined || a.docId !== undefined, {
+    path: ["path"],
+    message: "需要 path 或 docId；同时提供时必须指向同一工作簿",
+  });
+
+const querySource = queryTarget.safeExtend({
+  name: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/),
+  range: z.string().min(1).describe("显式原始读取范围，首行作为 SQL 表头"),
+});
+
+/** 新模型入口只读；历史 analyze 与脚本调用保持原契约。 */
+export const WorkbookQueryInput = z.discriminatedUnion("mode", [
+  z
+    .strictObject({
+      mode: z.literal("sql"),
+      sql: z.string().min(1),
+      sources: z
+        .array(querySource)
+        .min(1)
+        .max(13)
+        .describe("显式声明所有来源，必须含唯一 name=data 主来源；其他名称用作 SQL 表别名"),
+    })
+    .superRefine((a, ctx) => {
+      if (!a.sources.some((source) => source.name === WORKBOOK_ANALYZE_SQL_TABLE))
+        ctx.addIssue({
+          code: "custom",
+          path: ["sources"],
+          message: "SQL 来源必须包含 name=data 主来源",
+        });
+      const names = new Set<string>();
+      for (const [i, source] of a.sources.entries()) {
+        const name = source.name.toLowerCase();
+        if (names.has(name) || name.startsWith("sqlite_"))
+          ctx.addIssue({
+            code: "custom",
+            path: ["sources", i, "name"],
+            message: "SQL 来源名称必须唯一且不能使用 sqlite_ 保留前缀",
+          });
+        names.add(name);
+      }
+    }),
+  queryTarget.safeExtend({ mode: z.literal("profile") }),
+  queryTarget.safeExtend({
+    mode: z.literal("diff"),
+    right: queryTarget,
+    keys: z.array(z.string()).max(20).optional(),
+    offset: z.int().nonnegative().default(0),
+  }),
+  queryTarget.safeExtend({
+    mode: z.literal("sort_preflight"),
+    range: z.string().min(1),
+    hasHeader: z.boolean().default(false),
+  }),
+]);
+
+export const WorkbookQueryJsonSchema = z.toJSONSchema(WorkbookQueryInput, {
+  io: "input",
+  override: ({ jsonSchema }) => {
+    // Preserve the executable target alternative in the model schema too.
+    if (jsonSchema.properties?.path && jsonSchema.properties.docId)
+      jsonSchema.anyOf = [{ required: ["path"] }, { required: ["docId"] }];
+    const sources = jsonSchema.properties?.sources;
+    if (sources && typeof sources === "object") {
+      sources.contains = {
+        type: "object",
+        properties: { name: { const: WORKBOOK_ANALYZE_SQL_TABLE } },
+        required: ["name"],
+      };
+      sources.minContains = 1;
+      sources.maxContains = 1;
+    }
+  },
+});
+
+function queryAnalyzeArgs(args: unknown): z.infer<typeof analyzeInput> {
+  const query = WorkbookQueryInput.parse(args);
+  if (query.mode !== "sql") return analyzeInput.parse(query);
+  const primary = query.sources.find((source) => source.name === WORKBOOK_ANALYZE_SQL_TABLE)!;
+  return analyzeInput.parse({
+    mode: query.mode,
+    sql: query.sql,
+    docId: primary.docId,
+    path: primary.path,
+    sheet: primary.sheet,
+    range: primary.range,
+    sources: query.sources.filter((source) => source !== primary),
+  });
+}
+
+/** Wrap the registered implementation so its current access, provenance and effect hooks stay intact. */
+export function workbookQueryTool(analyze: ToolDefinition): ToolDefinition {
+  return {
+    ...analyze,
+    name: "workbook_query",
+    title: "查询工作簿",
+    modelVisible: true,
+    description:
+      '只读查询、画像、比较与排序预检，不创建或修改文件。sql 必须声明完整 sources，唯一 name=data 是主表，其他名称为 JOIN/UNION 别名；每源20万格、合计40万格、查询10秒，预览最多200行。例：{"mode":"sql","sources":[{"name":"data","path":"source.xlsx","range":"Data!A1:B20"}],"sql":"SELECT SUM(amount) AS amount FROM data"}。结果保留实际来源、范围、修订、SHA与截断状态；SQL 列名只是查询标签，不认证业务单位，也不能把 SQLite 类型转换当精确身份核验。profile 返回列画像和有覆盖限制的 top，不代表完整值清单；例：{"mode":"profile","path":"source.xlsx","range":"Data!A1:B20"}。diff 需要 right，可按 keys 或位置比较，来源行号使用返回的真实 worksheetRow；例：{"mode":"diff","path":"left.xlsx","right":{"path":"right.xlsx"}}。sort_preflight 必须明确 range，hasHeader 默认 false；例：{"mode":"sort_preflight","path":"source.xlsx","range":"Data!A1:B20","hasHeader":true}。safe 仅表示所检排序合并条件通过，不表示已排序；blocked 表示未执行。业务验证使用 workbook_check，写入使用 workbook_edit 或 run_script；不接受 saveTo。',
+    input: WorkbookQueryInput,
+    inputJsonSchema: WorkbookQueryJsonSchema,
+    effect: "read",
+    replay: "safe",
+    targets: (args, scope) => analyze.targets(queryAnalyzeArgs(args), scope),
+    activity: (args) => analyze.activity?.(queryAnalyzeArgs(args)) ?? null,
+    async execute(args, ctx): Promise<ToolResult> {
+      let parsed: z.infer<typeof analyzeInput>;
+      try {
+        parsed = queryAnalyzeArgs(args);
+      } catch (error) {
+        return {
+          status: "error",
+          error: {
+            code: "INVALID_ARGUMENT",
+            message: `参数无效，未执行：${error instanceof Error ? error.message : String(error)}`,
+            retryable: false,
+          },
+        };
+      }
+      return analyze.execute(parsed, ctx);
+    },
+  };
+}
 
 // ---------- 工具定义 ----------
 
@@ -646,7 +802,7 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
     name: "workbook_read",
     title: "读取工作簿",
     description:
-      "观察工作簿内容与结构，不修改文件。objects/overview 的 macroEvidence 从同一份当前磁盘包给出 VBA 字节长度/SHA256、真实关系/内容类型和工作簿/工作表 codeName；checkpoint.isCurrent=false 时不能当当前已保存修订。cellEditSupport=conditional 仅表示普通字面值 cells.set 在现有单元格保真检查下可尝试，当前 hash 不保证未来保存；编辑后必须重读并比较已保存包。签名、歧义或不支持类型应停止，不能靠二进制文本读取或额外probe猜测。只做静态检查，不执行宏、不验证宏运行结果。sourceFile 返回文档打开时与当前磁盘 SHA256、changedSinceOpen 和计算缓存是否只在内存；changedSinceOpen 不表示本次调用导致变化，computed-in-memory-not-persisted 不代表缓存已保存，rev/mtime 不能替代字节核验。range/formula_graph 返回当前内存值，不等于已保存缓存；外部公式在内存中可能为 #REF!，即使下载包仍保留原缓存。必须同时检查 sourceFile.calculation；外链保存缓存读 externalLinkDetails/checkpointExternalLinks，不据内存结果声称外链已更新。读取 xlsx/csv 工作簿快照；只取任务需要的区域和 facets，聚合统计可用 workbook_analyze，版式核对可用 workbook_render。mode=overview 返回工作表清单与规模，以及 tables 中的 Excel 表对象（名称、范围、列名及计算列公式）；表名未知时不要猜 Sheet1，可从清单取实际名称；单表读取可省略 sheet。mode=range 返回指定区域（facets: values|formulas|styles|layout|rules，紧凑行数组，超 2000 格或 16000 字符截断并返回 nextOffset；readWindow 分开保留裁剪前 requestedRange、裁剪后分页前 effectiveRange、clipped 与本页 returnedRange；complete 只表示 offset 后已无剩余，不保证原请求全部已读）；values 默认附同快照数字格式生成的 displayValues 和 displayBasis，不必请求完整 styles；displayValues 与 values 同形，null 明示格式不支持，空白显示仍为空字符串，不代表原生 Excel 视觉或保存缓存。values 仍以空字符串显示空值；blankCells 列出本次返回区域内无值且无公式的单元格，保真复制时将这些地址写为 null，不把它们变成空字符串。layout 会返回 hyperlinks 的实际目标，核验链接用它，不要把 XLSX 当文本读取。layout.rows/columns 与 filter 内的行列索引均为0基；rows.hd 是独立行隐藏状态（包括手动/分组隐藏），不含全部筛选隐藏。layout.rowVisibility 使用1基行号，只覆盖 readWindow.returnedRange 内实际返回的全部行（包括表头，不是仅明细）：rowStateHiddenRows 来自 rows.hd，filteredOutRows 来自 filter.cachedFilteredOut，effectiveHiddenRows 是两者并集，visibleRows 是其余行；核验可见编号使用 visibleRows 对应 values，不能只看 rows.hd。筛选本身已隐藏不匹配行，不要另用 axis.hide 模拟，否则移除筛选后独立隐藏状态仍在。custom.excelmanusOutlineLevel 缺省0，custom.excelmanusCollapsed 缺省false，分组层级、隐藏和折叠标记互不等同；outline.raw 保留 outlinePr 原属性，effective/defaulted 标明缺省值，不代表浏览器支持原生分组±交互。mode=print 返回当前修订所有或指定 sheet 的打印区域、重复行列、手动分页、原始 pageSetup/pageSetUpPr/pageMargins/printOptions/headerFooter 属性与动态字段串；effective/defaulted 区分原值和 OOXML 默认值，fit 模式忽略 scale，未知或复杂项标明只保留。打印读取不修改原件，不是浏览器分页结果。mode=search 按子串搜索单元格。mode=table 将 range 首行作为表头返回对象行；mode=formula_graph 核对公式引用：返回公式、当前快照计算值及静态前驱/下游依赖；references.cells 给出引用单元格地址、实际值和公式，可用来排查引用错位。depth=1–5，引用值合计最多2000格，valueCoverage/各引用 truncated 明示截断；无法计算的值标记 valueAvailable=false，动态/外部等引用标明静态解析限制。mode=objects 的 reportFacts 是用于受控最终报告的宿主白名单事实：工作表清单、透视/源/缓存/切片器关联与保存总计身份；savedDisplayTotal 只在单度量、单层行列轴且明确 grand/location 对应时定位真实保存单元格，未知布局明确 unsupported，不聚合 cacheRecords，不执行刷新；checkpoint.isCurrent=false 时不能当当前已保存结果。mode=objects 返回图表、图片、可编辑平面形状 shapes（rect/ellipse/rightArrow）及当前修订传统批注 notes（ref/author/text），核验批注用 notes，不要为试探读取而改写正文；preserved 是原始保真包中的 OOXML 信息，externalLinks 是对象部件路径清单（overview 的 unsupported 计数还可能包含关系部件）；externalLinkDetails 只读给出实际外链目标字符串及 saved_worksheet/saved_external_link 两层保存缓存，updated=false 表示未执行更新，objects/overview 的 checkpointExternalLinks 的 isCurrent/packageState 区分已确认检查点与仅保真基底；目标永不自动访问，未知或歧义关联会明确说明，truncated=true 不能当作全量核验。外部公式只保留，不支持新增、覆盖、移动或本地重算；普通不涉及外链公式的单元格编辑允许；含外部定义名间接引用或外部数组公式的工作簿暂仅支持读取。 pivotTables/pivotCaches/slicerCaches/slicers 按实际关系给出源范围与关联，raw/effective/defaulted 区分原始属性和缺省值；checkpointPivots 明确最近保存修订，pendingPivotRefresh 只列当前修订待保存的标记，不能据标记声称缓存或透视显示结果已刷新，切片器仅保留不新增浏览器交互。drawings 列出实际保留的绘图及 editable/reason；未出现在 shapes 中不代表原件没有形状，复杂或未知绘图仅保留，不支持编辑。另含 checkpointCharts 的最近保存图表引用/缓存采样；isCurrent=false 时缓存不是当前修订，不能据此声称已更新。无需使用 files.readText 读取 XLSX 二进制核验缓存。指定 imageId 提取该图片给视觉模型。输入 docId 或工作区相对 path。",
+      "观察工作簿内容与结构，不修改文件。objects/overview 的 macroEvidence 从同一份当前磁盘包给出 VBA 字节长度/SHA256、真实关系/内容类型和工作簿/工作表 codeName；checkpoint.isCurrent=false 时不能当当前已保存修订。cellEditSupport=conditional 仅表示普通字面值 cells.set 在现有单元格保真检查下可尝试，当前 hash 不保证未来保存；编辑后必须重读并比较已保存包。签名、歧义或不支持类型应停止，不能靠二进制文本读取或额外probe猜测。只做静态检查，不执行宏、不验证宏运行结果。sourceFile 返回文档打开时与当前磁盘 SHA256、changedSinceOpen 和计算缓存是否只在内存；changedSinceOpen 不表示本次调用导致变化，computed-in-memory-not-persisted 不代表缓存已保存，rev/mtime 不能替代字节核验。range/formula_graph 返回当前内存值，不等于已保存缓存；外部公式在内存中可能为 #REF!，即使下载包仍保留原缓存。必须同时检查 sourceFile.calculation；外链保存缓存读 externalLinkDetails/checkpointExternalLinks，不据内存结果声称外链已更新。读取 xlsx/csv 工作簿快照；只取任务需要的区域和 facets，聚合统计可用 workbook_query，版式核对可用 workbook_render。mode=overview 返回工作表清单与规模，以及 tables 中的 Excel 表对象（名称、范围、列名及计算列公式）；表名未知时不要猜 Sheet1，可从清单取实际名称；单表读取可省略 sheet。mode=range 返回指定区域（facets: values|formulas|styles|layout|rules，紧凑行数组，超 2000 格或 16000 字符截断并返回 nextOffset；readWindow 分开保留裁剪前 requestedRange、裁剪后分页前 effectiveRange、clipped 与本页 returnedRange；complete 只表示 offset 后已无剩余，不保证原请求全部已读）；values 默认附同快照数字格式生成的 displayValues 和 displayBasis，不必请求完整 styles；displayValues 与 values 同形，null 明示格式不支持，空白显示仍为空字符串，不代表原生 Excel 视觉或保存缓存。values 仍以空字符串显示空值；blankCells 列出本次返回区域内无值且无公式的单元格，保真复制时将这些地址写为 null，不把它们变成空字符串。layout.merges 保留与 effectiveRange 相交的真实完整合并几何，0基原坐标不变；range/anchor 是 A1 坐标，不含锚点值。intersectsReturnedWindow/anchorInReturnedWindow 只表示几何与本页返回窗口的关系，不证明已读锚点值；空页二者均为 false，裁剪/分页不得冒充全域已读。values/blankCells 保持原值，不填充合并格或普通空白。layout 会返回 hyperlinks 的实际目标，核验链接用它，不要把 XLSX 当文本读取。layout.rows/columns 与 filter 内的行列索引均为0基；rows.hd 是独立行隐藏状态（包括手动/分组隐藏），不含全部筛选隐藏。layout.rowVisibility 使用1基行号，只覆盖 readWindow.returnedRange 内实际返回的全部行（包括表头，不是仅明细）：rowStateHiddenRows 来自 rows.hd，filteredOutRows 来自 filter.cachedFilteredOut，effectiveHiddenRows 是两者并集，visibleRows 是其余行；核验可见编号使用 visibleRows 对应 values，不能只看 rows.hd。筛选本身已隐藏不匹配行，不要另用 axis.hide 模拟，否则移除筛选后独立隐藏状态仍在。custom.excelmanusOutlineLevel 缺省0，custom.excelmanusCollapsed 缺省false，分组层级、隐藏和折叠标记互不等同；outline.raw 保留 outlinePr 原属性，effective/defaulted 标明缺省值，不代表浏览器支持原生分组±交互。mode=print 返回当前修订所有或指定 sheet 的打印区域、重复行列、手动分页、原始 pageSetup/pageSetUpPr/pageMargins/printOptions/headerFooter 属性与动态字段串；effective/defaulted 区分原值和 OOXML 默认值，fit 模式忽略 scale，未知或复杂项标明只保留。打印读取不修改原件，不是浏览器分页结果。mode=search 按子串搜索单元格。range/table 的 worksheetRows 与每个实际返回行一一对应，为真实 Excel 1-based 行号，不是数据行序号；保留空行和隐藏行。mode=table 将 range 首行作为表头返回对象行，worksheetRows 不含表头，headerWorksheetRow 标识表头位置；mode=formula_graph 核对公式引用：返回公式、当前快照计算值及静态前驱/下游依赖；references.cells 给出引用单元格地址、实际值和公式，可用来排查引用错位。depth=1–5，引用值合计最多2000格，valueCoverage/各引用 truncated 明示截断；无法计算的值标记 valueAvailable=false，动态/外部等引用标明静态解析限制。mode=objects 的 reportFacts 是用于受控最终报告的宿主白名单事实：工作表清单、透视/源/缓存/切片器关联与保存总计身份；savedDisplayTotal 只在单度量、单层行列轴且明确 grand/location 对应时定位真实保存单元格，未知布局明确 unsupported，不聚合 cacheRecords，不执行刷新；checkpoint.isCurrent=false 时不能当当前已保存结果。mode=objects 返回图表、图片、可编辑平面形状 shapes（rect/ellipse/rightArrow）及当前修订传统批注 notes（ref/author/text），核验批注用 notes，不要为试探读取而改写正文；preserved 是原始保真包中的 OOXML 信息，externalLinks 是对象部件路径清单（overview 的 unsupported 计数还可能包含关系部件）；externalLinkDetails 只读给出实际外链目标字符串及 saved_worksheet/saved_external_link 两层保存缓存，updated=false 表示未执行更新，objects/overview 的 checkpointExternalLinks 的 isCurrent/packageState 区分已确认检查点与仅保真基底；目标永不自动访问，未知或歧义关联会明确说明，truncated=true 不能当作全量核验。外部公式只保留，不支持新增、覆盖、移动或本地重算；普通不涉及外链公式的单元格编辑允许；含外部定义名间接引用或外部数组公式的工作簿暂仅支持读取。 pivotTables/pivotCaches/slicerCaches/slicers 按实际关系给出源范围与关联，raw/effective/defaulted 区分原始属性和缺省值；checkpointPivots 明确最近保存修订，pendingPivotRefresh 只列当前修订待保存的标记，不能据标记声称缓存或透视显示结果已刷新，切片器仅保留不新增浏览器交互。drawings 列出实际保留的绘图及 editable/reason；未出现在 shapes 中不代表原件没有形状，复杂或未知绘图仅保留，不支持编辑。另含 checkpointCharts 的最近保存图表引用/缓存采样；isCurrent=false 时缓存不是当前修订，不能据此声称已更新。无需使用 files.readText 读取 XLSX 二进制核验缓存。指定 imageId 提取该图片给视觉模型。输入 docId 或工作区相对 path。",
     input: readInput,
     output: z.record(z.string(), z.unknown()),
     effect: "read",
@@ -993,6 +1149,10 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
               mode: a.mode,
               columns: table.columns,
               rows,
+              // Table rows exclude the first (header) worksheet row. Blank and
+              // hidden rows are retained by loadRegionTable, not filtered out.
+              worksheetRows: rows.map((_, i) => region.r0 + offset + i + 2),
+              headerWorksheetRow: region.r0 + 1,
               total: table.rows.length,
               ...(offset + rows.length < table.rows.length
                 ? { nextOffset: offset + rows.length }
@@ -1060,6 +1220,10 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
               // Keep pagination ahead of verbose facets so context truncation cannot hide it.
               truncated,
               ...(truncated ? { nextOffset: (a.offset ?? 0) + Math.max(1, consumedRows) } : {}),
+              worksheetRows: Array.from(
+                { length: consumedRows },
+                (_, i) => region.r0 + (a.offset ?? 0) + i + 1,
+              ),
               readWindow: {
                 requestedRange,
                 effectiveRange,
@@ -1140,8 +1304,9 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
   const workbookAnalyze: ToolDefinition = {
     name: "workbook_analyze",
     title: "分析工作簿",
-    description: `对工作簿区域做查询、统计、差异比较或结果校验；不修改来源，只有显式 saveTo 才写入输出工作簿，reader 不允许 saveTo。复杂自定义计算可选 run_script。mode=sql 把指定工作表/区域（首行为表头）注册为 SQLite 的 ${WORKBOOK_ANALYZE_SQL_TABLE} 表并执行只读 SELECT/WITH 查询（也兼容 ${WORKBOOK_ANALYZE_SQL_SHEET_PLACEHOLDER} 作为 ${WORKBOOK_ANALYZE_SQL_TABLE} 的占位符），可传 sources:[{name,path,docId,sheet,range}] 加载其他文件/工作表，以 name 作为 SQL 表名做 JOIN/UNION；每源20万格、合计40万格、查询10秒上限。预览 ≤200 行；mode=sort_preflight 必须传明确 range，hasHeader 默认 false，仅读取排序目标与真实合并几何，复用排序执行的合并边界规则；status=blocked 是预检阻断且未执行，safe 仅表示数据区域与合并无交集，不等于已排序或所有其他条件安全。targetRange/dataRange 区分含表头目标与实际数据区域，merges.relation 区分跨边界、区内和区外，risk 区分跨数据行与同一行合并；跨行合并不能作为独立完整行无损重排，不要为取得拒绝回执尝试危险排序。savedSheet 仅在磁盘 SHA 匹配当前已保存检查点时提供整张工作表 XML 及非其他工作表 XML 包部件指纹，scope 与 targetRange 分开；它不是该次预检执行排序或整过程未改的证明。mode=profile 返回每列的类型/非空数/去重数/min/max/mean/top 值；top 最多列出5种非空值，topCoverage 的 coveredNonNull/totalNonNull/truncated 明示列表覆盖记录数与截断，frequencyTrackingTruncated=true 表示超过500种值的频次跟踪上限，此时 top 也不保证全局高频排名；不得把 top 当完整值清单或据此推断其余值；mode=diff 用 right 指定另一区域，可按 keys 组合键或位置比较；返回 left/right 的来源文件、工作表与区域，changes 中 beforeWorksheetRow/afterWorksheetRow 是两侧实际工作表行号（缺失侧为 null），报告来源位置应直接使用它们，不按结果排序猜行号；beforeRow/afterRow 为不含表头的1基明细行；mode=check 用 checks 校验 required/unique/range/pattern/foreign_key/row_expression/cell/total/formula_errors，cell.row 为不含表头的1基明细行。输入 docId 或工作区相对 path。`,
+    description: `对工作簿区域做查询、统计、差异比较或结果校验。复制/宽转长/关联后的身份与来源核验用 mode=source_alignment；金额一致性用 mode=check 的显式等式，不能用汇总自洽替代来源核验。source_alignment 仅验证目标中声明字段，不会发现目标中完全遗漏的源行；另核源行×月份覆盖及排除依据，不能以存活行通过或合计相等代替记录完整性。排除金额不等于身份未知，应按身份来源独立核验。不修改来源，只有显式 saveTo 才写入输出工作簿，reader 不允许 saveTo。复杂自定义计算可选 run_script。mode=sql 把指定工作表/区域（首行为表头）注册为 SQLite 的 ${WORKBOOK_ANALYZE_SQL_TABLE} 表并执行只读 SELECT/WITH 查询（也兼容 ${WORKBOOK_ANALYZE_SQL_SHEET_PLACEHOLDER} 作为 ${WORKBOOK_ANALYZE_SQL_TABLE} 的占位符），可传 sources:[{name,path,docId,sheet,range}] 加载其他文件/工作表，以 name 作为 SQL 表名做 JOIN/UNION；每源20万格、合计40万格、查询10秒上限。预览 ≤200 行；mode=sort_preflight 必须传明确 range，hasHeader 默认 false，仅读取排序目标与真实合并几何，复用排序执行的合并边界规则；status=blocked 是预检阻断且未执行，safe 仅表示数据区域与合并无交集，不等于已排序或所有其他条件安全。targetRange/dataRange 区分含表头目标与实际数据区域，merges.relation 区分跨边界、区内和区外，risk 区分跨数据行与同一行合并；跨行合并不能作为独立完整行无损重排，不要为取得拒绝回执尝试危险排序。savedSheet 仅在磁盘 SHA 匹配当前已保存检查点时提供整张工作表 XML 及非其他工作表 XML 包部件指纹，scope 与 targetRange 分开；它不是该次预检执行排序或整过程未改的证明。mode=profile 返回每列的类型/非空数/去重数/min/max/mean/top 值；top 最多列出5种非空值，topCoverage 的 coveredNonNull/totalNonNull/truncated 明示列表覆盖记录数与截断，frequencyTrackingTruncated=true 表示超过500种值的频次跟踪上限，此时 top 也不保证全局高频排名；不得把 top 当完整值清单或据此推断其余值；mode=diff 用 right 指定另一区域，可按 keys 组合键或位置比较；返回 left/right 的来源文件、工作表与区域，changes 中 beforeWorksheetRow/afterWorksheetRow 是两侧实际工作表行号（缺失侧为 null），报告来源位置应直接使用它们，不按结果排序猜行号；beforeRow/afterRow 为不含表头的1基明细行；mode=source_alignment 在保存后只读核验显式来源映射，不能用汇总自洽替代。range 必须是目标数据行区域（不含表头），alignment:{headerRow,requiredColumns,bindings}；sources 每项必须含明确 range。字段绑定 {kind:cell,column,source,referenceColumn,scale?,mergeAnchor?,rowColumn?,sameColumnAs?} 按目标引用列读取真实源格，严格区分空白/空串/0/文本ID；{kind:period,column,source,yearReferenceColumn,monthReferenceColumn,valueReferenceColumn} 只支持来源四位年及1–12月，联合核实际同列/合并几何，不能任意映射月份；{kind:lookup,column,source,keys:[{targetColumn,sourceColumn}],valueColumn,where?:[{column,equals}],duplicatePolicy?:reject|identical_rows,duplicateColumns?,conflictPolicy?:unverified|expect_blank} 独立核身份，目标NULL/排除状态不跳过。lookup源range首行为表头；identical_rows必须声明源全部列，冲突默认unverified，expect_blank仅按显式规则要求目标真空白，不证明业务上应隔离。复制/宽转长/关联后应按任务明确声明需验证字段并调用；不支持的转换、遗漏绑定、超预算及版本不符为unverified，不猜业务。verification仅说明声明域，uncoveredColumns和sourcePolicies必须披露，未调用或未覆盖不得声称全面正确。mode=check 用 checks 校验 required/unique/range/pattern/foreign_key/row_expression/cell/total/formula_errors，cell.row 为不含表头的1基明细行。输入 docId 或工作区相对 path。`,
     input: analyzeInput,
+    inputJsonSchema: z.toJSONSchema(analyzeInput, { io: "input" }),
     output: z.record(z.string(), z.unknown()),
     effect: (a: z.infer<typeof analyzeInput> | null) => (a?.saveTo ? "write" : "read"),
     targets: (a) => {
@@ -1172,6 +1337,15 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
         for (const source of a.sources ?? [])
           if (source.docId || source.path)
             svc.editTarget(ctx.workspaceId, ctx.workspaceRoot, source);
+        if (a.mode === "source_alignment") {
+          svc.assertSavedReadOpen(ctx.workspaceId, ctx.workspaceRoot, a);
+          for (const source of a.sources ?? [])
+            svc.assertSavedReadOpen(
+              ctx.workspaceId,
+              ctx.workspaceRoot,
+              source.path || source.docId ? source : a,
+            );
+        }
         const doc = await openDoc(svc, ctx, a.docId, a.path);
         const base = {
           docId: doc.docId,
@@ -1179,6 +1353,122 @@ export function workbookTools(svc: DocumentService): ToolDefinition[] {
           ...docRevsOf(doc.docId, doc.rev),
           sourceFile: await svc.sourceStatus(doc.docId, ctx.workspaceRoot),
         };
+        if (a.mode === "source_alignment") {
+          if (a.saveTo || !a.range || !a.alignment || !a.sources?.length)
+            throw new Error("source_alignment 只读，需要 range、alignment 和明确 sources");
+          const declarations = a.sources.map((s) => {
+            if (!s.range) throw new Error("source_alignment 每个来源需要明确 range");
+            return { ...s, range: s.range };
+          });
+          const sources: AlignmentSource[] = [];
+          const observed = [
+            { doc, status: base.sourceFile, entry: await svc.entry(doc.docId, ctx.workspaceRoot) },
+          ];
+          const record = (
+            d: DocRef,
+            sheet: string | undefined,
+            range: string,
+            headerRow?: number,
+          ) => {
+            const r = resolveRegion(d, sheet, range);
+            const parsed = parseRange(range);
+            if (parsed.endRow - 1 !== r.r1 || parsed.endCol - 1 !== r.c1)
+              throw new Error("source_alignment 不允许裁剪来源或目标区域");
+            ctx.reads.record(
+              d.docId,
+              [
+                { sheetId: r.sheetId, r0: r.r0, r1: r.r1, c0: r.c0, c1: r.c1 },
+                ...(headerRow === undefined
+                  ? []
+                  : [
+                      {
+                        sheetId: r.sheetId,
+                        r0: headerRow - 1,
+                        r1: headerRow - 1,
+                        c0: r.c0,
+                        c1: r.c1,
+                      },
+                    ]),
+              ],
+              d.rev,
+            );
+            base.docRevs[d.docId] = d.rev;
+          };
+          record(doc, a.sheet, a.range, a.alignment.headerRow);
+          for (const s of declarations) {
+            svc.assertSavedReadOpen(
+              ctx.workspaceId,
+              ctx.workspaceRoot,
+              s.path || s.docId ? s : { docId: doc.docId },
+            );
+            const other = s.path || s.docId ? await openDoc(svc, ctx, s.docId, s.path) : doc;
+            record(other, s.sheet, s.range);
+            sources.push({ ...other, name: s.name, range: s.range, sheet: s.sheet });
+            observed.push({
+              doc: other,
+              status: await svc.sourceStatus(other.docId, ctx.workspaceRoot),
+              entry: await svc.entry(other.docId, ctx.workspaceRoot),
+            });
+          }
+          // Re-read disk fingerprints before a synchronous verification pass; actor entry revisions
+          // below remain live objects, so awaits above cannot certify a stale snapshot.
+          const finalStatuses: Awaited<ReturnType<DocumentService["sourceStatus"]>>[] = [];
+          for (const item of observed)
+            finalStatuses.push(await svc.sourceStatus(item.doc.docId, ctx.workspaceRoot));
+          const verification = verifySourceAlignment({
+            target: doc,
+            range: a.range,
+            sheet: a.sheet,
+            sources,
+            ...a.alignment,
+          });
+          const invalid = observed.filter(
+            (item, i) =>
+              item.entry.meta.rev !== item.doc.rev ||
+              item.entry.checkpointRev !== item.doc.rev ||
+              item.status.pendingWrite ||
+              finalStatuses[i]!.pendingWrite ||
+              item.status.calculation !== "no-unpersisted-calculation-observed" ||
+              finalStatuses[i]!.calculation !== "no-unpersisted-calculation-observed" ||
+              item.entry.computedInMemoryOnly ||
+              item.status.currentSha256 !== finalStatuses[i]!.currentSha256 ||
+              item.entry.checkpointHash !== finalStatuses[i]!.currentSha256,
+          );
+          if (invalid.length) {
+            verification.status = "unverified";
+            verification.unverifiedCount += invalid.length;
+            verification.coveredColumns = [];
+            verification.uncoveredColumns = [
+              ...new Set([...verification.uncoveredColumns, ...a.alignment.requiredColumns]),
+            ];
+            for (const item of invalid)
+              if (verification.failures.length < 100)
+                verification.failures.push({
+                  targetCell: item.doc.path,
+                  ruleIndex: -1,
+                  code: "SNAPSHOT_NOT_CURRENT_SAVED_VERSION",
+                });
+            verification.failuresTruncated =
+              verification.failedCount + verification.unverifiedCount >
+              verification.failures.length;
+          }
+          return {
+            status: "ok",
+            data: {
+              ...base,
+              mode: a.mode,
+              verification,
+              versionBindings: observed.map((item, i) => ({
+                docId: item.doc.docId,
+                path: item.doc.path,
+                rev: item.doc.rev,
+                sha256: finalStatuses[i]!.currentSha256,
+                checkpointRev: item.entry.checkpointRev,
+                isCurrentSaved: !invalid.includes(item),
+              })),
+            },
+          };
+        }
         if (a.mode === "sort_preflight") {
           if (!a.range) throw new Error("sort_preflight 需要明确 range");
           if (a.saveTo) throw new Error("sort_preflight 只读，不支持 saveTo");

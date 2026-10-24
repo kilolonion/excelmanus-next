@@ -50,6 +50,29 @@ function toolOutput(id: string, toolName: string, args: unknown) {
   };
 }
 
+function record(value: unknown): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    throw new Error("expected an object in the provider-visible tool result");
+  return value as Record<string, unknown>;
+}
+
+function visibleToolResult(
+  prompt: readonly { role: string; content: unknown }[],
+  toolCallId: string,
+): Record<string, unknown> {
+  for (const message of prompt) {
+    if (message.role !== "tool" || !Array.isArray(message.content)) continue;
+    for (const item of message.content) {
+      const part = record(item);
+      if (part.type !== "tool-result" || part.toolCallId !== toolCallId) continue;
+      const output = record(part.output);
+      if (output.type !== "json") throw new Error("expected a successful JSON tool result");
+      return record(output.value);
+    }
+  }
+  throw new Error(`inspect result is not visible to the provider: ${toolCallId}`);
+}
+
 class RecoveryClient {
   readonly messages: ServerMessage[] = [];
   private readonly socket: WebSocket;
@@ -104,10 +127,27 @@ test("写后客户端断线不停止任务，游标重连与同消息重发不�
   const editId = "client-recovery-edit";
   const prefix = "已插入一行，";
   const suffix = "原有内容已保留。";
+  const reasoningPrefix = "正在整理已保存结果，未验证事项仍保留。";
+  const inspectId = "client-recovery-inspect";
+  const finalizeId = "client-recovery-finalize";
+  const expectNoDraftText = (messages: readonly ServerMessage[]) => {
+    for (const message of messages) {
+      let displayedText = "";
+      if (message.type === "snapshot") displayedText = message.text;
+      if (message.type === "delta" && message.kind === "text" && typeof message.payload === "string")
+        displayedText = message.payload;
+      if (message.type === "rec" && message.record.type === "model.output") {
+        const text = message.record.data.text;
+        if (typeof text === "string") displayedText = text;
+      }
+      expect(displayedText).not.toContain(prefix);
+      expect(displayedText).not.toContain(suffix);
+    }
+  };
   const model = new MockLanguageModelV4({
     provider: "mock",
     modelId: "client-recovery",
-    doStream: async () => {
+    doStream: async (opts) => {
       step++;
       if (step === 1)
         return toolOutput("client-recovery-read", "workbook_read", {
@@ -132,11 +172,35 @@ test("写后客户端断线不停止任务，游标重连与同消息重发不�
           range: "Sheet1!A1:B4",
         });
       }
-      if (step !== 4) throw new Error("客户端重连不应启动额外模型步骤");
+      if (step === 5) return toolOutput(inspectId, "deliver", { action: "inspect" });
+      if (step === 6) {
+        // Handles come only from the actual model prompt, never the test's SQLite probes.
+        const inspected = visibleToolResult(opts.prompt, inspectId);
+        expect(inspected.status).toBe("ok");
+        const data = record(inspected.data);
+        expect(data.action).toBe("inspect");
+        expect(data.allowedOutcomes).toContain("partial");
+        expect(data.allowedOutcomes).not.toContain("completed");
+        expect(data.unverifiedObligationCount).toBeGreaterThan(0);
+        if (!Array.isArray(data.artifacts)) throw new Error("missing visible artifact directory");
+        const artifacts = data.artifacts.map(record).filter((artifact) => artifact.path === filename);
+        expect(artifacts).toHaveLength(1);
+        const artifact = artifacts[0]!;
+        expect(artifact).toMatchObject({
+          path: filename, execution: "succeeded", persistence: "saved", validation: "unverified",
+        });
+        if (typeof artifact.id !== "string") throw new Error("missing inspected artifact handle");
+        return toolOutput(finalizeId, "deliver", {
+          action: "finalize", outcome: "partial", artifactIds: [artifact.id],
+        });
+      }
+      if (step !== 4) throw new Error("客户端重连不应启动计划外的模型步骤");
       return {
         stream: new ReadableStream<LanguageModelV4StreamPart>({
           async start(controller) {
             controller.enqueue({ type: "stream-start", warnings: [] });
+            controller.enqueue({ type: "reasoning-start", id: "recovery-reasoning" });
+            controller.enqueue({ type: "reasoning-delta", id: "recovery-reasoning", delta: reasoningPrefix });
             controller.enqueue({ type: "text-start", id: "reply" });
             controller.enqueue({ type: "text-delta", id: "reply", delta: prefix });
             awaitingFinish = true;
@@ -144,6 +208,7 @@ test("写后客户端断线不停止任务，游标重连与同消息重发不�
             await finish.promise;
             controller.enqueue({ type: "text-delta", id: "reply", delta: suffix });
             controller.enqueue({ type: "text-end", id: "reply" });
+            controller.enqueue({ type: "reasoning-end", id: "recovery-reasoning" });
             controller.enqueue({
               type: "finish",
               usage,
@@ -231,7 +296,7 @@ test("写后客户端断线不停止任务，游标重连与同消息重发不�
     expect(srv.hasRunningAgents()).toBe(true);
     expect((await api.getSession(session.id)).agents[0]?.status).toBe("running");
 
-    // 没有业务 WS 客户端时继续真实只读核对与终稿，不中断上游模型流。
+    // 没有业务 WS 客户端时继续真实只读核对与流式思考；自由终稿仍受交付门控。
     afterWrite.open();
     await vi.waitFor(async () => {
       expect(awaitingFinish).toBe(true);
@@ -291,9 +356,12 @@ test("写后客户端断线不停止任务，游标重连与同消息重发不�
     ).toBe(true);
     await vi.waitFor(() => {
       expect(reconnected.records().map((m) => m.record)).toEqual(missed);
-      expect(reconnected.messages.some((m) => m.type === "snapshot" && m.text === prefix)).toBe(
-        true,
-      );
+      expect(
+        reconnected.messages.some(
+          (m) => m.type === "snapshot" && m.reasoning === reasoningPrefix && m.text === "",
+        ),
+      ).toBe(true);
+      expectNoDraftText(reconnected.messages);
       expect(reconnected.messages.filter((m) => m.type === "sub.ok")).toHaveLength(2);
     }, waitOptions);
     expect(reconnected.messages.filter((m) => m.type === "doc.op")).toHaveLength(0);
@@ -337,9 +405,29 @@ test("写后客户端断线不停止任务，游标重连与同消息重发不�
       status: "ok",
       result: { status: "ok", data: { docRevs: { [document.id]: 1 } } },
     });
+    // The draft is recorded as withheld, never rendered as a successful final reply.
     expect(
-      completed.filter((r) => r.type === "model.output" && r.data.text === prefix + suffix),
+      completed.filter((r) => r.type === "model.output" && r.data.withheldText === prefix + suffix),
     ).toHaveLength(1);
+    expect(
+      completed.filter((r) => r.type === "model.output" && r.data.deliveryStatus === "rejected"),
+    ).toHaveLength(1);
+    const delivered = completed.find(
+      (r) => r.type === "tool.result" && r.data.toolCallId === finalizeId,
+    );
+    expect(delivered?.data).toMatchObject({
+      status: "ok",
+      result: { status: "ok", data: { outcome: "partial", finalizationStatus: "incomplete" } },
+    });
+    const finalOutputs = completed.filter(
+      (r) => r.type === "model.output" && r.data.sourceToolCallId === finalizeId,
+    );
+    expect(finalOutputs).toHaveLength(1);
+    expect(completed.filter((r) => r.type === "model.output").at(-1)).toEqual(finalOutputs[0]);
+    expect(finalOutputs[0]?.data).toMatchObject({ deliveryStatus: "incomplete", text: expect.any(String) });
+    for (const toolCallId of [inspectId, finalizeId])
+      for (const type of ["tool.intent", "tool.result"])
+        expect(completed.filter((r) => r.type === type && r.data.toolCallId === toolCallId)).toHaveLength(1);
     expect(new Set(reconnected.records().map((r) => r.seq)).size).toBe(
       reconnected.records().length,
     );
@@ -373,7 +461,8 @@ test("写后客户端断线不停止任务，游标重连与同消息重发不�
     expect(docOps()).toHaveLength(1);
     expect(backups()).toHaveLength(1);
     expect(readFileSync(file)).toEqual(committed);
-    expect(step).toBe(4);
+    for (const client of clients) expectNoDraftText(client.messages);
+    expect(step).toBe(6);
   } finally {
     afterWrite.open();
     finish.open();

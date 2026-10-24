@@ -31,6 +31,7 @@ import {
 } from "./compaction.ts";
 import { FileLeaseError, type LeaseService } from "./leases.ts";
 import { NUMERIC_DELIVERY_GUIDANCE, numericDeliveryState } from "./numeric-delivery.ts";
+import { harnessContext, harnessState, harnessTaskId, stableHarnessHash } from "./harness-state.ts";
 import { numericExecutionFacts } from "./numeric-execution-facts.ts";
 import { lastCompactionSeq } from "./projections.ts";
 import type { QuestionCoordinator } from "./questions.ts";
@@ -1718,10 +1719,20 @@ class AgentActor {
         this.agentId,
         turnId,
       );
-      const delivery = { ...numericDelivery, required: numericDelivery.required || accessRequired };
+      const taskBinding = turnAccessBinding(this.deps.db, this.sessionId, this.agentId, turnId);
+      const harness = harnessState(
+        this.deps.db,
+        this.sessionId,
+        harnessTaskId({ sessionId: this.sessionId, agentId: this.agentId, turnId, ...taskBinding }),
+      );
+      const delivery = {
+        ...numericDelivery,
+        required: numericDelivery.required || accessRequired || harness.required,
+      };
       const deliveryGuidance = [
         numericDelivery.required ? NUMERIC_DELIVERY_GUIDANCE : "",
         accessRequired ? ACCESS_DELIVERY_GUIDANCE : "",
+        harnessContext(harness),
       ]
         .filter(Boolean)
         .join("\n");
@@ -1733,6 +1744,9 @@ class AgentActor {
               stepId,
               text:
                 "本轮已达到执行限制，证据交付未完成。\n\n" +
+                (harness.required
+                  ? "文件保存和业务校验的宿主状态仍需完成交付；未完成不表示已回滚。\n\n"
+                  : "") +
                 numericExecutionFacts(this.deps.db, this.sessionId, this.agentId, turnId) +
                 (accessRequired
                   ? "\n\n" +
@@ -2938,8 +2952,25 @@ class AgentActor {
           .get(this.sessionId, this.agentId, call.id)
       )
         return "done";
-      result = withVocabularyCode(result);
       const finalizing = tool?.finalizesTurn?.(call.args) === true;
+      const nativeDelivery = call.name === "deliver" || call.name === "present";
+      let hostFinalizationConflict = false;
+      if (finalizing && nativeDelivery && result.status === "error" &&
+          result.error?.code === "VERSION_CONFLICT" && result.error.retryable === true) {
+        try { hostFinalizationConflict = tool?.isHostFinalizationConflict?.(result) === true; } catch { /* fail closed */ }
+      }
+      // The callback authenticates the live result before normalization can clone it.
+      // Never accept a serialized marker as retry authority.
+      if (nativeDelivery && result.data !== null && typeof result.data === "object" && !Array.isArray(result.data)) {
+        const data = { ...(result.data as Record<string, unknown>) };
+        delete data.__hostFinalizationConflict;
+        result = { ...result, data };
+      }
+      if (hostFinalizationConflict) result = { ...result, data: {
+        ...(result.data !== null && typeof result.data === "object" && !Array.isArray(result.data) ? result.data as Record<string, unknown> : {}),
+        __hostFinalizationConflict: { version: 1, kind: "state_changed", turnId },
+      } };
+      result = withVocabularyCode(result);
       let finalText: string | undefined;
       if (finalizing && parsedArgs?.success && result.status === "ok") {
         try {
@@ -2983,7 +3014,7 @@ class AgentActor {
               },
               { type: "turn.completed", data: { turnId, reason: "stop" } },
             ]
-          : finalizing && result.status !== "ok"
+          : finalizing && result.status !== "ok" && !hostFinalizationConflict
             ? [
                 {
                   type: "model.output",
@@ -2997,6 +3028,7 @@ class AgentActor {
       if (
         finalizing &&
         result.status !== "ok" &&
+        !hostFinalizationConflict &&
         numericDeliveryState(this.deps.db, this.sessionId, this.agentId, turnId).rejected > 1
       ) {
         this.failNumericDelivery(turnId);
@@ -3202,9 +3234,13 @@ export function recoverInterruptedAgents(deps: {
   for (const agent of running) {
     const intents = deps.db
       .prepare(
-        "SELECT tool_call_id, tool_name FROM open_intents WHERE session_id = ? AND agent_id = ? ORDER BY created_seq",
+        "SELECT tool_call_id, tool_name, created_seq FROM open_intents WHERE session_id = ? AND agent_id = ? ORDER BY created_seq",
       )
-      .all(agent.session_id, agent.id) as { tool_call_id: string; tool_name: string }[];
+      .all(agent.session_id, agent.id) as {
+      tool_call_id: string;
+      tool_name: string;
+      created_seq: number;
+    }[];
     const records: { type: string; data: unknown }[] = intents.map((it) => {
       const declared = deps.tools?.get(it.tool_name);
       const originalIntent = deps.db
@@ -3218,6 +3254,7 @@ export function recoverInterruptedAgents(deps: {
       const tool =
         declared && isResultPage(originalArgs) ? resultPageTool(declared, deps.db) : declared;
       let recovered: ToolResult | undefined;
+      let recoveryTurnId: string | undefined;
       if (tool?.recover) {
         // tool.intent 记录里有当时解析后的参数
         const intentRow = deps.db
@@ -3250,6 +3287,7 @@ export function recoverInterruptedAgents(deps: {
                 )
                 .get(agent.session_id, agent.id, intent.stepId) as { turnId: string } | undefined)
             : undefined;
+          recoveryTurnId = step?.turnId;
           if (!step) {
             const last = deps.db
               .prepare(
@@ -3294,6 +3332,7 @@ export function recoverInterruptedAgents(deps: {
               toolCallId: it.tool_call_id,
               args,
               intentMeta,
+              intentSeq: it.created_seq,
               workspaceRoot,
               turnId: step?.turnId,
               access,
@@ -3312,6 +3351,63 @@ export function recoverInterruptedAgents(deps: {
           retryable: false,
         },
       };
+      // The recovery wrapper may not run when current access binding fails. An unsafe
+      // invocation with unknown outcome remains a task obligation, never basic chat.
+      let effect:
+        | ReturnType<Extract<ToolDefinition["effect"], (...args: never[]) => unknown>>
+        | ToolDefinition["effect"]
+        | undefined;
+      try {
+        effect =
+          tool &&
+          (typeof tool.effect === "function" ? tool.effect(originalArgs as never) : tool.effect);
+      } catch {
+        effect = "write";
+      }
+      const observedWrite =
+        effect !== "read" &&
+        ([
+          "workbook_edit",
+          "workbook_analyze",
+          "workbook_export",
+          "run_script",
+          "files",
+          "write",
+          "edit",
+        ].includes(it.tool_name) ||
+          it.tool_name.startsWith("mcp__"));
+      const hasReceipt = deps.db
+        .prepare(
+          "SELECT 1 FROM session_log WHERE session_id=? AND agent_id=? AND seq>? AND type='harness.event' AND json_extract(data,'$.kind')='artifact' AND json_extract(data,'$.artifact.toolCallId')=? LIMIT 1",
+        )
+        .get(agent.session_id, agent.id, it.created_seq, it.tool_call_id);
+      if (observedWrite && result.status !== "not_executed" && !hasReceipt) {
+        const turnId =
+          recoveryTurnId ??
+          (
+            deps.db
+              .prepare(
+                "SELECT json_extract(data,'$.turnId') AS turnId FROM session_log WHERE session_id=? AND agent_id=? AND type='turn.started' ORDER BY seq DESC LIMIT 1",
+              )
+              .get(agent.session_id, agent.id) as { turnId: string } | undefined
+          )?.turnId ??
+          "legacy";
+        const origin = turnAccessBinding(deps.db, agent.session_id, agent.id, turnId);
+        const taskId = harnessTaskId({
+          sessionId: agent.session_id,
+          agentId: agent.id,
+          turnId,
+          ...origin,
+        });
+        recordsNoopRecoveryGuard(
+          deps.log,
+          agent.session_id,
+          agent.id,
+          taskId,
+          it.tool_call_id,
+          it.tool_name,
+        );
+      }
       return {
         type: "tool.result",
         data: {
@@ -3347,4 +3443,37 @@ export function recoverInterruptedAgents(deps: {
     if (records.length > 0) deps.log.append(agent.session_id, agent.id, records);
   }
   return running.length + queuedOnly.length;
+}
+
+/** Metadata-only uncertainty record. No path access, checkpoint, rollback or replay. */
+function recordsNoopRecoveryGuard(
+  log: SessionLog,
+  sessionId: string,
+  agentId: string,
+  taskId: string,
+  toolCallId: string,
+  toolName: string,
+): void {
+  log.append(sessionId, agentId, [
+    {
+      type: "harness.event",
+      data: {
+        kind: "artifact",
+        artifact: {
+          id:
+            "hartifact_recovery_" + stableHarnessHash({ sessionId, taskId, toolCallId, toolName }),
+          taskId,
+          toolCallId,
+          path: "unresolved/" + toolName,
+          effect: "external",
+          execution: "uncertain",
+          persistence: "unknown",
+          footprint: ["*"],
+          validation: "unverified",
+          bindings: [],
+          dependencyGaps: ["RECOVERY_IDENTITY_OR_ACCESS_UNAVAILABLE"],
+        },
+      },
+    },
+  ]);
 }

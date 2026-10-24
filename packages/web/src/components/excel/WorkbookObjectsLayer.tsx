@@ -18,6 +18,7 @@ type Props = {
   revision: number | undefined;
   sheetKey: string | null;
   ready: number;
+  captureReadonly?: boolean;
 };
 type NoteMark = {
   id: string;
@@ -33,7 +34,15 @@ type Item = {
   popup: { extraProps: Record<string, unknown> };
 };
 /** Canvas-owned clipped layer: objects never reflow the page or move to fit its edge. */
-export function WorkbookObjectsLayer({ api, host, docId, revision, sheetKey, ready }: Props) {
+export function WorkbookObjectsLayer({
+  api,
+  host,
+  docId,
+  revision,
+  sheetKey,
+  ready,
+  captureReadonly = false,
+}: Props) {
   const clip = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<{
     api: Props["api"];
@@ -120,21 +129,24 @@ export function WorkbookObjectsLayer({ api, host, docId, revision, sheetKey, rea
                   : { image: object }),
             docId,
             sheetId: sheet.getSheetId(),
-            onDelete: async () => {
-              const current = WorkbookObjects.parse(
-                api.wb.getSheetBySheetId(sheet.getSheetId())?.getSheet().getSnapshot().custom
-                  ?.excelmanusObjects,
-              );
-              current.images = current.images.filter((image) => image.id !== object.id);
-              if (
-                !(await api.univerAPI.executeCommand(OBJECT_LAYER_MUTATION, {
-                  unitId: api.wb.getId(),
-                  subUnitId: sheet.getSheetId(),
-                  objects: current,
-                }))
-              )
-                throw new Error("图片删除未完成");
-            },
+            captureReadonly,
+            onDelete: captureReadonly
+              ? undefined
+              : async () => {
+                  const current = WorkbookObjects.parse(
+                    api.wb.getSheetBySheetId(sheet.getSheetId())?.getSheet().getSnapshot().custom
+                      ?.excelmanusObjects,
+                  );
+                  current.images = current.images.filter((image) => image.id !== object.id);
+                  if (
+                    !(await api.univerAPI.executeCommand(OBJECT_LAYER_MUTATION, {
+                      unitId: api.wb.getId(),
+                      subUnitId: sheet.getSheetId(),
+                      objects: current,
+                    }))
+                  )
+                    throw new Error("图片删除未完成");
+                },
           },
         },
       })),
@@ -269,9 +281,13 @@ export function WorkbookObjectsLayer({ api, host, docId, revision, sheetKey, rea
       commands?.dispose();
       fonts?.removeEventListener("loadingdone", invalidateRects);
     };
-  }, [api, host, docId, revision, sheetKey, ready]);
+  }, [api, host, docId, revision, sheetKey, ready, captureReadonly]);
   return (
-    <div ref={clip} style={{ position: "fixed", visibility: "hidden", pointerEvents: "none" }}>
+    <div
+      data-em-workbook-objects=""
+      ref={clip}
+      style={{ position: "fixed", visibility: "hidden", pointerEvents: "none" }}
+    >
       {items.map(({ object, popup }) => (
         <div
           key={JSON.stringify([popup.extraProps.docId, popup.extraProps.sheetId, object.id])}

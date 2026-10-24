@@ -1,3 +1,4 @@
+import type { ApiReadOptions } from "@excelmanus/protocol";
 // 应用级状态：启动/连接、部署信息、工作区、模型档案与提供商、全局设置。
 // 启动编排在 lib/boot.ts；这里只放数据与刷新动作。
 
@@ -66,9 +67,9 @@ let profileRead = 0;
 
 let latestWorkspaceRead: Promise<Workspace[]> | null = null;
 
-export function refreshWorkspaces(): Promise<Workspace[]> {
+export function refreshWorkspaces(options?: ApiReadOptions): Promise<Workspace[]> {
   const request = ++workspaceRead;
-  const pending = readWorkspaces(request).catch((error: unknown) => {
+  const pending = readWorkspaces(request, options).catch((error: unknown) => {
     if (request !== workspaceRead && latestWorkspaceRead) return latestWorkspaceRead;
     throw error;
   });
@@ -76,21 +77,21 @@ export function refreshWorkspaces(): Promise<Workspace[]> {
   return pending;
 }
 
-async function readWorkspaces(request: number): Promise<Workspace[]> {
-  const { items } = await api().listWorkspaces();
+async function readWorkspaces(request: number, options?: ApiReadOptions): Promise<Workspace[]> {
+  const { items } = await api().listWorkspaces(options);
   if (request !== workspaceRead) return latestWorkspaceRead ?? useAppStore.getState().workspaces;
   set({ workspaces: items });
   return items;
 }
 
-export async function refreshProfiles(): Promise<void> {
+export async function refreshProfiles(options?: ApiReadOptions): Promise<void> {
   const request = ++profileRead;
   set({ profilesLoading: true, profilesError: null });
   try {
     const [profiles, providers, connections] = await Promise.all([
-      api().listModelProfiles(),
-      api().listProviders(),
-      api().listProviderConnections(),
+      api().listModelProfiles(options),
+      api().listProviders(options),
+      api().listProviderConnections(options),
     ]);
     if (request !== profileRead) return;
     set({
@@ -114,9 +115,9 @@ export async function refreshProfiles(): Promise<void> {
 
 let settingsRead = 0;
 
-export async function refreshSettings(): Promise<AppSettings> {
+export async function refreshSettings(options?: ApiReadOptions): Promise<AppSettings> {
   const request = ++settingsRead;
-  const { settings } = await api().getSettings();
+  const { settings } = await api().getSettings(options);
   if (request === settingsRead) set({ settings });
   return settings;
 }

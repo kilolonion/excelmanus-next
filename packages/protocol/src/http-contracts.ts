@@ -171,6 +171,11 @@ export const httpContracts: HttpContract[] = [
   { method: "delete", path: "/sessions/{id}", response: rest.OkResponse },
   { method: "get", path: "/sessions/{id}/log", response: rest.SessionLogResponse },
   {
+    method: "get",
+    path: "/sessions/{id}/history-window",
+    response: rest.SessionHistoryWindowResponse,
+  },
+  {
     method: "post",
     path: "/sessions/{id}/agents/{agentId}/messages",
     body: rest.SendMessageBody,

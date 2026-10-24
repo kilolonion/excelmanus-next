@@ -197,4 +197,12 @@ export const KERNEL_MIGRATIONS: readonly Migration[] = [
   },
   LEASES_MIGRATION,
   CHANGE_SUMMARIES_MIGRATION,
+  {
+    id: "kernel/turn-access-records-index",
+    sql: `
+  CREATE INDEX session_log_turn_access_records
+  ON session_log(session_id, agent_id, seq DESC, type, data)
+  WHERE type IN ('turn.started', 'turn.access.updated');
+    `,
+  },
 ];

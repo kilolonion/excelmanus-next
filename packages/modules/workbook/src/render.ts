@@ -1,9 +1,15 @@
 // workbook_render（06 §4.4、07 §8）：把活文档某修订的区域排成版式（行高列宽、合并、
 // 常用样式），交给装配层注入的渲染端画成 PNG，作为视觉输入返回。
 
+import { createHash } from "node:crypto";
 import { formatRange, indexToCol, parseRange } from "@excelmanus/core";
 import type { ToolDefinition } from "@excelmanus/kernel";
-import type { RenderLayout, ToolResult } from "@excelmanus/protocol";
+import {
+  type RenderLayout,
+  type ToolResult,
+  WorkbookCapturePacket,
+  WorkbookCaptureReceipt,
+} from "@excelmanus/protocol";
 import { type ICellData, type IWorkbookData, type IWorksheetData, numfmt } from "@univerjs/core";
 import { SSF } from "xlsx";
 import { z } from "zod";
@@ -103,6 +109,7 @@ export function buildLayout(
   const r1 = Math.min(parsed.endRow - 1, r0 + MAX_ROWS - 1);
   const c1 = Math.min(parsed.endCol - 1, c0 + MAX_COLS - 1);
   const limitations = [
+    "此图根据活文档数据重绘（reconstructed），不是工作台浏览器视图或 Excel 原生界面的截图",
     "图表采用当前单元格数值重绘，Excel 特殊图表样式、3D 与旋转裁剪未支持；GIF 取首帧",
     "矩形、椭圆与右箭头按基本填色、边线和纯文本绘制；文本排版、右箭头比例与跨类型对象叠放顺序为近似",
     "复杂形状、组合、旋转与富文本未渲染或不保真，截图未显示不代表源文件不存在；源文件的未编辑内容仍保留",
@@ -326,6 +333,12 @@ export function buildLayout(
 }
 
 const RenderInput = z.strictObject({
+  mode: z
+    .enum(["browser-view", "reconstructed"])
+    .optional()
+    .describe(
+      "默认 browser-view：实际工作台视图截图；reconstructed 为明确选择的数据重绘，不是原视图截图",
+    ),
   path: z.string().optional().describe("工作区相对路径（与 docId 二选一）"),
   docId: z.string().optional(),
   sheet: z.string().optional().describe("工作表名；range 中带表名时可省略"),
@@ -336,31 +349,44 @@ const RenderInput = z.strictObject({
 export function workbookRenderTool(
   svc: DocumentService,
   render: (layout: RenderLayout) => Promise<string>,
+  capture?: (
+    packet: WorkbookCapturePacket,
+    signal: AbortSignal,
+  ) => Promise<{ png: string; receipt: WorkbookCaptureReceipt }>,
 ): ToolDefinition<z.infer<typeof RenderInput>> {
   return {
     name: "workbook_render",
     title: "渲染截图",
     description:
-      "把工作簿区域渲染成图片作为视觉输入，用于核对版式或与原始截图对照。返回图片、渲染所用修订号、行列与像素的对应关系和渲染限制；sourceFile 为文档打开与当前磁盘字节的核验，内存计算不等于已写回。单次最多 80 行 × 30 列。",
+      "默认截图实际工作台浏览器视图并送入视觉上下文，不等于 Excel 原生界面。仅捕获一个viewport，范围未完全可见会标partial；不会静默降级。缺少浏览器时可显式选mode=reconstructed数据重绘。返回PNG字节SHA、修订、DPR/viewport和覆盖限制；内存计算不等于已写回。单次最多80行×30列。",
     input: RenderInput,
     output: z.record(z.string(), z.unknown()),
     effect: "read",
     requiresVision: true,
     targets: (a) => (a.path ? [a.path] : []),
     replay: "safe",
-    timeoutMs: 30_000,
+    timeoutMs: 45_000,
     roles: ["main", "lead", "worker", "reader"],
     async execute(args, ctx): Promise<ToolResult> {
       const fail = (code: string, message: string): ToolResult => ({
         status: "error",
         error: { code, message, retryable: false },
       });
-      svc.editTarget(ctx.workspaceId, ctx.workspaceRoot, args);
+      const authorizedPath = svc.editTarget(ctx.workspaceId, ctx.workspaceRoot, args);
       let docId = args.docId;
       if (!docId) {
         if (!args.path) return fail("INVALID_ARGUMENT", "缺少 path 或 docId");
         docId = (await svc.open(ctx.workspaceId, ctx.workspaceRoot, args.path)).meta.id;
       }
+      const browserView = (args.mode ?? "browser-view") === "browser-view";
+      if (browserView && !capture)
+        return fail(
+          "UNSUPPORTED_FEATURE",
+          "未配置真实视图截图浏览器；可显式指定 mode=reconstructed 使用有损重绘",
+        );
+      const sourceBeforeSnapshot = browserView
+        ? await svc.sourceStatus(docId, ctx.workspaceRoot)
+        : undefined;
       const { meta, snapshot } = await svc.snapshot(docId, ctx.workspaceRoot, true);
       if (args.rev !== undefined && args.rev !== meta.rev)
         return fail("UNSUPPORTED_FEATURE", `只能渲染当前修订 rev${meta.rev}`);
@@ -370,6 +396,122 @@ export function workbookRenderTool(
         ? Object.values(sheets).find((s) => s.name === sheetName || s.id === sheetName)
         : sheets[snapshot.sheetOrder[0] ?? ""];
       if (!sheet) return fail("NOT_FOUND", `工作表不存在：${sheetName ?? "(默认)"}`);
+      if (browserView) {
+        if (!capture)
+          return fail(
+            "UNSUPPORTED_FEATURE",
+            "未配置真实视图截图浏览器；可显式指定 mode=reconstructed 使用有损重绘",
+          );
+        const requested = parseRange(args.range ?? "A1:L20");
+        const requestedRange = formatRange({ ...requested, sheet: undefined });
+        const parsed = WorkbookCapturePacket.safeParse({
+          workspaceId: ctx.workspaceId,
+          docId,
+          sheetId: sheet.id,
+          rev: meta.rev,
+          snapshot,
+          range: requestedRange.includes(":")
+            ? requestedRange
+            : `${requestedRange}:${requestedRange}`,
+          bounds: {
+            startRow: requested.startRow - 1,
+            endRow: requested.endRow - 1,
+            startColumn: requested.startCol - 1,
+            endColumn: requested.endCol - 1,
+          },
+          viewport: { width: 1180, height: 757 },
+          dpr: 1,
+        });
+        if (!parsed.success)
+          return fail(
+            "LIMIT_EXCEEDED",
+            `真实视图截图请求超出限制：${parsed.error.issues.map((issue) => issue.message).join("；")}`,
+          );
+        const sourceFile = sourceBeforeSnapshot!;
+        if (svc.headRev(docId) !== meta.rev || meta.path !== authorizedPath)
+          return fail("VERSION_CONFLICT", "准备截图时文档修订已变化，请重新截图");
+        try {
+          const captured = await capture(parsed.data, ctx.signal);
+          const receipt = WorkbookCaptureReceipt.parse(captured.receipt);
+          if (
+            receipt.docId !== docId ||
+            receipt.sheetId !== sheet.id ||
+            receipt.rev !== meta.rev ||
+            receipt.requestedRange !== parsed.data.range ||
+            receipt.viewport.width !== parsed.data.viewport.width ||
+            receipt.viewport.height !== parsed.data.viewport.height ||
+            receipt.dpr !== parsed.data.dpr
+          )
+            return fail("VERSION_CONFLICT", "截图身份或修订不匹配，图片未进入上下文");
+          const after = await svc.sourceStatus(docId, ctx.workspaceRoot);
+          if (
+            svc.headRev(docId) !== meta.rev ||
+            sourceFile.currentSha256 !== after.currentSha256 ||
+            svc.editTarget(ctx.workspaceId, ctx.workspaceRoot, { docId }) !== authorizedPath
+          )
+            return fail("VERSION_CONFLICT", "截图期间文档或磁盘源文件发生变化，请重新截图");
+          if (ctx.signal.aborted) return fail("CANCELLED", "截图已取消");
+          const bytes = Buffer.from(captured.png, "base64");
+          if (bytes.length > 8 * 1024 * 1024)
+            return fail("LIMIT_EXCEEDED", "截图PNG超过8MiB，请缩小范围；不会有损压缩冒充保真截图");
+          if (
+            bytes.length < 24 ||
+            !bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ||
+            bytes.readUInt32BE(16) !== receipt.viewport.width * receipt.dpr ||
+            bytes.readUInt32BE(20) !== receipt.viewport.height * receipt.dpr
+          )
+            return fail("INVALID_IMAGE", "截图实际PNG像素与viewport不一致，图片未进入上下文");
+          const observed = parseRange(receipt.visibleRange);
+          ctx.reads.record(
+            docId,
+            [
+              {
+                sheetId: sheet.id!,
+                r0: observed.startRow - 1,
+                c0: observed.startCol - 1,
+                r1: observed.endRow - 1,
+                c1: observed.endCol - 1,
+              },
+            ],
+            meta.rev,
+          );
+          return {
+            status: receipt.fullyVisible ? "ok" : "partial",
+            data: {
+              docId,
+              path: meta.path,
+              sourceFile,
+              sheet: sheet.name,
+              range: receipt.visibleRange,
+              requestedRange: parsed.data.range,
+              rev: meta.rev,
+              image: {
+                mode: "browser-view",
+                sha256: createHash("sha256").update(bytes).digest("hex"),
+                byteLength: bytes.length,
+                pixelWidth: receipt.viewport.width * receipt.dpr,
+                pixelHeight: receipt.viewport.height * receipt.dpr,
+                ...receipt,
+              },
+              limitations: [
+                "真实ExcelManus工作台视图，不保证与Excel原生界面像素一致",
+                "仅截图当前viewport；滚动外单元格和对象不可见，原UI文本截断会如实保留",
+                ...(receipt.warnings ?? []),
+                ...(receipt.fullyVisible
+                  ? []
+                  : ["请求范围没有完全进入viewport，当前图片仅部分覆盖，请分段缩小range"]),
+              ],
+            },
+            docRevs: { [docId]: meta.rev },
+            images: [{ mediaType: "image/png", data: captured.png }],
+          };
+        } catch (error) {
+          return fail(
+            ctx.signal.aborted ? "CANCELLED" : "UNSUPPORTED_FEATURE",
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      }
       const out = buildLayout(snapshot, sheet, args.range);
       let png: string;
       try {
@@ -377,6 +519,15 @@ export function workbookRenderTool(
       } catch (e) {
         return fail("UNSUPPORTED_FEATURE", e instanceof Error ? e.message : String(e));
       }
+      const bytes = Buffer.from(png, "base64");
+      const isPng =
+        bytes.length >= 24 &&
+        bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+      const requested = args.range ? parseRange(args.range) : undefined;
+      const cropped =
+        requested !== undefined &&
+        (requested.endRow - requested.startRow + 1 > MAX_ROWS ||
+          requested.endCol - requested.startCol + 1 > MAX_COLS);
       const observed = parseRange(out.range);
       ctx.reads.record(
         docId,
@@ -392,14 +543,28 @@ export function workbookRenderTool(
         meta.rev,
       );
       return {
-        status: "ok",
+        status: cropped ? "partial" : "ok",
         data: {
           docId,
           path: meta.path,
           sourceFile: await svc.sourceStatus(docId, ctx.workspaceRoot),
           sheet: sheet.name,
           range: out.range,
+          requestedRange: args.range ?? out.range,
           rev: meta.rev,
+          image: {
+            mode: "reconstructed",
+            sha256: createHash("sha256").update(bytes).digest("hex"),
+            byteLength: bytes.length,
+            ...(isPng
+              ? {
+                  pixelWidth: bytes.readUInt32BE(16),
+                  pixelHeight: bytes.readUInt32BE(20),
+                  scaleX: bytes.readUInt32BE(16) / out.layout.width,
+                  scaleY: bytes.readUInt32BE(20) / out.layout.height,
+                }
+              : {}),
+          },
           size: { width: out.layout.width, height: out.layout.height },
           columns: out.columns,
           rows: out.rows,

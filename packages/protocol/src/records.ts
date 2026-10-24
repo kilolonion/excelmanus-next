@@ -3,6 +3,7 @@
 
 import { z } from "zod";
 import { FileIntentMeta } from "./files.ts";
+import { HarnessEvent } from "./harness.ts";
 import { ClassifiedError, ErrorGuidance, JsonObject, ToolCall, Usage } from "./neutral.ts";
 import { AccessFact, TurnAccessBinding } from "./turn-access.ts";
 
@@ -72,6 +73,7 @@ export type ToolResult = z.infer<typeof ToolResult>;
 export const TOOL_ERROR_CODE_ALIASES: Readonly<Record<string, ToolErrorCode>> = {
   DOC_NOT_FOUND: "NOT_FOUND",
   BAD_OPERATION: "INVALID_ARGUMENT",
+  INVALID_IMAGE: "INTERNAL",
 };
 
 /** 不在词表内的码按语义归入词表（06 §9）；用于运行时写 tool.result 前的边界收敛。 */
@@ -169,6 +171,7 @@ export const PresentPayload = z.discriminatedUnion("kind", [
 export type PresentPayload = z.infer<typeof PresentPayload>;
 
 export const RECORD_DATA_SCHEMAS = {
+  "harness.event": HarnessEvent,
   "session.created": z.object({
     workspaceId: z.string(),
     title: z.string().nullable().optional(),

@@ -51,63 +51,13 @@ export const WorkbookEditInput = z
       });
   });
 
-/** 模型侧投影为扁平字段，避免部分模型误选联合分支；执行仍用原始判别联合严格校验。 */
+/** 模型与执行共用操作判别联合；默认值不成为输入必填字段。 */
 export const WorkbookEditJsonSchema = z.toJSONSchema(WorkbookEditInput, {
+  io: "input",
   override: ({ zodSchema, jsonSchema }) => {
-    if (zodSchema === ChangeOp) {
-      const branches = jsonSchema.oneOf!;
-      type FieldSchema = NonNullable<typeof jsonSchema.properties>[string];
-      const fields = new Map<string, FieldSchema[]>();
-      for (const branch of branches) {
-        for (const [name, rule] of Object.entries(branch.properties ?? {})) {
-          if (name === "op") continue;
-          const variants = fields.get(name) ?? [];
-          if (!variants.some((item) => JSON.stringify(item) === JSON.stringify(rule))) {
-            variants.push(rule);
-          }
-          fields.set(name, variants);
-        }
-      }
-      jsonSchema.type = "object";
-      jsonSchema.properties = {
-        op: { type: "string", enum: ChangeOp.options.map((option) => option.shape.op.value) },
-      };
-      for (const [name, variants] of fields) {
-        jsonSchema.properties[name] =
-          variants.length === 1
-            ? variants[0]!
-            : {
-                anyOf: variants.map((rule) =>
-                  typeof rule === "boolean" ? (rule ? {} : { not: {} }) : rule,
-                ),
-              };
-      }
-      const sheet = jsonSchema.properties.sheet;
-      if (typeof sheet === "object") {
-        const operations = ChangeOp.options
-          .filter((option) => "sheet" in option.shape)
-          .map((option) => option.shape.op.value);
-        sheet.description = `sheet 仅用于 ${operations.join(", ")}。style.set 不传 sheet，表名写入 range，如 '汇总'!A1:D5。`;
-      }
-      jsonSchema.required = ["op"];
-      jsonSchema.additionalProperties = false;
+    if (zodSchema === ChangeOp)
       jsonSchema.description =
-        "Each operation accepts only op and the fields listed for that operation. Do not borrow fields from other operations.\n" +
-        branches
-          .map((branch, i) => {
-            const required = (branch.required ?? []).filter((name) => name !== "op");
-            const optional = Object.keys(branch.properties ?? {}).filter(
-              (name) => name !== "op" && !required.includes(name),
-            );
-            return `${ChangeOp.options[i]!.shape.op.value}: required ${required.join(", ") || "none"}; optional ${optional.join(", ") || "none"}`;
-          })
-          .join("\n");
-      delete jsonSchema.oneOf;
-    }
-    if (jsonSchema.const !== undefined) {
-      jsonSchema.enum = [jsonSchema.const];
-      delete jsonSchema.const;
-    }
+        "按 op 选择对应分支，只传该分支字段。style.set 不传 sheet，表名写入 range，如 '汇总'!A1:D5。";
   },
 });
 

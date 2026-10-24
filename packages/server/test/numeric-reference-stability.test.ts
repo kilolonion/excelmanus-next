@@ -380,7 +380,7 @@ test("new refs reject cross-session, cross-agent, hidden, stale and undisplayed 
   }
 });
 
-test("root and child overlap counts each leaf once, with original limits unchanged", async () => {
+test("root and child overlap counts each leaf once, while render size only reports presentation overflow", async () => {
   const f = await fixture();
   try {
     await f.execute(
@@ -415,8 +415,8 @@ test("root and child overlap counts each leaf once, with original limits unchang
     const root = large.candidates.items.find((c) => c.pointer === "/data/value")!;
     expect(root).toBeDefined();
     expect(await finish(f, [{ refId: root.refId }])).toMatchObject({
-      status: "error",
-      error: { code: "LIMIT_EXCEEDED" },
+      status: "ok",
+      data: { finalizationStatus: "complete", presentationOverflow: { text: true } },
     });
   } finally {
     await f.close();

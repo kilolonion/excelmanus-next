@@ -220,43 +220,87 @@ const modelInstance = model();
 
 test("评测 CLI 使用真实提供商适配与文件回读，正确输出通过、错误总额失败且证据不含凭据", async () => {
   let wrongTotal = false;
+  const providerActions: Array<{ wrongTotal: boolean; action: string }> = [];
   const provider = createServer(async (req, res) => {
     let body = "";
     for await (const chunk of req) body += String(chunk);
-    const input = JSON.parse(body) as { messages: { role: string }[] };
-    const hasTool = input.messages.some((m) => m.role === "tool");
-    res.writeHead(200, { "content-type": "text/event-stream" });
-    const delta = hasTool
-      ? { content: "完成" }
-      : {
-          tool_calls: [
+    const input = JSON.parse(body) as {
+      messages: { role: string; tool_call_id?: string; content?: string }[];
+    };
+    const visibleResults = input.messages
+      .filter((message) => message.role === "tool")
+      .map((message) => ({
+        toolCallId: message.tool_call_id,
+        output: JSON.parse(message.content ?? "null") as {
+          status?: string;
+          data?: {
+            action?: string;
+            allowedOutcomes?: string[];
+            artifacts?: { id: string; path: string; persistence: string; validation: string }[];
+          };
+        },
+      }));
+    if (visibleResults.some((result) => result.toolCallId === "eval-finalize"))
+      throw new Error("typed partial must end the evaluation turn");
+    const inspected = visibleResults.findLast((result) => result.toolCallId === "eval-inspect");
+    let call: { id: string; name: string; args: unknown };
+    if (!visibleResults.length) {
+      call = {
+        id: "eval-create",
+        name: "workbook_edit",
+        args: {
+          path: "result.xlsx",
+          create: true,
+          ops: [
+            { op: "sheet.rename", sheet: "Sheet1", name: "Report" },
             {
-              index: 0,
-              id: "eval-create",
-              type: "function",
-              function: {
-                name: "workbook_edit",
-                arguments: JSON.stringify({
-                  path: "result.xlsx",
-                  create: true,
-                  ops: [
-                    { op: "sheet.rename", sheet: "Sheet1", name: "Report" },
-                    {
-                      op: "cells.set",
-                      range: "Report!A1:B4",
-                      values: [
-                        ["地区", "金额"],
-                        ["华东", 300],
-                        ["华南", 50],
-                        ["合计", wrongTotal ? 999 : 350],
-                      ],
-                    },
-                  ],
-                }),
-              },
+              op: "cells.set",
+              range: "Report!A1:B4",
+              values: [
+                ["地区", "金额"],
+                ["华东", 300],
+                ["华南", 50],
+                ["合计", wrongTotal ? 999 : 350],
+              ],
             },
           ],
-        };
+        },
+      };
+      providerActions.push({ wrongTotal, action: "workbook_edit" });
+    } else if (!inspected) {
+      expect(visibleResults.find((result) => result.toolCallId === "eval-create")?.output.status)
+        .toBe("ok");
+      call = { id: "eval-inspect", name: "deliver", args: { action: "inspect" } };
+      providerActions.push({ wrongTotal, action: "inspect" });
+    } else {
+      expect(inspected.output).toMatchObject({ status: "ok", data: { action: "inspect" } });
+      expect(inspected.output.data?.allowedOutcomes).toContain("partial");
+      expect(inspected.output.data?.allowedOutcomes).not.toContain("completed");
+      const artifacts = inspected.output.data?.artifacts;
+      expect(artifacts).toMatchObject([
+        { path: "result.xlsx", persistence: "saved", validation: "unverified" },
+      ]);
+      if (!artifacts?.length) throw new Error("missing visible saved evaluation artifact");
+      call = {
+        id: "eval-finalize",
+        name: "deliver",
+        args: {
+          action: "finalize",
+          outcome: "partial",
+          artifactIds: artifacts.map((artifact) => artifact.id),
+        },
+      };
+      providerActions.push({ wrongTotal, action: "partial" });
+    }
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    const delta = {
+      tool_calls: [{
+        index: 0,
+        id: call.id,
+        type: "function",
+        function: { name: call.name, arguments: JSON.stringify(call.args) },
+      }],
+    };
     const envelope = {
       id: "mock-eval",
       object: "chat.completion.chunk",
@@ -267,7 +311,7 @@ test("评测 CLI 使用真实提供商适配与文件回读，正确输出通过
       `data: ${JSON.stringify({ ...envelope, choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`,
     );
     res.write(
-      `data: ${JSON.stringify({ ...envelope, choices: [{ index: 0, delta: {}, finish_reason: hasTool ? "stop" : "tool_calls" }], usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 } })}\n\n`,
+      `data: ${JSON.stringify({ ...envelope, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 } })}\n\n`,
     );
     res.end("data: [DONE]\n\n");
   });
@@ -309,10 +353,24 @@ test("评测 CLI 使用真实提供商适配与文件回读，正确输出通过
       expect(report.wsRecords).toBeGreaterThan(0);
       expect(report.manualReview).toBe("pending");
       expect(report.outputsSaved).toBe(true);
+      expect(report.sourcesUnchanged).toBe(true);
+      expect(report.toolCalls).toBe(3);
+      expect(
+        report.checks.find((check: { output: string; ref: string }) =>
+          check.output === "result.xlsx" && check.ref === "Report!B4"),
+      ).toMatchObject({ passed: name.includes("enabled") });
       expect(report.status).toBe(
         name.includes("enabled") ? "automaticChecksPassed" : "outputMismatch",
       );
     }
+    expect(providerActions).toEqual([
+      { wrongTotal: false, action: "workbook_edit" },
+      { wrongTotal: false, action: "inspect" },
+      { wrongTotal: false, action: "partial" },
+      { wrongTotal: true, action: "workbook_edit" },
+      { wrongTotal: true, action: "inspect" },
+      { wrongTotal: true, action: "partial" },
+    ]);
   } finally {
     await new Promise<void>((close) => provider.close(() => close()));
   }

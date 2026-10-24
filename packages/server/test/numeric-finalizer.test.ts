@@ -2232,11 +2232,8 @@ test("finalizer refuses a truncated SQL table rather than calling its preview co
     expect(read.status).toBe("ok");
     expect(await f.finalize([{ toolCallId: "many-cells", pointer: "/data/values" }])).toMatchObject(
       {
-        status: "error",
-        error: {
-          code: "LIMIT_EXCEEDED",
-          message: expect.stringContaining("reason=selected_cells；limit=200；observed=201"),
-        },
+        status: "ok",
+        data: { finalizationStatus: "complete", presentationOverflow: { cells: true } },
       },
     );
     const catalog = numericEvidence("many-cells", "workbook_read", read)!;
@@ -3322,7 +3319,7 @@ test("round seven summary never hides failed tool receipts after a successful re
   } finally { await f.close(); }
 });
 
-test.each([282, 251])("round seven budget diagnostics report actual bounded total %i rather than cutoff 201", async (count) => {
+test.each([282, 251])("harness v1 presentation budgets do not downgrade complete %i-cell evidence", async (count) => {
   const firstCount = Math.ceil(count / 2);
   const f = await roundSevenSummaryFixture([["指标"], ...Array.from({ length: firstCount - 1 }, (_, i) => [i])]);
   try {
@@ -3332,9 +3329,9 @@ test.each([282, 251])("round seven budget diagnostics report actual bounded tota
     const result = await finalizeNumeric(f.log, f.documents, {
       ...f.args, sources: [...f.args.sources, secondSource, ...f.args.sources],
     }, f.ctx);
-    expect(result).toMatchObject({ status: "error", error: { code: "LIMIT_EXCEEDED" } });
-    expect(result.error?.message).toContain(`selectedTotal=${count}`);
-    expect(result.error?.message).toContain("200");
+    expect(result).toMatchObject({ status: "ok", data: { finalizationStatus: "complete", presentationOverflow: { cells: true } } });
+    expect((result.data as { finalText: string }).finalText).toContain(String(firstCount - 2));
+    expect(result.error).toBeUndefined();
   } finally { await f.close(); }
 });
 
@@ -3554,7 +3551,7 @@ test("round seven binding mismatch rejects and suggests only its verified same-c
 });
 
 
-test("round eight summary collects independent blockers and ends incomplete with full audit and files", async () => {
+test("harness v1 summary retains independent diagnostics without changing evidence completeness", async () => {
   const f = await roundSevenSummaryFixture([["指标", "值"], ...Array.from({ length: 16 }, (_, i) => [`指标${i}`, i])]);
   try {
     f.log.append("s", "main", [{ type: "tool.result", data: {
@@ -3563,7 +3560,7 @@ test("round eight summary collects independent blockers and ends incomplete with
     } }]);
     const result = await finalizeNumeric(f.log, f.documents, { ...f.args, presentation: "summary" }, f.ctx);
     expect(result).toMatchObject({ status: "ok", data: {
-      finalizationStatus: "incomplete", presentationUsed: "evidence", presentationSatisfied: false,
+      finalizationStatus: "complete", presentationUsed: "evidence", presentationSatisfied: false,
       summaryDiagnostics: { complete: true, overflow: false, blockers: expect.arrayContaining([
         expect.objectContaining({ code: "SUMMARY_CELL_LIMIT", actual: 34, limit: 32 }),
         expect.objectContaining({ code: "SCRIPT_PUBLICATION_UNKNOWN", toolCallId: "historical-failure" }),
@@ -3586,7 +3583,7 @@ test("round eight summary diagnostics are finite and hard evidence gates do not 
       result: { status: "error", error: { code: "SANDBOX_ERROR", message: "x", retryable: false } },
     } }]);
     const result = await finalizeNumeric(f.log, f.documents, { ...f.args, presentation: "summary" }, f.ctx);
-    expect(result).toMatchObject({ status: "ok", data: { finalizationStatus: "incomplete",
+    expect(result).toMatchObject({ status: "ok", data: { finalizationStatus: "complete",
       summaryDiagnostics: { complete: false, overflow: true, limit: 32 } } });
     expect((result.data as { summaryDiagnostics: { blockers: unknown[] } }).summaryDiagnostics.blockers).toHaveLength(32);
     const hard = await finalizeNumeric(f.log, f.documents, { status: "complete", presentation: "summary", sources: [{ refId: "invented" }] }, f.ctx);
@@ -3617,7 +3614,7 @@ test("round eight A2-shaped 30+9+91+45 selection reports 175 cells and the indep
       status: "error", error: { code: "SANDBOX_ERROR", message: "at=0 rejected", retryable: false },
     } } }]);
     const result = await finalizeNumeric(f.log, f.documents, { status: "complete", presentation: "summary", sources }, f.ctx);
-    expect(result, JSON.stringify(result)).toMatchObject({ status: "ok", data: { finalizationStatus: "incomplete", summaryDiagnostics: {
+    expect(result, JSON.stringify(result)).toMatchObject({ status: "ok", data: { finalizationStatus: "complete", summaryDiagnostics: {
       complete: true, blockers: expect.arrayContaining([
         expect.objectContaining({ code: "SUMMARY_CELL_LIMIT", actual: 175, limit: 32 }),
         expect.objectContaining({ code: "SCRIPT_PUBLICATION_UNKNOWN", toolCallId: "a2-old-failure" }),
@@ -3630,7 +3627,7 @@ test("round eight invalid heading and body report independent blockers before co
   const f = await roundSevenSummaryFixture([["", "金额"], ["001", null], ["002", 2]] as (string | number)[][]);
   try {
     const result = await finalizeNumeric(f.log, f.documents, { ...f.args, presentation: "summary" }, f.ctx);
-    expect(result).toMatchObject({ status: "ok", data: { finalizationStatus: "incomplete", summaryDiagnostics: { complete: true,
+    expect(result).toMatchObject({ status: "ok", data: { finalizationStatus: "complete", summaryDiagnostics: { complete: true,
       blockers: expect.arrayContaining([expect.objectContaining({ code: "WINDOW_HEADERS_INVALID" }), expect.objectContaining({ code: "WINDOW_CELLS_INVALID" })]),
     } } });
   } finally { await f.close(); }
@@ -3644,7 +3641,9 @@ test("round eight present schema only accepts current bindingId objects, not obs
     expect(binding).toBeDefined();
     expect(f.present.input.safeParse({ finalize: { ...f.args, presentation: "summary", bindings: [{ bindingId: binding.bindingId }] } }).success).toBe(true);
     expect(f.present.input.safeParse({ finalize: { ...f.args, bindings: [{ valueRefId: binding.valueRefId, labelRefId: binding.labelRefId, relation: "same_column" }] } }).success).toBe(false);
-    expect(f.present.description.slice(0, 120)).toContain('"presentation":"summary"');
+    expect(f.present.description).toContain("非终结");
+    expect(f.present.description).toContain("deliver");
+    expect(JSON.stringify(f.present.inputJsonSchema)).not.toContain('"finalize"');
   } finally { await f.close(); }
 });
 
@@ -3726,7 +3725,7 @@ test.each([
       status: "error", error: { code: "SANDBOX_ERROR", message: "historical failure", retryable: false }, data,
     } } }]);
     const result = await finalizeNumeric(f.log, f.documents, { ...f.args, presentation: "summary" }, f.ctx);
-    expect(result).toMatchObject({ status: "ok", data: { finalizationStatus: "incomplete", presentationUsed: "evidence",
+    expect(result).toMatchObject({ status: "ok", data: { finalizationStatus: "complete", presentationUsed: "evidence",
       summaryDiagnostics: { blockers: expect.arrayContaining([expect.objectContaining({ code: "SCRIPT_PUBLICATION_UNKNOWN" })]) } } });
     expect((result.data as { finalText: string }).finalText).toContain("historical failure");
   } finally { await f.close(); }
@@ -3795,7 +3794,7 @@ function roundNineMutateReceipt(f: RoundNineFixture, mutate: (data: Record<strin
 }
 function roundNineFallback(result: ToolResult, code: string) {
   expect(result, JSON.stringify(result)).toMatchObject({ status: "ok", data: {
-    finalizationStatus: "incomplete", presentationUsed: "evidence",
+    finalizationStatus: "complete", presentationUsed: "evidence",
     deliveredFiles: [{ path: "book.xlsx" }],
     summaryDiagnostics: { blockers: expect.arrayContaining([expect.objectContaining({ code })]) },
   } });
@@ -4056,7 +4055,7 @@ test.each(["failed", "unverified"] as const)("round nine SQL does not turn %s al
   } finally { await f.close(); }
 });
 
-test.each(["cells", "text"])("round nine SQL summary cannot bypass the existing full-audit %s gate", async (kind) => {
+test.each(["cells", "text"])("harness v1 SQL summary reports %s presentation overflow without changing evidence completeness", async (kind) => {
   const sql = kind === "cells"
     ? "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<101) SELECT x FROM n"
     : "SELECT " + " ".repeat(12000) + "7 AS metric";
@@ -4067,8 +4066,9 @@ test.each(["cells", "text"])("round nine SQL summary cannot bypass the existing 
     const root = evidence.candidates.items.find((item) => item.pointer === "/data/rows")!;
     expect(root).toBeDefined();
     const result = await finalizeNumeric(f.log, f.documents, { ...f.sqlArgs, sources: [...f.sqlArgs.sources, { refId: root.refId }] }, f.ctx);
-    expect(result, JSON.stringify(result)).toMatchObject({ status: "error", error: { code: "LIMIT_EXCEEDED" } });
-    expect(result.error?.message).toContain(kind === "cells" ? "limit=200" : "24000");
-    expect(result.data).toBeUndefined();
+    expect(result, JSON.stringify(result)).toMatchObject({ status: "ok", data: { finalizationStatus: "complete", presentationOverflow: { [kind]: true } } });
+    expect(result.error).toBeUndefined();
+    const data = result.data as { finalText: string; auditText: string };
+    expect(data.finalText).toContain(data.auditText);
   } finally { await f.close(); }
 });

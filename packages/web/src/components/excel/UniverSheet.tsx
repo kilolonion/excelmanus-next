@@ -1,10 +1,15 @@
-import { ARRAY_CACHE_RESOURCE, arrayStateMutation } from "@excelmanus/protocol";
+import {
+  ARRAY_CACHE_RESOURCE,
+  arrayStateMutation,
+  type WorkbookCapturePacket,
+} from "@excelmanus/protocol";
 import { IResourceManagerService, UniverInstanceType } from "@univerjs/core";
 import { FormulaDataModel, LexerTreeBuilder } from "@univerjs/preset-sheets-core";
 import { TableManager, UniverSheetsTablePlugin } from "@univerjs/sheets-table";
 import { UniverSheetsTableUIPlugin } from "@univerjs/sheets-table-ui";
 import tableZhCN from "@univerjs/sheets-table-ui/locale/zh-CN";
 import { normalizeEditorTableValues } from "@/lib/workbook/table-values";
+import { assertCaptureCommand } from "./WorkbookCaptureView";
 import "@univerjs/sheets-table-ui/lib/index.css";
 import { CellNoteDialog, type NoteContext } from "./CellNoteDialog";
 import { WorkbookObjectsLayer } from "./WorkbookObjectsLayer";
@@ -376,7 +381,9 @@ export function UniverSheet({
   onApi,
   onAsk,
   onReference,
+  capturePacket,
 }: {
+  capturePacket?: WorkbookCapturePacket;
   visibility: OverlayVisibility;
   /** 需要闪烁的近期已提交改动。 */
   changes: ChangeEntry[];
@@ -385,7 +392,17 @@ export function UniverSheet({
   onAsk: (kind: AskKind) => void;
   onReference: () => void;
 }) {
-  const doc = useWorkbookStore((s) => s.doc);
+  const storedDoc = useWorkbookStore((s) => s.doc);
+  const captureReadonly = capturePacket !== undefined;
+  const doc = capturePacket
+    ? {
+        docId: capturePacket.docId,
+        path: "",
+        rev: capturePacket.rev,
+        snapshotRev: capturePacket.rev,
+        snapshot: capturePacket.snapshot,
+      }
+    : storedDoc;
   const docId = doc?.docId;
   const snapshot = doc?.snapshot;
   const focus = useWorkbookStore((s) => s.rangeFocus);
@@ -413,7 +430,7 @@ export function UniverSheet({
 
   // Univer 在原生事件阶段处理快捷键，需要先于其监听器拦截 CSV 格式操作。
   useEffect(() => {
-    if (!/\.(csv|tsv)$/i.test(doc?.path ?? "")) return;
+    if (captureReadonly || !/\.(csv|tsv)$/i.test(doc?.path ?? "")) return;
     const onKey = (event: KeyboardEvent) => {
       if (
         !(event.target instanceof Node) ||
@@ -427,13 +444,13 @@ export function UniverSheet({
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [doc?.path]);
+  }, [doc?.path, captureReadonly]);
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host || !docId || !snapshot) return;
     const current = useWorkbookStore.getState().doc;
-    if (current?.docId === docId && current.snapshotRev < current.rev) {
+    if (!captureReadonly && current?.docId === docId && current.snapshotRev < current.rev) {
       // 工作台换了位置（侧栏 ↔ 全屏）或期间有远端修订：先取最新快照再建表
       let alive = true;
       setSnapshotLoad("loading");
@@ -566,7 +583,10 @@ export function UniverSheet({
     sortCommands.registerCommand(safeSortRangeCommand(SortRangeCommand, sheetOf));
 
     // 工作台编辑与代理共用 doc.submit；服务端负责串行化与冲突判定
-    wb.setEditable(true);
+    wb.setEditable(!captureReadonly);
+    const captureGuard = captureReadonly
+      ? injector.get(ICommandService).beforeCommandExecuted(assertCaptureCommand)
+      : null;
     const sheetApi: SheetApi = { univer, univerAPI, wb, rendered: false };
     void injector
       .get(LifecycleService)
@@ -576,7 +596,8 @@ export function UniverSheet({
       });
     apiRef.current = sheetApi;
     onApi(sheetApi);
-    if (import.meta.env.DEV) (window as { __emUniverAPI?: unknown }).__emUniverAPI = univerAPI;
+    if (import.meta.env.DEV && !captureReadonly)
+      (window as { __emUniverAPI?: unknown }).__emUniverAPI = univerAPI;
     const tagSub = univerAPI.registerComponent("em-overlay-tag", OverlayTag as never);
     const diffSub = univerAPI.registerComponent("em-overlay-diff", OverlayDiff as never);
     createdAt.current = Date.now();
@@ -593,91 +614,10 @@ export function UniverSheet({
     const sheetSub = univerAPI.addEvent(univerAPI.Event.ActiveSheetChanged, () =>
       setActiveSheet(wb.getActiveSheet()?.getSheetName() ?? null),
     );
-    // 用户正在编辑单元格时不被跟随打断；同时记下编辑开始时的修订与键入的草稿
-    const editing = new EditTracker();
-    const editSub = univerAPI.addEvent(univerAPI.Event.SheetEditStarted, (p) => {
-      noteManualView();
-      editing.start(
-        p.worksheet.getSheetId(),
-        p.row,
-        p.column,
-        useWorkbookStore.getState().docSync.rev,
-      );
-    });
-    const changingSub = univerAPI.addEvent(univerAPI.Event.SheetEditChanging, (p) => {
-      const text = (p.value as { toPlainText?: () => string } | undefined)?.toPlainText?.();
-      if (typeof text === "string") {
-        editing.typed(text);
-        setInputDraft(docId, editing.currentDraft());
-      }
-    });
-    const editEndSub = univerAPI.addEvent(univerAPI.Event.SheetEditEnded, (p) => {
-      editing.end(p.isConfirm);
-      if (!p.isConfirm) setInputDraft(docId, null);
-    });
-    setActiveSheet(wb.getActiveSheet()?.getSheetName() ?? null);
-    let applyingRemote = false;
-    registerDocumentEditor({
-      docId,
-      applyRemote: async (mutations, source) => {
-        applyingRemote = true;
-        try {
-          for (const mutation of mutations) {
-            const clash = editing.remote(mutation);
-            if (clash) setDraftConflict({ docId, ...clash, source });
-            const ok = await univerAPI.executeCommand(
-              mutation.id,
-              keepEditingRoom(wb, mutation.id, mutation.params),
-              { fromCollab: true, excelmanusReplay: true },
-            );
-            if (!ok) throw new Error(`远端修订无法回放：${mutation.id}`);
-          }
-        } finally {
-          applyingRemote = false;
-        }
-      },
-    });
-    const view = loadView(docId);
-    const rememberView = () => saveView(captureView(docId, wb));
-    window.addEventListener("pagehide", rememberView);
     let disposed = false;
-    if (isFreshView(view, docId))
-      // 滚动控制器要等首轮渲染完成才可用
-      void injector
-        .get(LifecycleService)
-        .onStage(LifecycleStages.Rendered)
-        .then(() => {
-          // An explicit region request takes priority over the previous tab position.
-          if (!disposed && !useWorkbookStore.getState().rangeFocus) restoreView(wb, view);
-        })
-        .catch((error: unknown) => {
-          // Closing a sheet before its first render rejects the lifecycle promise.
-          if (!disposed) console.warn("[excelmanus] 无法恢复表格视图", error);
-        });
-    const localBatch = new EditorMutationBatch((mutations, baseRev) =>
-      submitDocumentMutations(docId, mutations, baseRev),
-    );
-    const validationGate = new EditorValidationGate((mutation, revision) =>
-      localBatch.push(mutation, revision),
-    );
-    const validationBeforeSub = injector
-      .get(ICommandService)
-      .beforeCommandExecuted((command, options) => {
-        if (
-          !applyingRemote &&
-          !options?.fromCollab &&
-          !options?.fromChangeset &&
-          (command.params as { unitId?: string } | undefined)?.unitId === wb.getId()
-        )
-          validationGate.before({ id: command.id, params: command.params });
-      });
-    const validationSub = validationGate.bindValidation(
-      injector.get(SheetInterceptorService),
-      () => injector.get(IUndoRedoService).pitchTopUndoElement() ?? undefined,
-    );
-    const commandSub = wb.onCommandExecuted((command, options) => {
-      validationGate.after({ id: command.id, params: command.params });
-      if (validationGate.isRollback({ id: command.id, params: command.params })) return;
+    setActiveSheet(wb.getActiveSheet()?.getSheetName() ?? null);
+    // Filter/skeleton redraw is local rendering, independent of editing or submission.
+    const redrawSub = wb.onCommandExecuted((command) => {
       // We use the filter model without Univer\u0027s filter UI; update the canvas row layout here.
       if (
         [
@@ -701,60 +641,152 @@ export function UniverSheet({
             render?.mainComponent?.makeDirty();
           });
       }
-      if (applyingRemote || options?.fromCollab || options?.fromChangeset) return;
-      if (command.type !== CommandType.MUTATION) return;
-      if (isDerivedWorkbookMutation(command, options)) return;
-      const mutation = dropEditorThemeColor({ id: command.id, params: command.params ?? {} });
-      validationGate.push(
-        mutation,
-        editing.baseRevFor(mutation) ?? useWorkbookStore.getState().docSync.rev,
-      );
     });
-    // 选区跟随：鼠标、键盘与 activate() 都经 set-selections 操作
-    const selectionSub = wb.onCommandExecuted((command) => {
-      if (command.id !== "sheet.operation.set-selections") return;
-      const sheet = wb.getActiveSheet();
-      const sel = sheet?.getSelection()?.getActiveRange()?.getRange();
-      if (!sheet || !sel) return;
-      setSelection(
-        formatRange({
-          sheet: sheet.getSheetName(),
-          startCol: sel.startColumn + 1,
-          startRow: sel.startRow + 1,
-          endCol: sel.endColumn + 1,
-          endRow: sel.endRow + 1,
-        }),
+    let cleanupEditor: (() => void) | undefined;
+    if (!captureReadonly) {
+      // 用户正在编辑单元格时不被跟随打断；同时记下编辑开始时的修订与键入的草稿
+      const editing = new EditTracker();
+      const editSub = univerAPI.addEvent(univerAPI.Event.SheetEditStarted, (p) => {
+        noteManualView();
+        editing.start(
+          p.worksheet.getSheetId(),
+          p.row,
+          p.column,
+          useWorkbookStore.getState().docSync.rev,
+        );
+      });
+      const changingSub = univerAPI.addEvent(univerAPI.Event.SheetEditChanging, (p) => {
+        const text = (p.value as { toPlainText?: () => string } | undefined)?.toPlainText?.();
+        if (typeof text === "string") {
+          editing.typed(text);
+          setInputDraft(docId, editing.currentDraft());
+        }
+      });
+      const editEndSub = univerAPI.addEvent(univerAPI.Event.SheetEditEnded, (p) => {
+        editing.end(p.isConfirm);
+        if (!p.isConfirm) setInputDraft(docId, null);
+      });
+      let applyingRemote = false;
+      registerDocumentEditor({
+        docId,
+        applyRemote: async (mutations, source) => {
+          applyingRemote = true;
+          try {
+            for (const mutation of mutations) {
+              const clash = editing.remote(mutation);
+              if (clash) setDraftConflict({ docId, ...clash, source });
+              const ok = await univerAPI.executeCommand(
+                mutation.id,
+                keepEditingRoom(wb, mutation.id, mutation.params),
+                { fromCollab: true, excelmanusReplay: true },
+              );
+              if (!ok) throw new Error(`远端修订无法回放：${mutation.id}`);
+            }
+          } finally {
+            applyingRemote = false;
+          }
+        },
+      });
+      const view = loadView(docId);
+      const rememberView = () => saveView(captureView(docId, wb));
+      window.addEventListener("pagehide", rememberView);
+      if (isFreshView(view, docId))
+        // 滚动控制器要等首轮渲染完成才可用
+        void injector
+          .get(LifecycleService)
+          .onStage(LifecycleStages.Rendered)
+          .then(() => {
+            // An explicit region request takes priority over the previous tab position.
+            if (!disposed && !useWorkbookStore.getState().rangeFocus) restoreView(wb, view);
+          })
+          .catch((error: unknown) => {
+            // Closing a sheet before its first render rejects the lifecycle promise.
+            if (!disposed) console.warn("[excelmanus] 无法恢复表格视图", error);
+          });
+      const localBatch = new EditorMutationBatch((mutations, baseRev) =>
+        submitDocumentMutations(docId, mutations, baseRev),
       );
-    });
+      const validationGate = new EditorValidationGate((mutation, revision) =>
+        localBatch.push(mutation, revision),
+      );
+      const validationBeforeSub = injector
+        .get(ICommandService)
+        .beforeCommandExecuted((command, options) => {
+          if (
+            !applyingRemote &&
+            !options?.fromCollab &&
+            !options?.fromChangeset &&
+            (command.params as { unitId?: string } | undefined)?.unitId === wb.getId()
+          )
+            validationGate.before({ id: command.id, params: command.params });
+        });
+      const validationSub = validationGate.bindValidation(
+        injector.get(SheetInterceptorService),
+        () => injector.get(IUndoRedoService).pitchTopUndoElement() ?? undefined,
+      );
+      const commandSub = wb.onCommandExecuted((command, options) => {
+        validationGate.after({ id: command.id, params: command.params });
+        if (validationGate.isRollback({ id: command.id, params: command.params })) return;
+        if (applyingRemote || options?.fromCollab || options?.fromChangeset) return;
+        if (command.type !== CommandType.MUTATION) return;
+        if (isDerivedWorkbookMutation(command, options)) return;
+        const mutation = dropEditorThemeColor({ id: command.id, params: command.params ?? {} });
+        validationGate.push(
+          mutation,
+          editing.baseRevFor(mutation) ?? useWorkbookStore.getState().docSync.rev,
+        );
+      });
+      // 选区跟随：鼠标、键盘与 activate() 都经 set-selections 操作
+      const selectionSub = wb.onCommandExecuted((command) => {
+        if (command.id !== "sheet.operation.set-selections") return;
+        const sheet = wb.getActiveSheet();
+        const sel = sheet?.getSelection()?.getActiveRange()?.getRange();
+        if (!sheet || !sel) return;
+        setSelection(
+          formatRange({
+            sheet: sheet.getSheetName(),
+            startCol: sel.startColumn + 1,
+            startRow: sel.startRow + 1,
+            endCol: sel.endColumn + 1,
+            endRow: sel.endRow + 1,
+          }),
+        );
+      });
+      cleanupEditor = () => {
+        rememberView();
+        window.removeEventListener("pagehide", rememberView);
+        commandSub.dispose();
+        validationBeforeSub.dispose();
+        validationSub();
+        validationGate.dispose();
+        localBatch.flush();
+        editSub.dispose();
+        changingSub.dispose();
+        editEndSub.dispose();
+        selectionSub.dispose();
+        registerDocumentEditor(null);
+      };
+    }
     return () => {
       disposed = true;
       sheetApi.disposed = true;
-      rememberView();
-      window.removeEventListener("pagehide", rememberView);
+      cleanupEditor?.();
+      captureGuard?.dispose();
+      redrawSub.dispose();
       themeObserver.disconnect();
       tagSub.dispose();
       diffSub.dispose();
-      commandSub.dispose();
-      validationBeforeSub.dispose();
-      validationSub();
-      validationGate.dispose();
-      localBatch.flush();
       sheetSub.dispose();
-      editSub.dispose();
-      changingSub.dispose();
-      editEndSub.dispose();
-      selectionSub.dispose();
-      registerDocumentEditor(null);
       apiRef.current = null;
       onApi(null);
       univer.dispose();
     };
-  }, [docId, snapshot, onApi]);
+  }, [docId, snapshot, onApi, captureReadonly]);
 
   // 定位：切到工作表、选中并滚动到区域，短暂高亮
   useEffect(() => {
     const wb = apiRef.current?.wb;
-    if (!wb || !focus) return;
+    if (captureReadonly || !wb || !focus) return;
     try {
       const parsed = parseRange(focus.range);
       const sheet = parsed.sheet ? wb.getSheetByName(parsed.sheet) : wb.getActiveSheet();
@@ -777,12 +809,12 @@ export function UniverSheet({
     } catch {
       useWorkbookStore.setState({ referenceError: "invalid-range" });
     }
-  }, [focus, ready]);
+  }, [focus, ready, captureReadonly]);
 
   // 悬停区域引用时的虚线预览
   useEffect(() => {
     const wb = apiRef.current?.wb;
-    if (!wb || !preview) return;
+    if (captureReadonly || !wb || !preview) return;
     try {
       const parsed = parseRange(preview);
       const sheet = wb.getActiveSheet();
@@ -799,7 +831,7 @@ export function UniverSheet({
     } catch {
       return;
     }
-  }, [preview]);
+  }, [preview, captureReadonly]);
 
   // 「计划修改」来自待审批记录，批准或拒绝后消失
   // biome-ignore lint/correctness/useExhaustiveDependencies: ready 表示 Univer 实例已重建
@@ -988,7 +1020,7 @@ export function UniverSheet({
 
   return (
     <>
-      {noteContext && (
+      {!captureReadonly && noteContext && (
         <CellNoteDialog
           context={noteContext}
           onClose={() => setNoteContext(null)}
@@ -1022,7 +1054,7 @@ export function UniverSheet({
           }}
         />
       )}
-      {dataContext && (
+      {!captureReadonly && dataContext && (
         <RangeDataDialog
           context={dataContext}
           onClose={() => {
@@ -1046,12 +1078,12 @@ export function UniverSheet({
         />
       )}
       <SheetContextMenu
-        enabled={hasSelection && snapshotLoad === null}
+        enabled={!captureReadonly && hasSelection && snapshotLoad === null}
         selectionLabel={selectionLabel}
         dataOnly={/\.(csv|tsv)$/i.test(doc?.path ?? "")}
         onEdit={(command) => {
           const api = apiRef.current;
-          if (!api) return;
+          if (captureReadonly || !api) return;
           void (async () => {
             try {
               await api.wb.endEditingAsync(true);
@@ -1155,6 +1187,7 @@ export function UniverSheet({
           revision={doc?.rev}
           sheetKey={activeSheet}
           ready={ready}
+          captureReadonly={captureReadonly}
         />
         {snapshotLoad !== null && (
           <div className="absolute inset-0 z-10 grid place-items-center bg-background">

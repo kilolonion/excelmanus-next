@@ -307,6 +307,22 @@ export const SessionLogResponse = z.object({
   items: z.array(LogRecord),
 });
 
+export const SessionHistoryWindowResponse = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("complete"),
+    detail: SessionDetailResponse,
+    items: z.array(LogRecord).max(2048),
+    headSeq: z.int().nonnegative(),
+    hasMore: z.boolean(),
+    before: z.int().positive().optional(),
+  }),
+  z.object({
+    kind: z.literal("overflow"),
+    headSeq: z.int().nonnegative(),
+    reason: z.enum(["records", "bytes", "metadata"]),
+  }),
+]);
+
 export const Dispatch = z.object({
   id: z.string(),
   sessionId: z.string(),

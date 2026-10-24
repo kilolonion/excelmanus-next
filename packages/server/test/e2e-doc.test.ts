@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import type { LanguageModelV4StreamPart, LanguageModelV4Usage } from "@ai-sdk/provider";
+import { redactSecrets } from "@excelmanus/models";
 import { createApiClient, type RecMsg, type ServerMessage } from "@excelmanus/protocol";
 import { importXlsx } from "@excelmanus/workbook";
 import { MockLanguageModelV4 } from "ai/test";
@@ -36,7 +37,36 @@ const toolCall = (id: string, toolName: string, input: string): LanguageModelV4S
   { type: "finish", usage: USAGE, finishReason: { unified: "tool-calls", raw: "tool_calls" } },
 ];
 
-/** 第一步读 overview，第二步写 D2，第三步文本收尾。 */
+
+/** Read host handles only from the latest provider-visible inspect result. */
+function partialCall(prompt: Array<{ role: string; content: unknown }>, prefix: string, expectedPath?: string) {
+  const results = prompt.filter(m => m.role === "tool" && Array.isArray(m.content))
+    .flatMap(m => m.content as Array<{ type: string; toolName?: string; output?: { type: string; value?: unknown } }>)
+    .filter(p => p.type === "tool-result");
+  const last = results.at(-1);
+  const value = last?.output?.type === "json" ? last.output.value as {
+    status?: string; data?: { action?: string; allowedOutcomes?: string[]; unverifiedObligationCount?: number;
+      factSets?: Array<{ id: string }>; artifacts?: Array<{ id: string; path: string; persistence: string; validation: string }> };
+  } : undefined;
+  if (last?.toolName !== "deliver" || value?.data?.action !== "inspect")
+    return { id: `${prefix}-inspect-${results.length}`, tool: "deliver", input: { action: "inspect" } };
+  expect(value.status).toBe("ok");
+  const data = value.data;
+  expect(data.allowedOutcomes).toContain("partial");
+  if (expectedPath) {
+    expect(data.artifacts?.find(a => a.path === expectedPath)).toMatchObject({ persistence: "saved" });
+    expect(data.allowedOutcomes).not.toContain("completed");
+    expect(data.unverifiedObligationCount).toBeGreaterThan(0);
+  }
+  if ((data.unverifiedObligationCount ?? 0) > 0) expect(data.allowedOutcomes).not.toContain("completed");
+  return { id: `${prefix}-partial-${results.length}`, tool: "deliver", input: {
+    action: "finalize", outcome: "partial",
+    artifactIds: (data.artifacts ?? []).map(a => a.id),
+    factSetIds: (data.factSets ?? []).map(f => f.id),
+  } };
+}
+
+/** Read, write, then inspect and explicitly deliver the unverified saved artifact as partial. */
 function makeDocMockModel(): MockLanguageModelV4 {
   return new MockLanguageModelV4({
     provider: "mock",
@@ -62,15 +92,8 @@ function makeDocMockModel(): MockLanguageModelV4 {
           ),
         };
       }
-      return {
-        stream: streamOf([
-          { type: "stream-start", warnings: [] },
-          { type: "text-start", id: "t1" },
-          { type: "text-delta", id: "t1", delta: "已写入。" },
-          { type: "text-end", id: "t1" },
-          { type: "finish", usage: USAGE, finishReason: { unified: "stop", raw: "stop" } },
-        ]),
-      };
+      const delivery = partialCall(prompt, "doc", "sales.xlsx");
+      return { stream: streamOf(toolCall(delivery.id, delivery.tool, JSON.stringify(delivery.input))) };
     },
   });
 }
@@ -103,7 +126,25 @@ class TestWs {
       if (m) return m;
       if (Date.now() - t0 > timeoutMs) {
         throw new Error(
-          `等待超时：${what}；已收到 ${JSON.stringify(this.msgs.map((x) => x.type))}`,
+          `等待超时：${what}；已收到 ${JSON.stringify(
+            this.msgs.map((x) => {
+              if (x.type !== "rec") return x.type;
+              const error = Reflect.get(x.record.data, "error");
+              return {
+                type: x.record.type,
+                ...(error && typeof error === "object"
+                  ? {
+                      errorCode: Reflect.get(error, "code"),
+                      errorKind: Reflect.get(error, "kind"),
+                      ...(x.record.type === "turn.failed" &&
+                      typeof Reflect.get(error, "message") === "string"
+                        ? { message: redactSecrets(Reflect.get(error, "message")).slice(0, 240) }
+                        : {}),
+                    }
+                  : {}),
+              };
+            }),
+          )}`,
         );
       }
       await sleep(10);
@@ -147,7 +188,7 @@ describe("e2e：活文档写入 + doc: 同步", () => {
     const model = new MockLanguageModelV4({
       provider: "mock",
       modelId: "mock-observation",
-      doStream: async () => {
+      doStream: async (opts) => {
         step++;
         if (step === 3) await beforeRender.promise;
         if (step === 4) await beforeFix.promise;
@@ -180,7 +221,10 @@ describe("e2e：活文档写入 + doc: 同步", () => {
               ],
             },
           },
-          { name: "workbook_render", args: { path, sheet: "销售报表", range: "A1:I19" } },
+          {
+            name: "workbook_render",
+            args: { path, sheet: "销售报表", range: "A1:I19", mode: "reconstructed" },
+          },
           { name: "workbook_edit", args: { path, ops: fix } },
           {
             name: "workbook_read",
@@ -193,22 +237,15 @@ describe("e2e：活文档写入 + doc: 同步", () => {
             },
           },
           { name: "workbook_edit", args: { path, baseRev: userRev, ops: fix } },
-          { name: "workbook_render", args: { path, sheet: "销售报表", range: "A16:I17" } },
+          {
+            name: "workbook_render",
+            args: { path, sheet: "销售报表", range: "A16:I17", mode: "reconstructed" },
+          },
         ];
         const call = calls[step - 1];
-        return {
-          stream: streamOf(
-            call
-              ? toolCall(`observed-${step}`, call.name, JSON.stringify(call.args))
-              : [
-                  { type: "stream-start", warnings: [] },
-                  { type: "text-start", id: "end" },
-                  { type: "text-delta", id: "end", delta: "完成" },
-                  { type: "text-end", id: "end" },
-                  { type: "finish", usage: USAGE, finishReason: { unified: "stop", raw: "stop" } },
-                ],
-          ),
-        };
+        if (call) return { stream: streamOf(toolCall(`observed-${step}`, call.name, JSON.stringify(call.args))) };
+        const delivery = partialCall(opts.prompt as Array<{ role: string; content: unknown }>, "observed", path);
+        return { stream: streamOf(toolCall(delivery.id, delivery.tool, JSON.stringify(delivery.input))) };
       },
     });
     const srv = await startServer({ dataDir, resolveLanguageModel: () => model, log: () => {} });
@@ -341,6 +378,9 @@ describe("e2e：活文档写入 + doc: 同步", () => {
       ws.send({ type: "render.result", requestId: secondImage.requestId, png });
       await ws.waitFor((m) => m.type === "rec" && m.record.type === "turn.completed", "done");
       const records = ws.msgs.flatMap((m) => (m.type === "rec" ? [m.record] : []));
+      expect(records.some(r => r.type === "turn.failed")).toBe(false);
+      expect(records.find(r => r.type === "tool.result" && String(r.data.toolCallId).startsWith("observed-partial-"))?.data.result)
+        .toMatchObject({ status: "ok", data: { finalizationStatus: "incomplete" } });
       const result = (n: number) =>
         records.find((r) => r.type === "tool.result" && r.data.toolCallId === `observed-${n}`)?.data
           .result;
@@ -640,6 +680,10 @@ describe("e2e：活文档写入 + doc: 同步", () => {
       "turn.completed",
     );
 
+    const delivered = wsSess.msgs.flatMap(m => m.type === "rec" ? [m.record] : []);
+    expect(delivered.some(r => r.type === "turn.failed")).toBe(false);
+    expect(delivered.find(r => r.type === "tool.result" && String(r.data.toolCallId).startsWith("doc-partial-"))?.data.result)
+      .toMatchObject({ status: "ok", data: { finalizationStatus: "incomplete" } });
     // 11 §3.4：执行期间推 workbook_activity 瞬时增量（start/end），读与写分别带区域
     const activity = wsSess.msgs.filter(
       (m) => m.type === "delta" && (m as { kind?: string }).kind === "workbook_activity",
@@ -810,3 +854,4 @@ describe("e2e：活文档写入 + doc: 同步", () => {
     ).toBe("另一处");
   }, 30_000);
 });
+

@@ -21,7 +21,7 @@ function producesNumericEvidence(data: Record<string, unknown>): boolean {
   if (!out) return false;
   if (data.toolName === "workbook_edit")
     return out.dryRun !== true && containsNumber(out.formulaValues);
-  if (data.toolName === "workbook_analyze")
+  if (data.toolName === "workbook_analyze" || data.toolName === "workbook_query")
     return (
       typeof out.docId === "string" &&
       ((out.mode === "sql" && containsNumber(out.rows)) ||
@@ -184,13 +184,9 @@ export function numericDeliveryState(
 }
 
 export const NUMERIC_DELIVERY_GUIDANCE =
-  "本轮已产生工作簿数值证据，最终回复必须用 present 的 finalize 分支交付，不再接受自由文本终稿。" +
-  '用户要求简短时，例：{finalize:{status:"complete",presentation:"summary",sources:[{refId:"当前小汇总读窗的refId"}]}}；无简短要求默认 evidence，显式 evidence 仍合法。' +
-  "文件内容核验与最终展示是两件事：先验证全部任务、必需表列及业务来源，再选择终稿须报告的完整原文小窗口，不把全部验证明细当成终稿必选来源。" +
-  "简短窗口须在最后写入并保存后重新读取，保留完整表头、数据行、原文单位和对象身份；合计最多32个标量格。不猜标题、币种或总计，不遗漏必报计数、异常及各文件结果。" +
-  "只能复制当前可见工具正文 numericEvidence.sources 或 candidates.items 的 refId；不能填写值、标题、说明或构造指针。额外中间合计、差值等须先用 workbook_analyze SQL 或只读 run_script 实际计算再引用。" +
-  '绑定只复制 numericEvidence.bindings 或 bindingCandidates.items 中与所选数值同次读取的 {bindingId} 到 finalize.bindings，每值最多一个；无合法候选时不自造关系或单位，不把SQL别名当业务身份。' +
-  "每个必交文件须有当前已保存文档的真实选定证据，宿主按文档身份、修订和SHA核验并生成文件卡；不要求该文件全部表都进入终稿sources，也不因此减免文件内容核验。" +
-  "透视报告选择objects的reportFacts整体候选；保存值不等于已刷新。排序使用sort_preflight真实整体候选与执行回执，未执行不能说执行失败；外链、访问范围和实际失败等必要事实不得省略。" +
-  "finalize成功返回就是终结，由宿主生成最终回复，之后不能追加一条简短文字。若显式summary不能安全呈现，宿主保留完整审计和有效文件卡，终结为incomplete并说明简短呈现未满足，不会另开重试机会。" +
-  '来源不可见或过期须重新获取，原有200格、24000字符等核验不变；任务尚未完成用 {finalize:{status:"incomplete",sources:[]}} 明确结束。';
+  "本轮已有工作簿结果需要受控交付。先用 deliver 的 inspect 获取当前可见事实、文件、检查与说明回执，再用 finalize 选择这些宿主标识；不再接受自由文本结果终稿。" +
+  "需要额外数字解释时，先用 workbook_query 或只读 run_script 计算并取得可见事实，不手工填写值、标签、单位、指针或来源证明。查询别名不是已认证业务身份或单位。" +
+  "检查覆盖以原始来源和明确声明为准，不能把采样、截断结果或局部通过说成全量正确；文件保存成功不代表业务检查通过。宿主核验所有来源与目标修订、保存字节、计划版本、当前授权及引用可见性，失效时重新观察或核验。" +
+  "required_output 失败、unverified 或修复未完成必须保留，不能改为 findings、改写说明或删去引用绕过；源数据诊断发现差异本身可以作为调查结果。只能选择 allowedOutcomes 中当前允许的结果。" +
+  "文件内容核验与最终展示分开：展示预算和分页不改变业务状态，不能遗漏用户必报结果、必报计数、各文件结果及必要限制。只读结果无需创建输出文件。" +
+  "finalize 成功即终结，由宿主生成最终回复，之后不能追加自由文字；尚未完成则按实际状态交付 partial 或 blocked。";

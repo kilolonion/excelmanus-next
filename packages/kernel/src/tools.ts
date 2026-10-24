@@ -1,7 +1,7 @@
 // ToolDefinition 与 CapabilityModule（06 §2.1 全字段、03 §4.3）。
 
 import type { DatabaseSync } from "node:sqlite";
-import { MAX_C, MAX_R, parseRange, type RangeRef } from "@excelmanus/core";
+import { indexToCol, MAX_C, MAX_R, parseRange, type RangeRef } from "@excelmanus/core";
 import type {
   AgentRole,
   ApprovalEffect,
@@ -197,6 +197,19 @@ export function persistedReads(db: DatabaseSync, sessionId: string, agentId: str
 }
 
 export interface ToolContext {
+  /** Host-only actual publication receipt; staging is never publication. */
+  reportArtifactEffect?(effect: {
+    path: string;
+    docId?: string;
+    revision?: number;
+    effect: "data" | "structure" | "format" | "copy" | "move" | "export" | "text" | "external";
+    footprint?: string[];
+    replacesDataRanges?: string[];
+    execution: "succeeded" | "failed" | "uncertain" | "partial";
+    persistence?: "saved" | "pending_save" | "save_failed" | "unknown" | "not_written";
+    assetInputs?: { path: string; sha256: string }[];
+    readDependencies?: Record<string, unknown>[];
+  }): Promise<void>;
   /** Trusted runtime identity; never model parameters. All host callbacks also inherit ALS. */
   access?: ToolAccessContext;
   /** Canonical targets checked by runtime before execution (also retained across approval resume). */
@@ -284,6 +297,8 @@ export interface AgentCoordinator {
 }
 
 export interface ToolDefinition<A = unknown> {
+  /** Catalog visibility only. Hidden legacy calls retain the same execution gates. */
+  modelVisible?: boolean;
   /** 小写蛇形。 */
   name: string;
   /** 中文显示名（工具卡片）。 */
@@ -317,6 +332,8 @@ export interface ToolDefinition<A = unknown> {
   execute(args: A, ctx: ToolContext): Promise<ToolResult> | ToolResult;
   /** Recognize the trusted delivery branch even when its raw arguments are invalid. */
   finalizesTurn?(args: unknown): boolean;
+  /** Native delivery can identify its own live state-conflict result. Never model-visible or restored from JSON. */
+  isHostFinalizationConflict?(result: ToolResult): boolean;
   /** Server-rendered text, never a model supplied value or free-form final. */
   finalReply?(args: A, result: ToolResult): string | undefined;
   /**
@@ -333,6 +350,8 @@ export interface ToolDefinition<A = unknown> {
     toolCallId: string;
     args: unknown;
     intentMeta?: FileIntentMeta;
+    /** Durable intent sequence disambiguates reused provider call IDs during observation. */
+    intentSeq?: number;
   }): ToolResult | undefined;
 }
 
@@ -341,6 +360,70 @@ export interface WorkbookActivity {
   docId?: string;
   path?: string;
   ranges: string[];
+}
+
+export { classifyWorkbookEffect, WORKBOOK_EFFECT_REGISTRY } from "./workbook-effects.ts";
+
+/** Only dense literal cells.set writes prove replacement, never a general changed range. */
+export function literalReplacementRanges(
+  ops: readonly unknown[],
+  changedRanges: readonly string[],
+): string[] {
+  const replaced: string[] = [];
+  for (const raw of ops) {
+    if (!raw || typeof raw !== "object") continue;
+    const op = raw as { op?: unknown; range?: unknown; values?: unknown };
+    if (
+      op.op !== "cells.set" ||
+      typeof op.range !== "string" ||
+      !Array.isArray(op.values) ||
+      !op.values.length
+    )
+      continue;
+    const rows = op.values;
+    const width = Array.isArray(rows[0]) ? rows[0].length : 0;
+    if (
+      !width ||
+      Array.from(rows).some(
+        (row) =>
+          !Array.isArray(row) ||
+          row.length !== width ||
+          Array.from(row).some(
+            (value) =>
+              (typeof value === "string" && value.startsWith("=")) ||
+              (value !== null &&
+                typeof value !== "string" &&
+                typeof value !== "boolean" &&
+                !(typeof value === "number" && Number.isFinite(value))),
+          ),
+      )
+    )
+      continue;
+    try {
+      const r = parseRange(op.range),
+        endRow = r.startRow + rows.length - 1,
+        endCol = r.startCol + width - 1;
+      const candidates = changedRanges
+        .map((range) => parseRange(range))
+        .filter(
+          (c) =>
+            c.sheet &&
+            (!r.sheet || c.sheet === r.sheet) &&
+            c.startRow <= r.startRow &&
+            c.endRow >= endRow &&
+            c.startCol <= r.startCol &&
+            c.endCol >= endCol,
+        );
+      const sheets = [...new Set(candidates.map((c) => c.sheet!))];
+      if (sheets.length !== 1) continue;
+      replaced.push(
+        `'${sheets[0]!.replace(/'/g, "''")}'!${indexToCol(r.startCol)}${r.startRow}:${indexToCol(endCol)}${endRow}`,
+      );
+    } catch {
+      /* Unknown geometry cannot supersede an old data obligation. */
+    }
+  }
+  return replaced;
 }
 
 export interface CapabilityModule {

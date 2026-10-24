@@ -1,6 +1,6 @@
 // 启动编排：建立后端会话 → 校验协议版本 → 打开同步通道 → 加载工作区/模型/设置/会话 → 进入上次的工作区。
 
-import { protocolCompatible } from "@excelmanus/protocol";
+import { type ApiReadOptions, protocolCompatible } from "@excelmanus/protocol";
 import { api, connectBackend } from "@/lib/backend/api";
 import { onConnection, onSync, startChannel, subscribeTopic } from "@/lib/backend/channel";
 import {
@@ -11,33 +11,56 @@ import {
 } from "@/stores/app-store";
 // 以下 store 在导入时注册同步通道处理器
 import { refreshFiles } from "@/stores/files-store";
-import { openWorkspace, preferredWorkspaceId, refreshSessions } from "@/stores/session-store";
+import {
+  openWorkspace,
+  preferredWorkspaceId,
+  refreshSessions,
+  restoreSavedWorkspace,
+} from "@/stores/session-store";
 import "@/stores/workbook-store";
 import { firstScreenMetrics } from "@/lib/first-screen-metrics";
 
 const set = useAppStore.setState;
 let booting: Promise<void> | null = null;
 
-async function connectWithRetry(): Promise<"ok" | "signed-out" | "failed"> {
-  for (let attempt = 0; attempt < 8; attempt++) {
+async function connectWithRetry(signal: AbortSignal): Promise<"ok" | "signed-out" | "failed"> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    signal.throwIfAborted();
     try {
-      return await connectBackend();
-    } catch {
-      set({ bootMessage: `服务尚未就绪，正在重试（第 ${attempt + 1} 次）...` });
-      await new Promise((r) => setTimeout(r, Math.min(400 * 2 ** attempt, 2500)));
+      return await connectBackend({ signal, timeoutMs: 12000 });
+    } catch (error) {
+      signal.throwIfAborted();
+      const status = (error as { status?: number })?.status;
+      if (status === 401 || status === 403 || (status !== undefined && status < 500))
+        return "failed";
+      if (attempt === 1) break;
+      set({ bootMessage: "服务暂时未响应，正在重试..." });
+      await new Promise<void>((resolve, reject) => {
+        const abort = () => {
+          clearTimeout(timer);
+          reject(signal.reason);
+        };
+        const timer = setTimeout(() => {
+          signal.removeEventListener("abort", abort);
+          resolve();
+        }, 400);
+        signal.addEventListener("abort", abort, { once: true });
+      });
     }
   }
   return "failed";
 }
 
-async function boot(onProtocolReady?: () => void): Promise<void> {
+async function boot(signal: AbortSignal, onProtocolReady?: () => void): Promise<void> {
+  const options: ApiReadOptions = { signal, timeoutMs: 15000 };
   firstScreenMetrics?.mark("boot-start");
-  const connected = await connectWithRetry();
+  const connected = await connectWithRetry(signal);
   if (connected === "signed-out") return set({ status: "signed-out" });
   if (connected === "failed") return set({ status: "auth-failed" });
   firstScreenMetrics?.mark("backend-connected");
   try {
-    const info = await api().bootstrap();
+    const info = await api().bootstrap(options);
+    signal.throwIfAborted();
     if (!protocolCompatible(info.protocolVersion)) return set({ status: "protocol-mismatch" });
     set({
       appVersion: info.appVersion,
@@ -68,19 +91,51 @@ async function boot(onProtocolReady?: () => void): Promise<void> {
   subscribeTopic("app");
   startChannel({ onIncompatible: () => set({ status: "protocol-mismatch" }) });
   // Optional configuration must not hold workspace navigation behind a slow read.
-  void refreshProfiles().catch(() => undefined);
-  void refreshSettings().catch(() => undefined);
-  await Promise.all([refreshWorkspaces(), refreshSessions()]);
+  void refreshProfiles(options).catch(() => undefined);
+  void refreshSettings(options).catch(() => undefined);
+  const sessions = refreshSessions(options);
+  // Observe early rejection while workspaces resolve; both branches must succeed before ready.
+  void sessions.catch(() => undefined);
+  await refreshWorkspaces(options);
+  signal.throwIfAborted();
   if (useAppStore.getState().status !== "booting") return;
   const workspaceId = preferredWorkspaceId();
-  if (workspaceId) await openWorkspace(workspaceId).catch(() => undefined);
+  const [, restored] = await Promise.all([
+    sessions,
+    workspaceId ? restoreSavedWorkspace(workspaceId, options) : Promise.resolve(false),
+  ]);
+  signal.throwIfAborted();
+  if (!restored) {
+    await sessions;
+    signal.throwIfAborted();
+    if (useAppStore.getState().status !== "booting") return;
+    if (workspaceId) await openWorkspace(workspaceId, options);
+  }
+  signal.throwIfAborted();
   firstScreenMetrics?.mark("workspace-ready");
   if (useAppStore.getState().status === "booting") set({ status: "ready" });
 }
 
 export function bootApp(onProtocolReady?: () => void): Promise<void> {
-  booting ??= boot(onProtocolReady).catch(() => {
-    if (useAppStore.getState().status === "booting") set({ status: "auth-failed" });
-  });
+  if (!booting) {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        const error = new DOMException("连接超时，请重试", "TimeoutError");
+        controller.abort(error);
+        reject(error);
+      }, 45000);
+    });
+    booting = Promise.race([boot(controller.signal, onProtocolReady), deadline])
+      .catch(() => {
+        controller.abort();
+        if (useAppStore.getState().status === "booting") set({ status: "auth-failed" });
+      })
+      .finally(() => {
+        clearTimeout(timer);
+        if (useAppStore.getState().status !== "ready") controller.abort();
+      });
+  }
   return booting;
 }

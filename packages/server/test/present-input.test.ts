@@ -62,7 +62,9 @@ test("present decodes a JSON-encoded payload once and validates it before loggin
   expect(
     tool.input.safeParse({ payload: JSON.stringify({ ...payload, execute: "anything" }) }).success,
   ).toBe(false);
-  expect(tool.inputJsonSchema).toHaveProperty("anyOf.0.properties.payload.oneOf");
+  expect(tool.inputJsonSchema).toHaveProperty("properties.payload.oneOf");
+  expect(tool.inputJsonSchema).not.toHaveProperty("properties.finalize");
+  expect(JSON.stringify(tool.inputJsonSchema)).not.toContain('"finalize"');
 });
 
 test("todo accepts one JSON-encoded items array but rejects malformed and non-array input", () => {

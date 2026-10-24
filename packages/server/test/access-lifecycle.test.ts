@@ -255,7 +255,9 @@ test("context 受理先按有效scope查DB路径，继续继承，允许选区�
 }, 30000);
 
 const finiteIo = vi.hoisted(() => ({
-  calls: [] as Array<{ kind: string; path: string }>,
+  calls: [] as Array<{ kind: string; path: string; api?: string; access?: unknown; stack?: string }>,
+  captureStat: undefined as undefined | ((api: string, path: string) =>
+    { api: string; access: unknown; stack?: string } | undefined),
   afterCopy: undefined as undefined | ((from: string, to: string) => void),
   descriptors: new Map<number, string>(),
 }));
@@ -290,11 +292,13 @@ vi.mock("node:fs", async (original) => {
       return fs.readdirSync(...a);
     },
     lstatSync: (...a: Parameters<typeof fs.lstatSync>) => {
-      finiteIo.calls.push({ kind: "stat", path: String(a[0]) });
+      const path = String(a[0]);
+      finiteIo.calls.push({ kind: "stat", path, ...finiteIo.captureStat?.("lstatSync", path) });
       return fs.lstatSync(...a);
     },
     statSync: (...a: Parameters<typeof fs.statSync>) => {
-      finiteIo.calls.push({ kind: "stat", path: String(a[0]) });
+      const path = String(a[0]);
+      finiteIo.calls.push({ kind: "stat", path, ...finiteIo.captureStat?.("statSync", path) });
       return fs.statSync(...a);
     },
     readFileSync: (...a: Parameters<typeof fs.readFileSync>) => {
@@ -307,17 +311,55 @@ vi.mock("node:fs", async (original) => {
 test("finite files: real HTTP blocks root discovery and source actor writes but permits exact copy edit finalization and download", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "finite-http-"));
   const plans: StepEvent[][] = [];
-  const server = await startServer({
+  const boot = () => startServer({
     dataDir,
     log: () => {},
     gateway: {
-      async *step() {
-        for (const event of plans.shift() ?? text) yield event;
+      async *step(request) {
+        const planned = plans.shift();
+        if (planned) {
+          for (const event of planned) yield event;
+          return;
+        }
+        const inspected = request.history.findLast(
+          (item) => item.kind === "toolResult" && item.toolCallId === "finite-inspect",
+        );
+        if (!inspected || inspected.kind !== "toolResult")
+          throw new Error("missing model-visible finite inspect result");
+        const result = inspected.output as {
+          status?: string;
+          data?: {
+            action?: string;
+            allowedOutcomes?: string[];
+            factSets?: { id: string }[];
+            artifacts?: { id: string; path: string; persistence: string; validation: string }[];
+          };
+        };
+        expect(result).toMatchObject({ status: "ok", data: { action: "inspect" } });
+        expect(result.data?.allowedOutcomes).toContain("partial");
+        expect(result.data?.allowedOutcomes).not.toContain("completed");
+        expect(result.data?.artifacts).toEqual(expect.arrayContaining([
+          expect.objectContaining({ path: "output.xlsx", persistence: "saved", validation: "unverified" }),
+        ]));
+        if (!result.data?.factSets?.length || !result.data.artifacts?.length)
+          throw new Error("missing current finite output facts or artifacts");
+        const args = {
+          action: "finalize",
+          outcome: "partial",
+          factSetIds: result.data.factSets.map((fact) => fact.id),
+          artifactIds: result.data.artifacts.map((artifact) => artifact.id),
+        };
+        const events: StepEvent[] = [
+          { kind: "tool.call", toolCallId: "finite-finalize", toolName: "deliver", args, rawArgs: JSON.stringify(args) },
+          { kind: "finish", reason: "tool-calls" },
+        ];
+        for (const event of events) yield event;
       },
     },
   });
+  let server = await boot();
   try {
-    const api = createApiClient(server.url, server.token);
+    let api = createApiClient(server.url, server.token);
     await createTestProfile(api, {
       name: "finite",
       provider: "custom-openai-compatible",
@@ -333,6 +375,16 @@ test("finite files: real HTTP blocks root discovery and source actor writes but 
     const before = readFileSync(join(server.workspaceRoot, "source.xlsx"));
     const snapshot = await api.getDocSnapshot(session.workspaceId, source.id);
     const revisions = await api.listDocRevisions(session.workspaceId, source.id);
+    // The user-opened neighbor belongs to setup, not the finite agent turn.
+    // Restart the real server on the same persisted data; do not reopen its actor.
+    // Keep every zero-neighbor-I/O assertion below unchanged.
+    const originalRoot = server.workspaceRoot;
+    await server.close();
+    server = await boot();
+    api = createApiClient(server.url, server.token);
+    expect(server.workspaceRoot).toBe(originalRoot);
+    const reopenedSource = (await api.openDoc(session.workspaceId, { path: "source.xlsx" })).document;
+    expect(reopenedSource).toMatchObject({ id: source.id, rev: source.rev });
     const calls = [
       ["finite-find", "find", { path: ".", glob: "source*.xlsx" }],
       ["finite-neighbor", "workbook_read", { path: "neighbor.xlsx", mode: "overview" }],
@@ -380,12 +432,32 @@ test("finite files: real HTTP blocks root discovery and source actor writes but 
           },
         },
       ],
+      ["finite-inspect", "deliver", { action: "inspect" }],
     ] as const;
     for (const [toolCallId, toolName, args] of calls)
       plans.push([
         { kind: "tool.call", toolCallId, toolName, args, rawArgs: JSON.stringify(args) },
         { kind: "finish", reason: "tool-calls" },
       ]);
+    finiteIo.captureStat = (api, path) => {
+      if (path !== join(server.workspaceRoot, "neighbor.xlsx")) return undefined;
+      const access = currentToolAccess();
+      return {
+        api,
+        access: access ? {
+          sessionId: access.sessionId,
+          agentId: access.agentId,
+          turnId: access.turnId,
+          toolCallId: access.toolCallId,
+          originAgentId: access.originAgentId,
+          originTurnId: access.originTurnId,
+          sdkCallIndex: access.sdkCallIndex,
+          auditFailed: access.auditFailed,
+          binding: access.binding(),
+        } : null,
+        stack: new Error("finite neighbor stat").stack,
+      };
+    };
     finiteIo.calls.length = 0;
     await expect(
       api.sendMessage(session.id, "main", {
@@ -402,10 +474,25 @@ test("finite files: real HTTP blocks root discovery and source actor writes but 
       clientMessageId: "finite",
       text: "把当前 source.xlsx 另存为 output.xlsx，只处理这两个文件，不访问或修改其他文件。完成后报告 output.xlsx 的 A1 数值。",
     });
+    async function readCompleteLog(): Promise<LogRecord[]> {
+      const rows: LogRecord[] = [];
+      let before: number | undefined;
+      for (;;) {
+        // REST clamps limit to 500 and returns each backward page in ascending seq order.
+        const { items } = await api.getSessionLog(session.id, { limit: 500, before });
+        if (items.length === 0) return rows;
+        const nextBefore = items[0]!.seq;
+        if (before !== undefined && nextBefore >= before)
+          throw new Error("Session log pagination did not advance");
+        rows.unshift(...items);
+        before = nextBefore;
+        if (items.length < 500) return rows;
+      }
+    }
     let rows: LogRecord[] = [];
     await vi.waitFor(
       async () => {
-        rows = (await api.getSessionLog(session.id, { limit: 2000 })).items;
+        rows = await readCompleteLog();
         expect(rows.some((r) => r.type === "turn.completed" || r.type === "turn.failed")).toBe(
           true,
         );
@@ -413,6 +500,10 @@ test("finite files: real HTTP blocks root discovery and source actor writes but 
       { timeout: 30000, interval: 20 },
     );
     const io = [...finiteIo.calls];
+    const neighborIo = io.filter((c) => c.path === join(server.workspaceRoot, "neighbor.xlsx"));
+    if (neighborIo.length)
+      console.error("FINITE_ACCESS_STAT_DIAGNOSTIC", JSON.stringify(neighborIo));
+    // Keep the existing zero-neighbor-I/O assertion below, regardless of tool context.
     expect.soft(rows.find((r) => r.type === "turn.started")?.data.accessBinding).toMatchObject({
       decision: {
         kind: "files",
@@ -438,13 +529,16 @@ test("finite files: real HTTP blocks root discovery and source actor writes but 
         .toMatchObject({ status: "error" });
     expect.soft(io.filter((c) => c.kind === "list" && c.path === server.workspaceRoot)).toEqual([]);
     expect
-      .soft(io.filter((c) => c.path === join(server.workspaceRoot, "neighbor.xlsx")))
+      .soft(
+        io.filter((c) => c.path === join(server.workspaceRoot, "neighbor.xlsx")),
+        `FINITE_ACCESS_STAT_DIAGNOSTIC ${JSON.stringify(neighborIo)}`,
+      )
       .toEqual([]);
     expect.soft(existsSync(join(server.workspaceRoot, "extra"))).toBe(false);
     expect.soft(readFileSync(join(server.workspaceRoot, "source.xlsx"))).toEqual(before);
     expect.soft(await api.getDocSnapshot(session.workspaceId, source.id)).toEqual(snapshot);
     expect.soft(await api.listDocRevisions(session.workspaceId, source.id)).toEqual(revisions);
-    for (const id of ["finite-copy", "finite-edit", "finite-read", "finite-present"])
+    for (const id of ["finite-copy", "finite-edit", "finite-read", "finite-inspect", "finite-finalize"])
       expect
         .soft(
           rows.find((r) => r.type === "tool.result" && r.data.toolCallId === id)?.data.result,
@@ -460,17 +554,45 @@ test("finite files: real HTTP blocks root discovery and source actor writes but 
       destinationSha256: expect.any(String),
     });
     expect.soft(rows.some((r) => r.type === "access.unscoped")).toBe(false);
+    // The hidden legacy completion request must not bypass the unverified-write guard.
     expect
       .soft(
         rows.find((r) => r.type === "tool.result" && r.data.toolCallId === "finite-present")?.data
           .result,
       )
-      .toMatchObject({ data: { finalizationStatus: "complete" } });
+      .toMatchObject({
+        status: "error",
+        error: {
+          code: "INVALID_ARGUMENT",
+          message: expect.stringContaining("未通过、过期或未验证的必需输出义务"),
+        },
+      });
+    const delivery = rows.find(
+      (r) => r.type === "tool.result" && r.data.toolCallId === "finite-finalize",
+    )?.data.result as { data?: { finalText?: string } };
+    expect.soft(delivery).toMatchObject({
+      status: "ok",
+      data: {
+        outcome: "partial",
+        finalizationStatus: "incomplete",
+        artifacts: expect.arrayContaining([
+          expect.objectContaining({ path: "output.xlsx", persistence: "saved", validation: "unverified" }),
+        ]),
+      },
+    });
+    const finalOutput = rows.find(
+      (r) => r.type === "model.output" && r.data.sourceToolCallId === "finite-finalize",
+    );
+    expect.soft(finalOutput?.data.deliveryStatus).toBe("incomplete");
+    expect.soft(finalOutput?.data.text).toBe(delivery.data?.finalText);
+    expect.soft(rows.filter((r) => r.type === "turn.completed")).toHaveLength(1);
+    expect.soft(rows.filter((r) => r.type === "turn.failed")).toHaveLength(0);
     const downloaded = Buffer.from(
       await (await api.downloadFile(session.workspaceId, "output.xlsx")).arrayBuffer(),
     );
     expect(downloaded).toEqual(readFileSync(join(server.workspaceRoot, "output.xlsx")));
   } finally {
+    finiteIo.captureStat = undefined;
     await server.close();
     rmSync(dataDir, { recursive: true, force: true });
   }

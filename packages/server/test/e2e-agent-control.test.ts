@@ -46,14 +46,6 @@ const hang = (signal: AbortSignal | undefined) =>
       });
     },
   });
-const text = (t: string) =>
-  stream([
-    { type: "stream-start", warnings: [] },
-    { type: "text-start", id: "a" },
-    { type: "text-delta", id: "a", delta: t },
-    { type: "text-end", id: "a" },
-    { type: "finish", usage, finishReason: { unified: "stop", raw: "stop" } },
-  ]);
 const call = (calls: { id: string; tool: string; input: unknown }[]) =>
   stream([
     { type: "stream-start", warnings: [] },
@@ -71,6 +63,35 @@ const system = (p: PromptMsg[]) => {
   const s = p.find((m) => m.role === "system");
   return typeof s?.content === "string" ? s.content : "";
 };
+
+
+/** Read host handles only from the latest provider-visible inspect result. */
+function partialCall(prompt: Array<{ role: string; content: unknown }>, prefix: string, expectedPath?: string) {
+  const results = prompt.filter(m => m.role === "tool" && Array.isArray(m.content))
+    .flatMap(m => m.content as Array<{ type: string; toolName?: string; output?: { type: string; value?: unknown } }>)
+    .filter(p => p.type === "tool-result");
+  const last = results.at(-1);
+  const value = last?.output?.type === "json" ? last.output.value as {
+    status?: string; data?: { action?: string; allowedOutcomes?: string[]; unverifiedObligationCount?: number;
+      factSets?: Array<{ id: string }>; artifacts?: Array<{ id: string; path: string; persistence: string; validation: string }> };
+  } : undefined;
+  if (last?.toolName !== "deliver" || value?.data?.action !== "inspect")
+    return { id: `${prefix}-inspect-${results.length}`, tool: "deliver", input: { action: "inspect" } };
+  expect(value.status).toBe("ok");
+  const data = value.data;
+  expect(data.allowedOutcomes).toContain("partial");
+  if (expectedPath) {
+    expect(data.artifacts?.find(a => a.path === expectedPath)).toMatchObject({ persistence: "saved", validation: "unverified" });
+    expect(data.allowedOutcomes).not.toContain("completed");
+    expect(data.unverifiedObligationCount).toBeGreaterThan(0);
+  }
+  if ((data.unverifiedObligationCount ?? 0) > 0) expect(data.allowedOutcomes).not.toContain("completed");
+  return { id: `${prefix}-partial-${results.length}`, tool: "deliver", input: {
+    action: "finalize", outcome: "partial",
+    artifactIds: (data.artifacts ?? []).map(a => a.id),
+    factSetIds: (data.factSets ?? []).map(f => f.id),
+  } };
+}
 
 interface Behaviour {
   /** main 首轮派生的子代理名单。 */
@@ -121,7 +142,7 @@ async function boot(b: Behaviour, maxConcurrentSubAgents: number, prompts: strin
             ]),
           };
         }
-        return { stream: text(`完成 ${name}`) };
+        return { stream: call([partialCall(prompt, `child-${name}`, `${name}.xlsx`)]) };
       }
       if (b.hangMain) return { stream: hang(opts.abortSignal) };
       if (b.mainWrites && !hasTool) {
@@ -164,7 +185,7 @@ async function boot(b: Behaviour, maxConcurrentSubAgents: number, prompts: strin
           ),
         };
       }
-      return { stream: text("已汇总") };
+      return { stream: call([partialCall(prompt, "main", b.mainWrites ? "m.xlsx" : undefined)]) };
     },
   });
   const server = await startServer({
@@ -182,8 +203,20 @@ async function boot(b: Behaviour, maxConcurrentSubAgents: number, prompts: strin
     baseUrl: "https://mock.invalid/v1",
     apiKey: "test",
   });
-  const logs = async (sessionId: string) =>
-    (await api.getSessionLog(sessionId, { limit: 500 })).items as unknown as Rec[];
+  const logs = async (sessionId: string): Promise<Rec[]> => {
+    const items: Rec[] = [];
+    let before: number | undefined;
+    for (;;) {
+      const page = await api.getSessionLog(sessionId, { limit: 500, before });
+      if (!page.items.length) break;
+      const next = page.items[0]!.seq;
+      if (before !== undefined && next >= before) throw new Error("nonadvancing log cursor");
+      items.unshift(...page.items as unknown as Rec[]);
+      before = next;
+      if (page.items.length < 500) break;
+    }
+    return items;
+  };
   const waitFor = async (sessionId: string, ok: (items: Rec[]) => boolean, tries = 600) => {
     for (let i = 0; i < tries; i += 1) {
       const items = await logs(sessionId);
@@ -217,6 +250,10 @@ describe("多代理控制面", () => {
     for (const n of ["甲", "乙", "丙"]) expect(statusOf(list, n)).toBe("idle");
     expect(list.some((a) => a.status === "queued")).toBe(false);
 
+    expect(items.some(r => r.type === "turn.failed")).toBe(false);
+    const childDeliveries = items.filter(r => r.type === "tool.result" && r.agentId !== "main" && String(r.data.toolCallId).includes("-partial-"));
+    expect(childDeliveries).toHaveLength(3);
+    for (const row of childDeliveries) expect(row.data.result).toMatchObject({ status: "ok", data: { finalizationStatus: "incomplete" } });
     const summaries = items.filter((r) => r.type === "change.summary");
     expect(summaries.length).toBe(3);
     const docs = summaries.flatMap(
@@ -402,3 +439,4 @@ describe("多代理控制面", () => {
     db.close();
   }, 60_000);
 });
+

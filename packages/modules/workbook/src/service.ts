@@ -1272,6 +1272,28 @@ export class DocumentService {
     );
   }
 
+  /** Read-only semantic verification must never trigger cold write recovery. */
+  assertSavedReadOpen(
+    workspaceId: string,
+    root: string,
+    input: { docId?: string; path?: string },
+  ): void {
+    const path = this.editTarget(workspaceId, root, input);
+    const row = this.db
+      .prepare("SELECT * FROM documents WHERE workspace_id=? AND path=?")
+      .get(workspaceId, path) as DocRow | undefined;
+    if (!row) return;
+    const pending =
+      row.head_rev !== row.checkpoint_rev ||
+      (row.checkpoint_snapshot !== null && readCheckpointSnapshot(row.checkpoint_snapshot).pending) ||
+      this.db.prepare("SELECT 1 FROM doc_checkpoints WHERE doc_id=?").get(row.id) !== undefined;
+    if (pending)
+      throw new FileOperationError(
+        "VERSION_CONFLICT",
+        "来源对齐只读取已保存版本；此文件有待保存或待恢复状态，请先在原任务完成保存。",
+      );
+  }
+
   /** Do not let a macro metadata read trigger cold pending-write recovery. */
   assertMacroReadOpen(
     workspaceId: string,

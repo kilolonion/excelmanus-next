@@ -13,8 +13,17 @@ import { useWorkbookStore } from "@/stores/workbook-store";
 type ChartInstance = ReturnType<typeof import("echarts/core")["init"]>;
 
 type Props = { popup: { extraProps?: Record<string, unknown> } };
+
+/** Capture never reads a later image revision or uses an external URL. */
+export function captureImageSource(image: Pick<ImageObject, "data" | "mediaType">): string {
+  if (!image.data || !/^[A-Za-z0-9+/]+={0,2}$/.test(image.data))
+    throw new Error("冻结图片数据缺失或无效，无法完成真实视图截图");
+  return `data:${image.mediaType};base64,${image.data}`;
+}
+
 export function WorkbookObject({ popup }: Props) {
   const p = popup.extraProps ?? {};
+  const captureReadonly = p.captureReadonly === true;
   const chart = p.chart as ChartObject | undefined;
   const image = p.image as ImageObject | undefined;
   const shape = p.shape as ShapeObject | undefined;
@@ -66,6 +75,14 @@ export function WorkbookObject({ popup }: Props) {
       chartRevision,
     });
     if (image) {
+      if (captureReadonly) {
+        try {
+          setSrc(captureImageSource(image));
+        } catch (e) {
+          setError(errorMessage(e, "冻结图片加载失败"));
+        }
+        return;
+      }
       const { workspaceId } = useWorkbookStore.getState();
       if (!workspaceId) return;
       void api()
@@ -137,7 +154,7 @@ export function WorkbookObject({ popup }: Props) {
       disposed = true;
       cleanup?.();
     };
-  }, [chart, image, p.docId, p.sheetId, p.cells, chartRevision, attempt]);
+  }, [chart, image, p.docId, p.sheetId, p.cells, chartRevision, attempt, captureReadonly]);
   if (p.note) {
     const note = p.note as { title: string; threaded?: boolean };
     return (
@@ -154,6 +171,7 @@ export function WorkbookObject({ popup }: Props) {
   return (
     <div
       data-em-workbook-object={object.id}
+      data-em-capture-error={captureReadonly && visibleError ? visibleError : undefined}
       className={
         shape
           ? "group relative overflow-hidden"
@@ -161,7 +179,7 @@ export function WorkbookObject({ popup }: Props) {
       }
       style={{ width: object.width, height: object.height }}
     >
-      {image && typeof p.onDelete === "function" && (
+      {!captureReadonly && image && typeof p.onDelete === "function" && (
         <Button
           size="icon"
           variant="outline"
@@ -201,9 +219,11 @@ export function WorkbookObject({ popup }: Props) {
             {object.title ? `${object.title}：` : ""}
             {visibleError}
           </p>
-          <Button size="sm" variant="outline" onClick={() => setAttempt((value) => value + 1)}>
-            重新加载
-          </Button>
+          {!captureReadonly && (
+            <Button size="sm" variant="outline" onClick={() => setAttempt((value) => value + 1)}>
+              重新加载
+            </Button>
+          )}
         </div>
       ) : image ? (
         <img

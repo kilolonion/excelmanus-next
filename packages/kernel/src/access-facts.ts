@@ -146,15 +146,25 @@ export function turnAccessFacts(
     data: string;
     type: string;
   }[];
+  // This report is synchronous and read-only: no await, user callback, or writes occur
+  // while these rows are admitted. Reuse only this call's exact provenance decision;
+  // a later report and every live ToolAccess guard still read current authorization.
+  const admissions = new Map<string, boolean>();
+  const admitted = (agentId: string, turnId: unknown): boolean => {
+    if (typeof turnId !== "string") return false;
+    const key = JSON.stringify([input.sessionId, agentId, turnId, originAgentId, originTurnId]);
+    const prior = admissions.get(key);
+    if (prior !== undefined) return prior;
+    const valid = admittedOrigin(db, input.sessionId, agentId, turnId, originAgentId, originTurnId);
+    admissions.set(key, valid);
+    return valid;
+  };
   const events = new Map<string, AccessFact & { agentId: string }>();
   const batches = new Map<string, string>();
   let priorUnscopedActivity = false;
   for (const row of rows) {
     const data = JSON.parse(row.data);
-    if (
-      !admittedOrigin(db, input.sessionId, row.agent_id, data.turnId, originAgentId, originTurnId)
-    )
-      continue;
+    if (!admitted(row.agent_id, data.turnId)) continue;
     if (row.type === "access.unscoped") {
       priorUnscopedActivity = true;
       continue;

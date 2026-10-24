@@ -65,6 +65,93 @@ const toolCallOut = (toolCallId: string, toolName: string, input: string): Model
 type Prompt = Array<{ role: string; content: unknown }>;
 type CallHandler = (prompt: Prompt) => Promise<ModelOut> | ModelOut;
 
+type PublicationExpectation = {
+  paths: string[];
+  execution: "succeeded" | "failed";
+  persistence: "saved" | "not_written";
+};
+
+/** Only current provider-visible inspect handles may terminate an effectful fixture. */
+function partialDeliveryHandlers(prefix: string, expected: PublicationExpectation): CallHandler[] {
+  return [
+    () => toolCallOut(`${prefix}-inspect`, "deliver", JSON.stringify({ action: "inspect" })),
+    (prompt) => {
+      const inspected = prompt
+        .filter((message) => message.role === "tool" && Array.isArray(message.content))
+        .flatMap(
+          (message) =>
+            message.content as Array<{
+              type: string;
+              toolCallId?: string;
+              output?: { type: string; value?: unknown };
+            }>,
+        )
+        .find((part) => part.type === "tool-result" && part.toolCallId === `${prefix}-inspect`);
+      if (inspected?.output?.type !== "json") throw new Error("missing visible inspect result");
+      const result = inspected.output.value as {
+        status?: string;
+        data?: {
+          action?: string;
+          allowedOutcomes?: string[];
+          artifacts?: Array<{
+            id: string;
+            path: string;
+            execution: string;
+            persistence: string;
+            validation: string;
+          }>;
+        };
+      };
+      expect(result).toMatchObject({ status: "ok", data: { action: "inspect" } });
+      expect(result.data?.allowedOutcomes).toContain("partial");
+      // A fully rolled-back publication is not a saved output obligation.
+      if (expected.persistence === "saved")
+        expect(result.data?.allowedOutcomes).not.toContain("completed");
+      const artifacts = result.data?.artifacts;
+      if (!artifacts) throw new Error("missing inspected publication artifacts");
+      expect(
+        artifacts.map(({ path, execution, persistence, validation }) => ({
+          path, execution, persistence, validation,
+        })).sort((a, b) => a.path.localeCompare(b.path)),
+      ).toEqual(
+        [...expected.paths].sort((a, b) => a.localeCompare(b)).map((path) => ({
+          path, execution: expected.execution, persistence: expected.persistence, validation: "unverified",
+        })),
+      );
+      return toolCallOut(`${prefix}-finalize`, "deliver", JSON.stringify({
+        action: "finalize",
+        outcome: "partial",
+        artifactIds: artifacts.map((artifact) => artifact.id),
+      }));
+    },
+  ];
+}
+
+function expectTypedPartial(items: LogRecord[], prefix: string): void {
+  expect(items.filter((row) => row.type === "turn.completed")).toHaveLength(1);
+  expect(items.filter((row) => row.type === "turn.failed")).toHaveLength(0);
+  expect(items.filter((row) => row.type === "model.output" && row.data.deliveryStatus === "rejected"))
+    .toHaveLength(0);
+  for (const toolCallId of [`${prefix}-inspect`, `${prefix}-finalize`])
+    for (const type of ["tool.intent", "tool.result"])
+      expect(items.filter((row) => row.type === type && row.data.toolCallId === toolCallId))
+        .toHaveLength(1);
+  expect(
+    items.filter((row) => row.type === "tool.intent" && row.data.toolName === "run_script"),
+  ).toHaveLength(1);
+  const delivery = items.find(
+    (row) => row.type === "tool.result" && row.data.toolCallId === `${prefix}-finalize`,
+  );
+  expect(delivery?.data.result).toMatchObject({
+    status: "ok",
+    data: { outcome: "partial", finalizationStatus: "incomplete" },
+  });
+  expect(
+    items.find((row) => row.type === "model.output" && row.data.sourceToolCallId === `${prefix}-finalize`)
+      ?.data.deliveryStatus,
+  ).toBe("incomplete");
+}
+
 // 注意：网关每次 gateway.step 都调用 resolveLanguageModel 新建模型实例，
 // 故调用序号必须放在共享的 calls 数组上（与 e2e-dispatch 的 makeGatedModel 相同），
 // 否则每个新实例都从 handlers[0] 重发同一个工具调用。
@@ -144,7 +231,18 @@ async function waitLog(
 ): Promise<LogRecord[]> {
   const t0 = Date.now();
   for (;;) {
-    const { items } = await api.getSessionLog(sessionId, { limit: 500 });
+    const items: LogRecord[] = [];
+    let before: number | undefined;
+    for (;;) {
+      const page = await api.getSessionLog(sessionId, { limit: 500, before });
+      if (!page.items.length) break;
+      const nextBefore = page.items[0]!.seq;
+      if (before !== undefined && nextBefore >= before)
+        throw new Error("Session log pagination did not advance");
+      items.unshift(...page.items);
+      before = nextBefore;
+      if (page.items.length < 500) break;
+    }
     if (pred(items)) return items;
     if (Date.now() - t0 > timeoutMs) {
       throw new Error(`等待超时：${what}；types=${JSON.stringify(items.map((i) => i.type))}`);
@@ -264,7 +362,9 @@ describe("e2e run_script", () => {
     ].join("\n");
     const { srv, api, sessionId, workspaceId } = await boot([
       () => toolCallOut("tc1", "run_script", JSON.stringify({ code })),
-      () => textOut("完成"),
+      ...partialDeliveryHandlers("publish", {
+        paths: [...files, "notes/out.txt"], execution: "succeeded", persistence: "saved",
+      }),
     ]);
     const before = seedWorkbooks(srv.workspaceRoot, files);
     const items = await runScript(api, sessionId, { code });
@@ -299,6 +399,8 @@ describe("e2e run_script", () => {
       }
     }
     expect(readFileSync(join(srv.workspaceRoot, "notes/out.txt"), "utf8")).toBe("暂存内容-甲乙丙");
+    // Operational turn completion remains distinct from business verification.
+    expectTypedPartial(items, "publish");
   }, 90_000);
 
   test("发布失败回滚：审批窗口删目标目录 → 文本发布失败 → doc1 已提交被逆操作回退", async () => {
@@ -310,7 +412,9 @@ describe("e2e run_script", () => {
       'await files.writeText({ path: "notes/deep.txt", content: "脚本覆盖" });',
     ].join("\n");
     const { srv, api, sessionId, workspaceId } = await boot(
-      [() => toolCallOut("tc1", "run_script", JSON.stringify({ code })), () => textOut("完成")],
+      [() => toolCallOut("tc1", "run_script", JSON.stringify({ code })), ...partialDeliveryHandlers("rollback", {
+        paths: ["r1.xlsx"], execution: "failed", persistence: "not_written",
+      })],
       "confirm",
     );
     seedWorkbooks(srv.workspaceRoot, ["r1.xlsx"]);
@@ -354,6 +458,8 @@ describe("e2e run_script", () => {
     expect(byPath["r1.xlsx"]).toBe(2);
     // 文本发布失败：staged 副本已清，notes/ 保持删除态
     expect(existsSync(join(srv.workspaceRoot, "notes", "deep.txt"))).toBe(false);
+    // Operational turn completion remains distinct from business verification.
+    expectTypedPartial(items2, "rollback");
   }, 90_000);
 
   test("场景17：死循环 1s 超时；期间 REST 仍 <200ms；之后池补位正常跑", async () => {
@@ -546,7 +652,9 @@ describe("e2e run_script 发布时审批（ADR 0009 修订）", () => {
     const { srv, api, sessionId, workspaceId } = await boot(
       [
         () => toolCallOut("empty-script", "run_script", JSON.stringify({ code })),
-        () => textOut("完成"),
+        ...partialDeliveryHandlers("empty-publish", {
+        paths: ["existing.xlsx", path], execution: "succeeded", persistence: "saved",
+      }),
       ],
       "confirm",
     );
@@ -625,6 +733,8 @@ describe("e2e run_script 发布时审批（ADR 0009 修订）", () => {
     ).toMatchObject({ n: 1 });
     db.close();
     expect(await cellValue(api, workspaceId, path, "A1")).toBeUndefined();
+    // Operational turn completion remains distinct from business verification.
+    expectTypedPartial(done, "empty-publish");
   }, 60_000);
 
   test("confirm 模式批准：approval.requested 带 publishPlan，批准前两文件未动 → 批准后双发布", async () => {
@@ -634,7 +744,9 @@ describe("e2e run_script 发布时审批（ADR 0009 修订）", () => {
       'return "done";',
     ].join("\n");
     const { srv, api, sessionId, workspaceId } = await boot(
-      [() => toolCallOut("tc1", "run_script", JSON.stringify({ code })), () => textOut("完成")],
+      [() => toolCallOut("tc1", "run_script", JSON.stringify({ code })), ...partialDeliveryHandlers("approved-publish", {
+        paths: ["p1.xlsx", "new.txt"], execution: "succeeded", persistence: "saved",
+      })],
       "confirm",
     );
     seedWorkbooks(srv.workspaceRoot, ["p1.xlsx"]);
@@ -679,6 +791,8 @@ describe("e2e run_script 发布时审批（ADR 0009 修订）", () => {
     expect((res.data?.published ?? []).length).toBe(2);
     expect(await cellValue(api, workspaceId, "p1.xlsx", "A1")).toBe("P");
     expect(readFileSync(join(srv.workspaceRoot, "new.txt"), "utf8")).toBe("line1\nline2");
+    // Operational turn completion remains distinct from business verification.
+    expectTypedPartial(items2, "approved-publish");
   }, 60_000);
 
   test("confirm 模式拒绝：APPROVAL_DENIED、文件不变、tmp 无残留", async () => {
@@ -727,9 +841,11 @@ describe("e2e run_script 发布时审批（ADR 0009 修订）", () => {
       'try { await wb.read({ path: "w.xlsx" }); return "no-error"; }',
       "catch (e) { return e.code || e.message; }",
     ].join("\n");
-    const { srv, api, sessionId } = await boot([
+    const { srv, api, sessionId, workspaceId } = await boot([
       () => toolCallOut("tc1", "run_script", JSON.stringify({ code })),
-      () => textOut("完成"),
+      ...partialDeliveryHandlers("write-read-publish", {
+        paths: ["w.xlsx"], execution: "succeeded", persistence: "saved",
+      }),
     ]);
     seedWorkbooks(srv.workspaceRoot, ["w.xlsx"]);
     await api.sendMessage(sessionId, AGENT, { clientMessageId: "pr1", text: "跑脚本" });
@@ -743,6 +859,19 @@ describe("e2e run_script 发布时审批（ADR 0009 修订）", () => {
     expect(r.data.status).toBe("ok");
     const res = r.data.result as { data?: { value?: unknown } };
     expect(String(res.data?.value)).toContain("UNSUPPORTED_FEATURE");
+    expect(await cellValue(api, workspaceId, "w.xlsx", "销售!A1")).toBe("X");
+    const db = dbFile(srv);
+    try {
+      expect(
+        db.prepare(
+          "SELECT COUNT(*) AS n FROM doc_ops o JOIN documents d ON d.id=o.doc_id WHERE d.path=? AND o.tool_call_id=?",
+        ).get("w.xlsx", "tc1"),
+      ).toMatchObject({ n: 1 });
+    } finally {
+      db.close();
+    }
+    // Operational turn completion remains distinct from business verification.
+    expectTypedPartial(items, "write-read-publish");
   }, 60_000);
 });
 
@@ -751,7 +880,9 @@ test("script named creation expands the same atomic sheet operations", async () 
     'await wb.edit({create:true,path:"named-script.xlsx",sheetNames:["收款收据","核对"],ops:[{op:"cells.set",range:"收款收据!A1",values:[[5190]]}]});';
   const { api, sessionId, workspaceId } = await boot([
     () => toolCallOut("named-script", "run_script", JSON.stringify({ code })),
-    () => textOut("完成"),
+    ...partialDeliveryHandlers("named-publish", {
+        paths: ["named-script.xlsx"], execution: "succeeded", persistence: "saved",
+      }),
   ]);
   await api.sendMessage(sessionId, AGENT, {
     clientMessageId: "named-script",
@@ -781,6 +912,8 @@ test("script named creation expands the same atomic sheet operations", async () 
     },
   });
   expect(await cellValue(api, workspaceId, "named-script.xlsx", "收款收据!A1")).toBe(5190);
+  // Operational turn completion remains distinct from business verification.
+  expectTypedPartial(done, "named-publish");
 }, 60_000);
 
 test("script wb.edit marks an existing pivot cache without refreshing saved results", async () => {

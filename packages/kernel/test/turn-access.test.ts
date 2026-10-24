@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { z } from "zod";
 import * as kernel from "../src/index.ts";
 
@@ -924,4 +924,242 @@ test("finite files: resumed origin missing update is fail closed without importi
     accessDeliveryRequired: true,
   });
   db.close();
+});
+
+test("access report admission is computed once per exact origin tuple without dropping facts", () => {
+  const { db, log } = fixture();
+  const outcomes = ["started", "succeeded", "failed", "rejected-before-access"] as const;
+  const facts = Array.from({ length: 128 }, (_, i) => ({
+    operationId: `audit-${i}`,
+    turnId: "t",
+    originAgentId: "main",
+    originTurnId: "t",
+    toolCallId: `tool-${i}`,
+    kind: "file-bytes" as const,
+    path: `allowed/${i}.txt`,
+    purpose: `retained-purpose-${i}`,
+    outcome: outcomes[i % outcomes.length]!,
+  }));
+  log.append("s", "main", facts.map((data) => ({ type: "access.fact", data })));
+  const rawBefore = db.prepare("SELECT seq,agent_id,type,data FROM session_log ORDER BY seq").all();
+  const spy = vi.spyOn(db, "prepare");
+  let report: ReturnType<typeof kernel.turnAccessFacts>;
+  let bindingQueries = 0;
+  try {
+    report = kernel.turnAccessFacts(db, { sessionId: "s", agentId: "main", turnId: "t" });
+    bindingQueries = spy.mock.calls.filter(([sql]) =>
+      sql.includes("SELECT type, data FROM session_log") && sql.includes("ORDER BY seq DESC"),
+    ).length;
+  } finally {
+    spy.mockRestore();
+  }
+  expect(report.facts).toEqual(facts.map((fact) => ({ ...fact, agentId: "main" })));
+  expect(report.unknown).toEqual(report.facts.filter((fact) => fact.outcome === "started"));
+  expect(report.failed).toEqual(report.facts.filter((fact) => fact.outcome === "failed"));
+  expect(report.rejected).toEqual(report.facts.filter((fact) => fact.outcome === "rejected-before-access"));
+  expect(report.coverage).toBe("incomplete");
+  expect(db.prepare("SELECT seq,agent_id,type,data FROM session_log ORDER BY seq").all()).toEqual(rawBefore);
+  // One current report binding plus one admission for this exact tuple, not one per audit row.
+  expect(bindingQueries).toBe(2);
+  db.close();
+});
+
+test("access report admission keeps agent and typed turn identities distinct", () => {
+  const { db, log, binding } = fixture();
+  const fact = (operationId: string, turnId: string) => ({
+    operationId, turnId, originAgentId: "main", originTurnId: "t",
+    toolCallId: operationId, kind: "file-bytes" as const,
+    path: `allowed/${operationId}.txt`, outcome: "succeeded" as const,
+  });
+  log.append("s", "main", [
+    { type: "turn.started", data: { turnId: "other", accessBinding: { ...binding, originTurnId: "other" } } },
+    { type: "turn.started", data: { turnId: "0", accessBinding: binding } },
+    { type: "access.fact", data: fact("main-good", "t") },
+    { type: "access.fact", data: fact("main-wrong-turn", "other") },
+    { type: "access.fact", data: fact("typed-string-good", "0") },
+    { type: "access.fact", data: fact("typed-number-bad", "0") },
+  ]);
+  db.prepare("UPDATE session_log SET data=json_set(data,'$.turnId',0) WHERE type='access.fact' AND json_extract(data,'$.operationId')='typed-number-bad'").run();
+  for (const [agentId, trusted] of [["trusted-child", true], ["untrusted-child", false]] as const) {
+    log.append("s", agentId, [
+      { type: "agent.spawned", data: {
+        role: "reader", name: agentId, parentId: "main", modelProfileId: null,
+        ...(trusted ? { accessOrigin: { agentId: "main", turnId: "t" } } : {}),
+      } },
+      { type: "turn.started", data: { turnId: "t", accessBinding: binding } },
+      { type: "access.fact", data: fact(agentId, "t") },
+    ]);
+  }
+  const report = kernel.turnAccessFacts(db, { sessionId: "s", agentId: "main", turnId: "t" });
+  expect(report.facts.map((entry) => [entry.agentId, entry.operationId])).toEqual([
+    ["main", "main-good"], ["main", "typed-string-good"], ["trusted-child", "trusted-child"],
+  ]);
+  expect(report.byteReadPaths).toEqual(["allowed/main-good.txt", "allowed/trusted-child.txt", "allowed/typed-string-good.txt"]);
+  db.close();
+});
+
+test("access report admission never survives a later call or authorization and lineage change", () => {
+  const { db, log, ctx, binding } = fixture();
+  log.append("s", "child", [
+    { type: "agent.spawned", data: {
+      role: "reader", name: "child", parentId: "main", modelProfileId: null,
+      accessOrigin: { agentId: "main", turnId: "t" },
+    } },
+    { type: "turn.started", data: { turnId: "ct", accessBinding: binding } },
+    { type: "access.fact", data: {
+      operationId: "child-read", turnId: "ct", originAgentId: "main", originTurnId: "t",
+      toolCallId: "child-read", kind: "file-bytes", path: "allowed/ok.txt", outcome: "succeeded",
+    } },
+  ]);
+  const report = () => kernel.turnAccessFacts(db, { sessionId: "s", agentId: "main", turnId: "t" });
+  expect(report().facts.map((entry) => entry.operationId)).toEqual(["child-read"]);
+  log.append("s", "child", [{ type: "turn.access.updated", data: {
+    turnId: "ct", accessBinding: { ...binding, originTurnId: "different-origin" },
+  } }]);
+  expect(report().facts).toEqual([]);
+  log.append("s", "child", [{ type: "turn.access.updated", data: { turnId: "ct", accessBinding: binding } }]);
+  expect(report().facts.map((entry) => entry.operationId)).toEqual(["child-read"]);
+  db.prepare("UPDATE agents SET parent_id='not-main' WHERE session_id='s' AND id='child'").run();
+  expect(report().facts).toEqual([]);
+  db.prepare("UPDATE agents SET parent_id='main' WHERE session_id='s' AND id='child'").run();
+  expect(report().facts.map((entry) => entry.operationId)).toEqual(["child-read"]);
+  log.append("s", "main", [{ type: "turn.access.updated", data: {
+    turnId: "t", accessBinding: { ...binding, decision: { kind: "restricted", root: "allowed/narrow" } },
+  } }]);
+  expect(report().decision).toEqual({ kind: "restricted", root: "allowed/narrow" });
+  expect(report().facts.map((entry) => entry.operationId)).toEqual(["child-read"]);
+  kernel.runWithToolAccess(ctx, () => expect(() => kernel.assertToolAccess("allowed/ok.txt")).toThrow());
+  expect(report().rejected.some((entry) => entry.path === "allowed/ok.txt")).toBe(true);
+  db.close();
+});
+
+
+test("turn binding index migrates old databases, creates new databases, and refuses old-code rollback", () => {
+  const migrationId = "kernel/turn-access-records-index";
+  const indexName = "session_log_turn_access_records";
+  const oldMigrations = kernel.KERNEL_MIGRATIONS.filter((item) => item.id !== migrationId);
+  const root = mkdtempSync(join(tmpdir(), "turn-binding-index-"));
+  roots.push(root);
+  const path = join(root, "existing.db");
+  let db = kernel.openDb(path, oldMigrations);
+  db.prepare("INSERT INTO session_log VALUES (?, ?, ?, ?, ?, ?)").run(
+    "preserved", 1, "main", "turn.started", '{"turnId":"old"}', "2026-01-01T00:00:00.000Z",
+  );
+  const before = db.prepare("SELECT * FROM session_log ORDER BY session_id,seq").all();
+  expect(db.prepare("SELECT 1 FROM sqlite_master WHERE name=?").get(indexName)).toBeUndefined();
+  db.close();
+
+  db = kernel.openDb(path, kernel.KERNEL_MIGRATIONS);
+  try {
+    const index = db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name=?").get(indexName);
+    expect(index).toBeDefined();
+    expect(String(index?.sql)).toContain("WHERE type IN ('turn.started', 'turn.access.updated')");
+    expect(db.prepare("SELECT * FROM session_log ORDER BY session_id,seq").all()).toEqual(before);
+    expect(db.prepare("SELECT count(*) AS n FROM schema_migrations WHERE id=?").get(migrationId)?.n).toBe(1);
+  } finally {
+    db.close();
+  }
+
+  db = kernel.openDb(path, kernel.KERNEL_MIGRATIONS);
+  expect(db.prepare("SELECT count(*) AS n FROM schema_migrations WHERE id=?").get(migrationId)?.n).toBe(1);
+  db.close();
+  expect(() => kernel.openDb(path, oldMigrations)).toThrow(/无法识别的迁移记录/);
+
+  const fresh = kernel.openDb(join(root, "fresh.db"), kernel.KERNEL_MIGRATIONS);
+  try {
+    expect(fresh.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name=?").get(indexName)).toBeDefined();
+  } finally {
+    fresh.close();
+  }
+});
+
+test("turn binding hot query uses the partial covering index across forty thousand audit facts", () => {
+  const { db, binding } = fixture();
+  const spy = vi.spyOn(db, "prepare");
+  let sql: string | undefined;
+  try {
+    const start = Number(db.prepare("SELECT max(seq) AS n FROM session_log WHERE session_id='s'").get()?.n);
+    const insert = db.prepare("INSERT INTO session_log VALUES (?, ?, ?, ?, ?, ?)");
+    db.exec("BEGIN");
+    for (let i = 0; i < 40_000; i++) {
+      insert.run("s", start + i + 1, "main", "access.fact", JSON.stringify({
+        operationId: "scale-" + i, turnId: "t", originAgentId: "main", originTurnId: "t",
+        toolCallId: "scale", kind: "file-bytes", path: "allowed/ok.txt", outcome: "succeeded",
+      }), "2026-01-01T00:00:00.000Z");
+    }
+    db.exec("COMMIT");
+    expect(kernel.turnAccessBinding(db, "s", "main", "t")).toEqual(binding);
+    sql = spy.mock.calls.map(([query]) => query).find((query) =>
+      query.startsWith("SELECT type, data FROM session_log") && query.includes("ORDER BY seq DESC"),
+    );
+  } finally {
+    spy.mockRestore();
+  }
+  try {
+    expect(sql).toContain("type IN ('turn.started', 'turn.access.updated')");
+    expect(sql).not.toMatch(/\bLIMIT\b|\bINDEXED BY\b/i);
+    if (!sql) throw new Error("missing actual binding query");
+    const rows = db.prepare(sql).all("s", "main");
+    expect(rows).toHaveLength(1);
+    const plan = db.prepare("EXPLAIN QUERY PLAN " + sql).all("s", "main").map((row) => String(row.detail));
+    expect(plan.some((detail) => detail.includes("USING COVERING INDEX session_log_turn_access_records"))).toBe(true);
+    expect(plan.some((detail) => detail.includes("TEMP B-TREE"))).toBe(false);
+    expect(db.prepare("SELECT count(*) AS n FROM session_log WHERE type='access.fact'").get()?.n).toBe(40_000);
+  } finally {
+    db.close();
+  }
+});
+
+test("turn binding literal lookup preserves global order and live child narrowing with or without its index", () => {
+  const { db, log, binding } = fixture();
+  const rawSql = "SELECT type, data FROM session_log WHERE session_id=? AND agent_id=? AND type IN (?,?) ORDER BY seq DESC";
+  const literalSql = "SELECT type, data FROM session_log WHERE session_id=? AND agent_id=? AND type IN ('turn.started', 'turn.access.updated') ORDER BY seq DESC";
+  log.append("s", "child", [
+    { type: "agent.spawned", data: { role: "reader", name: "child", parentId: "main", modelProfileId: null,
+      accessOrigin: { agentId: "main", turnId: "t" } } },
+    { type: "turn.started", data: { turnId: "ct", accessBinding: binding } },
+  ]);
+  const snapshot = () => ({
+    root: kernel.turnAccessBinding(db, "s", "main", "t"),
+    child: kernel.turnAccessBinding(db, "s", "child", "ct"),
+  });
+  try {
+    log.append("s", "main", [
+      { type: "turn.access.updated", data: { turnId: "t", accessBinding: {
+        ...binding, decision: { kind: "restricted", root: "allowed/narrow" },
+      } } },
+      { type: "turn.started", data: { turnId: "unrelated", accessBinding: {
+        ...binding, originTurnId: "unrelated", decision: { kind: "restricted", root: "elsewhere" },
+      } } },
+    ]);
+    expect(snapshot().child?.decision).toEqual({ kind: "restricted", root: "allowed/narrow" });
+    log.append("s", "main", [
+      { type: "turn.started", data: { turnId: "continuation", accessBinding: {
+        ...binding, decision: { kind: "restricted", root: "allowed/narrow/deeper" },
+      } } },
+    ]);
+    expect(snapshot().child?.decision).toEqual({ kind: "restricted", root: "allowed/narrow/deeper" });
+    for (const agent of ["main", "child"]) {
+      expect(db.prepare(literalSql).all("s", agent)).toEqual(
+        db.prepare(rawSql).all("s", agent, "turn.started", "turn.access.updated"),
+      );
+    }
+    expect(db.prepare(literalSql).all("s", "main").map((row) => JSON.parse(String(row.data)).turnId)).toEqual([
+      "continuation", "unrelated", "t", "t",
+    ]);
+    const beforeDrop = snapshot();
+    expect(db.prepare("SELECT 1 FROM sqlite_master WHERE name='session_log_turn_access_records'").get()).toBeDefined();
+    db.exec("DROP INDEX session_log_turn_access_records");
+    expect(snapshot()).toEqual(beforeDrop);
+    log.append("s", "main", [
+      { type: "turn.access.updated", data: { turnId: "continuation", accessBinding: binding } },
+    ]);
+    db.prepare("UPDATE session_log SET data=? WHERE type='turn.access.updated' AND json_extract(data,'$.turnId')='continuation'").run(
+      JSON.stringify({ turnId: "continuation", accessBinding: { malformed: true } }),
+    );
+    expect(snapshot().root).toMatchObject({ decision: { kind: "unresolved" }, accessDeliveryRequired: true });
+    expect(snapshot().child).toMatchObject({ decision: { kind: "unresolved" }, accessDeliveryRequired: true });
+  } finally {
+    db.close();
+  }
 });

@@ -5,7 +5,13 @@
 
 import type { DatabaseSync } from "node:sqlite";
 import { nowIso } from "@excelmanus/core";
-import { type LogRecord, parseRecordData } from "@excelmanus/protocol";
+import {
+  createHistoryWindowBoundary,
+  HISTORY_WINDOW_MAX_RECORDS,
+  HISTORY_WINDOW_PAGE_SIZE,
+  type LogRecord,
+  parseRecordData,
+} from "@excelmanus/protocol";
 import type { SyncBus } from "./bus.ts";
 
 export interface NewRecord {
@@ -188,6 +194,76 @@ export class SessionLog {
           )
           .all(sessionId, before, limit)) as unknown as LogRow[];
     return rows.reverse().map(rowToRecord);
+  }
+
+  /** Caller holds a short read snapshot; inspect bounded metadata before materializing JSON. */
+  readHistoryWindow(
+    sessionId: string,
+    headSeq: number,
+    byteBudget: number,
+  ):
+    | { kind: "complete"; items: LogRecord[]; hasMore: boolean; before?: number }
+    | { kind: "overflow"; reason: "records" | "bytes" } {
+    const metadata = this.db
+      .prepare(`
+      SELECT seq,
+        CASE WHEN agent_id = 'main' THEN 'main' ELSE NULL END AS agentId,
+        CASE WHEN type IN ('user.message','turn.started','model.output','step.started') THEN type ELSE '' END AS type,
+        length(CAST(data AS BLOB)) + 6 * (length(CAST(session_id AS BLOB)) +
+          coalesce(length(CAST(agent_id AS BLOB)),0) + length(CAST(type AS BLOB)) +
+          length(CAST(created_at AS BLOB))) AS bytes
+      FROM session_log WHERE session_id = ? AND seq <= ? ORDER BY seq DESC LIMIT ?
+    `)
+      .all(sessionId, headSeq, HISTORY_WINDOW_MAX_RECORDS + 1) as unknown as {
+      seq: number;
+      agentId: string | null;
+      type: string;
+      bytes: number;
+    }[];
+    if (metadata.length === 0) return { kind: "complete", items: [], hasMore: false };
+    const boundary = createHistoryWindowBoundary();
+    let selected: { seq: number; bytes: number }[] = [];
+    let hasMore = false;
+    let found = false;
+    for (
+      let offset = 0;
+      offset < Math.min(metadata.length, HISTORY_WINDOW_MAX_RECORDS);
+      offset += HISTORY_WINDOW_PAGE_SIZE
+    ) {
+      const page = metadata
+        .slice(offset, Math.min(offset + HISTORY_WINDOW_PAGE_SIZE, HISTORY_WINDOW_MAX_RECORDS))
+        .reverse();
+      // A partial logical page that does not reach session start must never invent a boundary.
+      if (page.length < HISTORY_WINDOW_PAGE_SIZE && page[0]?.seq !== 1) break;
+      const result = boundary.push(page);
+      selected = [...(result ? page.slice(result.startIndex) : page), ...selected];
+      if (result) {
+        hasMore = result.hasMore;
+        found = true;
+        break;
+      }
+    }
+    if (!found) return { kind: "overflow", reason: "records" };
+    if (selected.reduce((sum, row) => sum + row.bytes + 192, 0) > byteBudget)
+      return { kind: "overflow", reason: "bytes" };
+    const statement = this.db.prepare(
+      "SELECT session_id,seq,agent_id,type,data,created_at FROM session_log WHERE session_id=? AND seq=?",
+    );
+    const items: LogRecord[] = [];
+    let bytes = 2;
+    for (const meta of selected) {
+      const row = statement.get(sessionId, meta.seq) as unknown as LogRow;
+      const record = rowToRecord(row);
+      bytes += Buffer.byteLength(JSON.stringify(record), "utf8") + 1;
+      if (bytes > byteBudget) return { kind: "overflow", reason: "bytes" };
+      items.push(record);
+    }
+    return {
+      kind: "complete",
+      items,
+      hasMore,
+      ...(hasMore && items[0] ? { before: items[0].seq } : {}),
+    };
   }
 
   /** 删除投影表后从日志按序重放（sessionId 为空时重建全部会话）。 */

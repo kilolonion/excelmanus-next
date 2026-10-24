@@ -18,6 +18,7 @@ import {
   DOCUMENTS_MIGRATION,
   DocumentService,
 } from "../src/service.ts";
+import { HARNESS_CHANGE_OP_INPUTS } from "./fixtures/harness-change-ops.ts";
 
 const SAMPLE_XLSX = fileURLToPath(new URL("../../../../samples/sales.xlsx", import.meta.url));
 
@@ -70,7 +71,7 @@ describe("DocumentService.submit", () => {
       expect(ChangeOp.safeParse({ ...input, wrap: true }).success).toBe(false);
     }
   });
-  it("模型侧使用扁平操作字段，服务端仍严格校验每个操作", async () => {
+  it("模型侧保留 47 个真实操作分支、输入必填字段和默认值，服务端仍严格校验", async () => {
     const { svc, db } = await setup();
     try {
       const tool = workbookEditTool(svc);
@@ -78,36 +79,62 @@ describe("DocumentService.submit", () => {
       const ops = schema.properties?.ops;
       if (!ops || typeof ops !== "object") throw new Error("缺少 ops schema");
       const items = ops.items;
-      expect(items).toMatchObject({
-        type: "object",
-        required: ["op"],
-        additionalProperties: false,
-        properties: {
-          op: { type: "string", enum: ChangeOp.options.map((op) => op.shape.op.value) },
-        },
-      });
+      if (!items || typeof items !== "object" || Array.isArray(items))
+        throw new Error("缺少操作判别联合");
+      const branches = items.oneOf;
+      if (!Array.isArray(branches)) throw new Error("缺少 oneOf 操作分支");
       expect(items).not.toHaveProperty("anyOf");
-      expect(items).not.toHaveProperty("oneOf");
-      expect(items).toHaveProperty(
-        "description",
-        expect.stringContaining("only op and the fields listed for that operation"),
+      expect(branches).toHaveLength(47);
+      expect(ChangeOp.options).toHaveLength(47);
+      const discriminants = branches.map((branch) => {
+        if (typeof branch !== "object") throw new Error("操作分支必须是对象");
+        const op = branch.properties?.op;
+        if (!op || typeof op !== "object") throw new Error("操作分支缺少 op");
+        return op.const;
+      });
+      expect(new Set(discriminants).size).toBe(47);
+      expect(new Set(discriminants)).toEqual(
+        new Set(ChangeOp.options.map((option) => option.shape.op.value)),
       );
-      // Every operation's fields and required-field guidance survive the model-facing projection.
       for (const option of ChangeOp.options) {
-        const branch = z.toJSONSchema(option);
-        const optional = Object.keys(branch.properties ?? {}).filter(
-          (key) => key !== "op" && !(branch.required ?? []).includes(key),
+        const canonical = z.toJSONSchema(option, { io: "input" });
+        const branch = branches.find(
+          (_, index) => discriminants[index] === option.shape.op.value,
         );
-        for (const key of Object.keys(branch.properties ?? {})) {
-          expect(items).toHaveProperty(`properties.${key}`);
-        }
-        expect(items).toHaveProperty(
-          "description",
-          expect.stringContaining(
-            `${option.shape.op.value}: required ${(branch.required ?? []).filter((key) => key !== "op").join(", ") || "none"}; optional ${optional.join(", ") || "none"}`,
-          ),
+        if (!branch || typeof branch !== "object") throw new Error("缺少操作对象分支");
+        expect(branch.type).toBe("object");
+        expect(Object.hasOwn(branch, "additionalProperties")).toBe(
+          Object.hasOwn(canonical, "additionalProperties"),
         );
+        expect(branch.additionalProperties).toEqual(canonical.additionalProperties);
+        // 输入模式保留 defaults，但默认字段不能误变成模型必填字段。
+        expect(branch).toHaveProperty("properties", canonical.properties);
+        expect(branch).toHaveProperty("required", canonical.required);
       }
+      expect(HARNESS_CHANGE_OP_INPUTS).toHaveLength(47);
+      expect(new Set(HARNESS_CHANGE_OP_INPUTS.map((input) => input.op))).toEqual(
+        new Set(discriminants),
+      );
+      for (const input of HARNESS_CHANGE_OP_INPUTS) {
+        const option = ChangeOp.options.find((branch) => branch.shape.op.value === input.op);
+        if (!option) throw new Error(`未找到操作分支: ${input.op}`);
+        const expected = option.parse(input);
+        expect(ChangeOp.parse(input)).toEqual(expected);
+        const parsed = tool.input.parse({ path: "receipt.xlsx", ops: [input] });
+        if (!parsed || typeof parsed !== "object" || !("ops" in parsed))
+          throw new Error("工具解析结果缺少 ops");
+        expect(parsed.ops).toEqual([expected]);
+      }
+      const clear = branches.find((_, index) => discriminants[index] === "cells.clear");
+      if (!clear || typeof clear !== "object") throw new Error("缺少 cells.clear 分支");
+      expect(clear).toHaveProperty("properties.what.default", "all");
+      expect(clear.required).not.toContain("what");
+      const cleared = tool.input.parse({
+        path: "receipt.xlsx", ops: [{ op: "cells.clear", range: "Sheet1!A1" }],
+      });
+      if (!cleared || typeof cleared !== "object" || !("ops" in cleared))
+        throw new Error("工具解析结果缺少 ops");
+      expect(cleared.ops).toEqual([{ op: "cells.clear", range: "Sheet1!A1", what: "all" }]);
       expect(tool.input).toBe(WorkbookEditInput);
       const args = {
         path: "receipt.xlsx",

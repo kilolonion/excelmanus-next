@@ -73,6 +73,8 @@ import {
 } from "./extensions.ts";
 import { installFileEvents } from "./file-events.ts";
 import { interactionTools } from "./interactions.ts";
+import { createHarnessCoordinator } from "./harness-coordinator.ts";
+import { installHarnessFacades } from "./harness-tools.ts";
 import { acquireInstanceLock } from "./lock.ts";
 import { RenderBroker } from "./render.ts";
 import { runScriptTool } from "./script.ts";
@@ -84,6 +86,7 @@ import {
   resolveProfileModel,
   SERVER_MIGRATIONS,
 } from "./store.ts";
+import { createWorkbookCaptureDriver } from "./workbook-capture.ts";
 import { attachSyncChannel } from "./ws.ts";
 
 export interface StartServerOptions {
@@ -106,6 +109,8 @@ export interface StartServerOptions {
   dev?: boolean;
   /** 前端产物目录；默认 <repo>/packages/web/dist。 */
   webDist?: string;
+  /** 默认 sandbox 的 Chromium 可执行文件；未配置时真实视图截图明确报错。 */
+  browserExecutable?: string;
   /** 内置技能目录；默认 <repo>/assets/skills（桌面打包时指向应用资源）。 */
   builtinSkillsDir?: string;
   /** 部署形态（bootstrap.shape）：local-web / desktop。 */
@@ -259,6 +264,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       toolNames: () => new Set(tools.keys()),
     });
     const specCache = new Map<string, ToolSpec[]>();
+    let harness: ReturnType<typeof createHarnessCoordinator> | undefined;
     const mcp = mcpModule(db, {
       cipher: {
         seal: (plain) => {
@@ -283,7 +289,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       onToolsChanged: (defs) => {
         // 12 §4.2：工具列表变化在下一个步骤边界生效（toolSpecsFor 每步读取）
         for (const name of [...tools.keys()]) if (name.startsWith("mcp__")) tools.delete(name);
-        for (const d of defs) if (!tools.has(d.name)) tools.set(d.name, d);
+for (const d of defs) if (!tools.has(d.name)) tools.set(d.name, harness ? harness.wrapTool(d) : d);
         specCache.clear();
       },
       onStatus: (serverId) => bus.publish({ kind: "app", data: { type: "mcp.status", serverId } }),
@@ -306,7 +312,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       const r = resolveProfileModel(db, masterKey, profileId, resolveDeps);
       if ("error" in r) return r;
       const vision = effectiveCapabilities(db, catalog, r.profileId).vision.value;
-      return vision === false ? { ...r, vision: false } : r;
+      return vision === null ? r : { ...r, vision };
     };
     const questions = new QuestionCoordinator(db, sessionLog);
     interactionModule.tools = interactionTools(sessionLog, questions, workbook?.service);
@@ -323,9 +329,25 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     // run_script 属于装配层：要同时组合 workbook 与 files 两个模块（模块互不依赖）
     // 截图渲染（ADR 0010）：经同步通道交给已连接的界面客户端绘制
     const renderBroker = new RenderBroker();
+    const captureDriver = createWorkbookCaptureDriver();
     if (workbook) {
-      const renderTool = workbookRenderTool(workbook.service, (layout) =>
-        renderBroker.request(layout),
+      const renderTool = workbookRenderTool(
+        workbook.service,
+        (layout) => renderBroker.request(layout),
+        async (packet, signal) => {
+          const executablePath =
+            opts.browserExecutable ?? process.env.EXCELMANUS_BROWSER_EXECUTABLE;
+          if (!executablePath)
+            throw new Error(
+              "真实视图截图未配置 EXCELMANUS_BROWSER_EXECUTABLE；请配置默认 sandbox Chromium，或显式使用 mode=reconstructed 有损重绘",
+            );
+          return captureDriver({
+            packet,
+            signal,
+            executablePath,
+            baseUrl: `http://127.0.0.1:${port}`,
+          });
+        },
       );
       tools.set(renderTool.name, renderTool as unknown as ToolDefinition);
     }
@@ -333,13 +355,18 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       opts.sandboxWorkerUrl ? { workerUrl: opts.sandboxWorkerUrl } : {},
     );
     tools.set("run_script", runScriptTool({ sandbox, documents: workbook?.service, tools, db }));
+    if (workbook) {
+      harness = createHarnessCoordinator({ db, log: sessionLog, documents: workbook.service, tools });
+      for (const [name, tool] of tools) tools.set(name, harness.wrapTool(tool));
+      installHarnessFacades({ tools, log: sessionLog, documents: workbook.service, coordinator: harness });
+    }
     const recovered = recoverInterruptedAgents({ db, log: sessionLog, tools });
     if (recovered > 0) emit("agents.recovered", { count: recovered });
     const toolSpecsFor = (role: string): ToolSpec[] => {
       const cached = specCache.get(role);
       if (cached) return cached;
       const specs = [...tools.values()]
-        .filter((t) => (t.roles as readonly string[]).includes(role))
+.filter((t) => t.modelVisible !== false && (t.roles as readonly string[]).includes(role))
         .map((t) => ({
           name: t.name,
           description: t.description,
@@ -718,6 +745,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
             server.closeAllConnections();
             await new Promise<void>((resolve) => server.close(() => resolve()));
             await runtime.shutdown();
+            await captureDriver.close();
             await mcp.service.close().catch(() => {});
             try {
               await sandbox.close();

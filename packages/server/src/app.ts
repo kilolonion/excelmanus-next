@@ -59,6 +59,9 @@ import {
   FeedbackBody,
   type FileEvent,
   findHttpContract,
+  HISTORY_WINDOW_DETAIL_MAX_BYTES,
+  HISTORY_WINDOW_DETAIL_MAX_ROWS,
+  HISTORY_WINDOW_MAX_BYTES,
   MergeDocsBody,
   NewFileBody,
   OpenDocBody,
@@ -958,6 +961,132 @@ export function createApp(deps: AppDeps): Hono {
       });
     } catch (e) {
       return fail(c, 409, "conflict", e instanceof Error ? e.message : "问题无法处理");
+    }
+  });
+
+  app.get("/api/v1/sessions/:id/history-window", (c) => {
+    const id = c.req.param("id");
+    db.exec("BEGIN");
+    try {
+      // Inspect only lengths first: session titles and individual metadata fields can be huge.
+      const sessionMeta = db
+        .prepare(`SELECT last_seq AS headSeq,
+        6 * (length(CAST(id AS BLOB)) + length(CAST(workspace_id AS BLOB)) +
+          coalesce(length(CAST(title AS BLOB)),0) + length(CAST(permission_mode AS BLOB)) +
+          length(CAST(created_at AS BLOB)) + length(CAST(updated_at AS BLOB))) + 512 AS bytes
+        FROM sessions WHERE id=?`)
+        .get(id) as { headSeq: number; bytes: number } | undefined;
+      if (!sessionMeta) return fail(c, 404, "not_found", "会话不存在");
+      const headSeq = sessionMeta.headSeq;
+      const overflow = (reason: "records" | "bytes" | "metadata") =>
+        c.json({ kind: "overflow" as const, headSeq, reason });
+      if (sessionMeta.bytes > HISTORY_WINDOW_DETAIL_MAX_BYTES) return overflow("metadata");
+      const agentMeta = db
+        .prepare(`SELECT 6 * (length(CAST(id AS BLOB)) +
+        length(CAST(session_id AS BLOB)) + coalesce(length(CAST(parent_id AS BLOB)),0) +
+        coalesce(length(CAST(name AS BLOB)),0) + length(CAST(role AS BLOB)) +
+        length(CAST(status AS BLOB)) + coalesce(length(CAST(model_profile_id AS BLOB)),0) + length(CAST(created_at AS BLOB))) + 256 AS bytes
+        FROM agents WHERE session_id=? ORDER BY id LIMIT ?`)
+        .all(id, HISTORY_WINDOW_DETAIL_MAX_ROWS + 1) as { bytes: number }[];
+      const pendingMeta = db
+        .prepare(`SELECT 6 * (length(CAST(id AS BLOB)) +
+        length(CAST(kind AS BLOB)) + length(CAST(agent_id AS BLOB)) +
+        coalesce(length(CAST(tool_call_id AS BLOB)),0) + length(CAST(created_at AS BLOB))) + 256 AS bytes
+        FROM pending_interactions WHERE session_id=? AND status='pending' LIMIT ?`)
+        .all(id, HISTORY_WINDOW_DETAIL_MAX_ROWS + 1) as { bytes: number }[];
+      if (
+        agentMeta.length > HISTORY_WINDOW_DETAIL_MAX_ROWS ||
+        pendingMeta.length > HISTORY_WINDOW_DETAIL_MAX_ROWS ||
+        [...agentMeta, ...pendingMeta].reduce((sum, row) => sum + row.bytes, sessionMeta.bytes) >
+          HISTORY_WINDOW_DETAIL_MAX_BYTES
+      )
+        return overflow("metadata");
+      const row = db
+        .prepare(
+          "SELECT id,workspace_id,title,permission_mode,created_at,updated_at,last_seq FROM sessions WHERE id=?",
+        )
+        .get(id) as SessionRowLike;
+      const agents = db
+        .prepare(`SELECT id,session_id,parent_id,name,role,status,model_profile_id,created_at
+        FROM agents WHERE session_id=? ORDER BY id LIMIT ?`)
+        .all(id, HISTORY_WINDOW_DETAIL_MAX_ROWS) as unknown as (Parameters<typeof agentDto>[0] & {
+        created_at: string;
+      })[];
+      agents.sort((a, b) =>
+        a.created_at < b.created_at
+          ? -1
+          : a.created_at > b.created_at
+            ? 1
+            : a.id < b.id
+              ? -1
+              : a.id > b.id
+                ? 1
+                : 0,
+      );
+      const pending = db
+        .prepare(`SELECT id,kind,agent_id,tool_call_id,created_at
+        FROM pending_interactions WHERE session_id=? AND status='pending' LIMIT ?`)
+        .all(id, HISTORY_WINDOW_DETAIL_MAX_ROWS) as {
+        id: string;
+        kind: "approval" | "question";
+        agent_id: string;
+        tool_call_id: string | null;
+        created_at: string;
+      }[];
+      pending.sort((a, b) =>
+        a.created_at < b.created_at
+          ? -1
+          : a.created_at > b.created_at
+            ? 1
+            : a.id < b.id
+              ? -1
+              : a.id > b.id
+                ? 1
+                : 0,
+      );
+      // Do not call sessionDto/listAgents: their hidden aggregate/unbounded reads defeat the fast-path budget.
+      const detail = {
+        session: {
+          id: row.id,
+          workspaceId: row.workspace_id,
+          title: row.title,
+          permissionMode: row.permission_mode,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+          lastSeq: headSeq,
+          activity: {
+            busy: agents.some((a) =>
+              ["running", "waiting", "blocked", "queued"].includes(a.status),
+            ),
+            pendingApprovals: pending.filter((p) => p.kind === "approval").length,
+            pendingQuestions: pending.filter((p) => p.kind === "question").length,
+          },
+        },
+        agents: agents.map(agentDto),
+        headSeq,
+        pendingInteractions: pending.map((p) => ({
+          id: p.id,
+          kind: p.kind,
+          agentId: p.agent_id,
+          toolCallId: p.tool_call_id,
+          createdAt: p.created_at,
+        })),
+      };
+      const detailBytes = Buffer.byteLength(JSON.stringify(detail), "utf8");
+      if (detailBytes > HISTORY_WINDOW_DETAIL_MAX_BYTES) return overflow("metadata");
+      const window = deps.log.readHistoryWindow(
+        id,
+        headSeq,
+        HISTORY_WINDOW_MAX_BYTES - detailBytes - 512,
+      );
+      if (window.kind === "overflow") return overflow(window.reason);
+      const result = { ...window, detail, headSeq };
+      const json = JSON.stringify(result);
+      if (Buffer.byteLength(json, "utf8") > HISTORY_WINDOW_MAX_BYTES) return overflow("bytes");
+      return c.body(json, 200, { "content-type": "application/json; charset=UTF-8" });
+    } finally {
+      // A read-only snapshot: no writes, network awaits, or exclusive lock within its lifetime.
+      db.exec("ROLLBACK");
     }
   });
 

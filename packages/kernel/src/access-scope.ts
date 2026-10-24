@@ -68,7 +68,7 @@ export function deriveUserDirectoryScope(rawText: string): DirectoryScopeDecisio
   return { kind: "restricted", root: unique[0]! };
 }
 
-// Deliberately only the explicit two-file save-as/copy relation, not general NL permissions.
+// Explicit two-file save-as/copy or read-source/create-output, not general NL permissions.
 const fileLimit =
   /只处理这(?:两个|2个)文件|(?:不|不得|不要|禁止)[^。；;\n]{0,40}(?:访问|修改)[^。；;\n]{0,30}其他文件/;
 export function deriveUserAccessScope(rawText: string): DirectoryScopeDecision {
@@ -80,11 +80,16 @@ export function deriveUserAccessScope(rawText: string): DirectoryScopeDecision {
     .replace(/“[^”]*”|「[^」]*」|"[^"\n]*"/g, (quote) => (fileLimit.test(quote) ? " " : quote));
   if (!fileLimit.test(text))
     return unresolved("文件限制仅出现在引用或代码中，请在新任务中明确两个文件");
-  const relation =
+  const saveAs =
     /^(?:请)?(?:把|将)\s*(?:当前\s*)?([^\s，。；;“”"'`]+)\s+(?:另存为|复制为)\s+([^\s，。；;“”"'`]+)[，,。；;\s]/.exec(
       text.trim(),
     );
-  if (!relation || !/只处理这(?:两个|2个)文件/.test(text))
+  const readCreate =
+    /^(?:请)?只读取(?:本题)?\s+([^\s，、。；;“”"'`]+)\s*[，,、]\s*(?:并)?新建\s+([^\s，、。；;“”"'`]+)\s*[，,、]\s*不(?:修改|改)源文件\s*[，,、]\s*不访问其他文件[。；;\s]/.exec(
+      text.trim(),
+    );
+  const relation = readCreate ?? saveAs;
+  if (!relation || (!readCreate && !/只处理这(?:两个|2个)文件/.test(text)))
     return unresolved("文件限制需要明确命名源文件和另存目标，只处理这两个文件");
   const source = normalizeAccessPath(relation[1]!),
     output = normalizeAccessPath(relation[2]!);
@@ -98,6 +103,29 @@ export function deriveUserAccessScope(rawText: string): DirectoryScopeDecision {
     !/\.(?:xlsx|xlsm|xls|csv|tsv|txt|pdf)$/i.test(output)
   )
     return unresolved("两个文件必须是不同、明确且合法的工作区相对文件路径");
+  if (readCreate) {
+    if (
+      [source, output].some((path) =>
+        /\.(?:xlsx|xlsm|xls|csv|tsv|txt|pdf)(?:或|和|以及|、)/i.test(path),
+      )
+    )
+      return unresolved("文件名包含多个候选，不能确定唯一的源文件和输出文件");
+    const trailing = text.slice(text.indexOf(readCreate[0]) + readCreate[0].length);
+    // This finite clause has already assigned permissions. Do not interpret a second
+    // file-access restriction as business instructions or guess how to combine it.
+    if (
+      trailing
+        .split(/[。；;\n]/)
+        .some(
+          (clause) =>
+            /(?:不允许|不得|不要|禁止|不能|不可|不|只读|仅允许读取)/.test(clause) &&
+            (/(?:访问|读取|读写|写入|写操作)/.test(clause) ||
+              (/(?:写|修改|创建|新建|保存|只读)/.test(clause) &&
+                /(?:文件|源|输出|目标|结果|\.(?:xlsx|xlsm|xls|csv|tsv|txt|pdf))/i.test(clause))),
+        )
+    )
+      return unresolved("两文件授权后出现额外文件访问限制，请用单一明确范围句说明权限");
+  }
   const mentions = [
     ...text.matchAll(
       /(?:^|[\s，。；;：:“”"'`])([^\s，。；;：:“”"'`]+\.(?:xlsx|xlsm|xls|csv|tsv|txt|pdf))(?=$|[\s，。；;、:“”"'`])/gi,
@@ -105,7 +133,7 @@ export function deriveUserAccessScope(rawText: string): DirectoryScopeDecision {
   ].map((m) => normalizeAccessPath(m[1]!));
   if (
     mentions.some((path) => path !== source && path !== output) ||
-    [...text.matchAll(/(?:另存为|复制为)/g)].length !== 1
+    [...text.matchAll(/(?:另存为|复制为|并新建)|新建\s+[^\s，,、。；;“”"'`]+\.(?:xlsx|xlsm|xls|csv|tsv|txt|pdf)(?=$|[\s，,、。；;“”"'`])|新建\s*(?:一个|另一个|另外一个|新的|其他|其它)?\s*(?:文件|工作簿)/gi)].length !== 1
   )
     return unresolved("两文件限制包含其他文件或多个另存关系，不能扩大授权");
   const scope: DirectoryScopeDecision = {

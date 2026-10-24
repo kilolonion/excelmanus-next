@@ -10,6 +10,7 @@ import {
 // 发送后先显示一条乐观消息，日志里出现同 clientMessageId 的 user.message 后由真实记录接替。
 
 import type {
+  ApiReadOptions,
   AttachmentRef,
   ContextRef,
   DispatchMode,
@@ -197,6 +198,7 @@ let seq = 0;
 const nextClientId = () => `web-${Date.now().toString(36)}-${(++seq).toString(36)}`;
 const topicOf = (id: string) => `session:${id}`;
 let loadRequest = 0;
+let historyReadController: AbortController | null = null;
 let historyRecords: LogRecord[] = [];
 let hydrating = false;
 
@@ -258,7 +260,18 @@ onSync((message: ServerMessage) => {
 });
 
 /** 先加载最近一段完整对话，再从它的游标订阅实时增量。 */
-export async function loadChatSession(sessionId: string): Promise<{ workspaceId: string }> {
+export async function loadChatSession(
+  sessionId: string,
+  options?: ApiReadOptions,
+  expectedWorkspaceId?: string,
+): Promise<{ workspaceId: string }> {
+  historyReadController?.abort();
+  const controller = new AbortController();
+  historyReadController = controller;
+  const signal = options?.signal
+    ? AbortSignal.any([controller.signal, options.signal])
+    : controller.signal;
+  const readOptions: ApiReadOptions = { timeoutMs: 15000, ...options, signal };
   const request = ++loadRequest;
   const previous = get().sessionId;
   if (previous) unsubscribeTopic(topicOf(previous));
@@ -283,18 +296,26 @@ export async function loadChatSession(sessionId: string): Promise<{ workspaceId:
   });
   restoreAttachmentPreviews(`${sessionId}/${MAIN_AGENT}`);
   try {
-    const [history, detail] = await Promise.all([
-      loadHistoryWindow(async (before) => {
-        const page = await api().getSessionLog(sessionId, { before, limit: 100 });
-        return request === loadRequest ? page : { items: [] };
-      }),
-      api().getSession(sessionId),
-    ]);
+    const window = await api().getSessionHistoryWindow(sessionId, readOptions);
+    signal.throwIfAborted();
+    const [history, detail] =
+      window.kind === "complete"
+        ? ([{ records: window.items, hasMore: window.hasMore }, window.detail] as const)
+        : await Promise.all([
+            loadHistoryWindow(async (before) => {
+              signal.throwIfAborted();
+              return api().getSessionLog(sessionId, { before, limit: 100 }, readOptions);
+            }, window.headSeq + 1),
+            api().getSession(sessionId, readOptions),
+          ]);
+    signal.throwIfAborted();
+    if (expectedWorkspaceId !== undefined && detail.session.workspaceId !== expectedWorkspaceId)
+      throw new Error("恢复会话不属于当前工作区");
     if (request !== loadRequest) return { workspaceId: detail.session.workspaceId };
     const restored = await rebuildHistoryAsync(
       history.records,
       initialSessionState,
-      () => request === loadRequest,
+      () => request === loadRequest && !signal.aborted,
       undefined,
       {
         headSeq: detail.headSeq,
@@ -302,7 +323,8 @@ export async function loadChatSession(sessionId: string): Promise<{ workspaceId:
         pendingInteractions: detail.pendingInteractions,
       },
     );
-    if (!restored || request !== loadRequest) return { workspaceId: detail.session.workspaceId };
+    if (!restored || request !== loadRequest || signal.aborted)
+      return { workspaceId: detail.session.workspaceId };
     historyRecords = history.records;
     set({
       workspaceId: detail.session.workspaceId,
@@ -319,6 +341,10 @@ export async function loadChatSession(sessionId: string): Promise<{ workspaceId:
     subscribeTopic(topicOf(sessionId), () => get().session.cursor);
     return { workspaceId: detail.session.workspaceId };
   } catch (error) {
+    controller.abort();
+    // Superseded navigation is cancellation, not a visible load failure.
+    if (request !== loadRequest)
+      return { workspaceId: expectedWorkspaceId ?? get().workspaceId ?? "" };
     if (request === loadRequest) {
       hydrating = false;
       set({ loading: false, loadError: errorMessage(error, "会话加载失败") });
@@ -361,6 +387,8 @@ export async function loadOlderChat(): Promise<void> {
 }
 
 export function clearChatSession(): void {
+  historyReadController?.abort();
+  historyReadController = null;
   const { sessionId } = get();
   if (sessionId) unsubscribeTopic(topicOf(sessionId));
   loadRequest += 1;

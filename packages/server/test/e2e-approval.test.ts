@@ -32,7 +32,7 @@ describe("审批持久化闭环", () => {
   test("confirm 模式暂停写入，重启批准后执行并继续本轮收口（场景 9）", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "excelmanus-approval-"));
     dirs.push(dataDir);
-    // 两次 boot 共享 calls：第 1 次模型调用发写工具，之后回文本。
+    // 两次 boot 共享 calls：先写入，再从真实可见目录 inspect → finalize partial。
     const calls: Prompt[] = [];
     const makeModel = () =>
       new MockLanguageModelV4({
@@ -67,19 +67,59 @@ describe("审批持久化闭环", () => {
               ]),
             };
           }
+          let toolCallId: string;
+          let input: string;
+          if (calls.length === 2) {
+            toolCallId = "approval-inspect";
+            input = JSON.stringify({ action: "inspect" });
+          } else if (calls.length === 3) {
+            const inspected = opts.prompt
+              .flatMap((message) => (message.role === "tool" ? message.content : []))
+              .find(
+                (part) => part.type === "tool-result" && part.toolCallId === "approval-inspect",
+              );
+            if (!inspected || inspected.type !== "tool-result" || inspected.output.type !== "json")
+              throw new Error("missing provider-visible inspect result");
+            const result = inspected.output.value as {
+              status?: string;
+              data?: {
+                action?: string;
+                allowedOutcomes?: string[];
+                artifacts?: { id: string; path: string; persistence: string; validation: string }[];
+              };
+            };
+            expect(result).toMatchObject({
+              status: "ok",
+              data: {
+                action: "inspect",
+                artifacts: [{ path: "note.txt", persistence: "saved", validation: "unverified" }],
+              },
+            });
+            expect(result.data?.allowedOutcomes).toContain("partial");
+            expect(result.data?.allowedOutcomes).not.toContain("completed");
+            if (!result.data?.artifacts?.length) throw new Error("missing inspected saved artifact");
+            toolCallId = "approval-finalize";
+            input = JSON.stringify({
+              action: "finalize",
+              outcome: "partial",
+              artifactIds: result.data.artifacts.map((artifact) => artifact.id),
+            });
+          } else {
+            throw new Error("typed partial delivery must end the resumed turn");
+          }
           return {
             stream: stream([
               { type: "stream-start", warnings: [] },
-              { type: "text-start", id: "t1" },
-              { type: "text-delta", id: "t1", delta: "已写入" },
-              { type: "text-end", id: "t1" },
+              { type: "tool-input-start", id: toolCallId, toolName: "deliver" },
+              { type: "tool-input-delta", id: toolCallId, delta: input },
+              { type: "tool-call", toolCallId, toolName: "deliver", input },
               {
                 type: "finish",
                 usage: {
                   inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
                   outputTokens: { total: 1, text: 1, reasoning: 0 },
                 },
-                finishReason: { unified: "stop", raw: "stop" },
+                finishReason: { unified: "tool-calls", raw: "tool_calls" },
               },
             ]),
           };
@@ -135,6 +175,29 @@ describe("审批持久化闭环", () => {
       (r) => r.type === "tool.result" && r.data.toolCallId === "write-1",
     );
     expect(toolResult?.data.status).toBe("ok");
+    expect(items.filter((r) => r.type === "tool.intent" && r.data.toolName === "write")).toHaveLength(1);
+    expect(
+      items.filter((r) => r.type === "tool.result" && r.data.toolCallId === "write-1"),
+    ).toHaveLength(1);
+    const delivery = items.find(
+      (r) => r.type === "tool.result" && r.data.toolCallId === "approval-finalize",
+    );
+    expect(delivery?.data.result).toMatchObject({
+      status: "ok",
+      data: {
+        outcome: "partial",
+        finalizationStatus: "incomplete",
+        artifacts: [{ path: "note.txt", persistence: "saved", validation: "unverified" }],
+      },
+    });
+    const finalOutput = items.find(
+      (r) => r.type === "model.output" && r.data.sourceToolCallId === "approval-finalize",
+    );
+    expect(finalOutput?.data.deliveryStatus).toBe("incomplete");
+    expect(items.filter((r) => r.type === "turn.completed")).toHaveLength(1);
+    expect(items.filter((r) => r.type === "turn.failed")).toHaveLength(0);
+    expect(calls).toHaveLength(3);
+    // turn.completed 只表示本轮正常终结；无 verification 的写入仍是 partial。
     // 批准后同一轮继续推进了下一步模型调用，且 prompt 含该工具结果
     expect(calls.length).toBeGreaterThanOrEqual(2);
     expect(JSON.stringify(calls[1])).toContain("write-1");

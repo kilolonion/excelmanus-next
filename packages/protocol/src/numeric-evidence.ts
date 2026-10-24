@@ -311,7 +311,10 @@ export function decodeNumericBindingId(bindingId: string): NumericBindingPointer
 
 /** All reads must normalize, including document metadata. Never filter out an unknown read. */
 export function numericReadSources(read: Json): NumericSource[] | undefined {
-  if (read.toolName === "workbook_analyze" && read.mode === "sort_preflight") {
+  if (
+    ["workbook_analyze", "workbook_query"].includes(String(read.toolName)) &&
+    read.mode === "sort_preflight"
+  ) {
     const source = sourceOf(read, object(read.docRevs)[String(read.docId)], {
       kind: "range",
       range: object(read.sortPreflight).targetRange,
@@ -319,7 +322,7 @@ export function numericReadSources(read: Json): NumericSource[] | undefined {
     return source ? [source] : undefined;
   }
   if (
-    read.toolName === "workbook_analyze" &&
+    ["workbook_analyze", "workbook_query"].includes(String(read.toolName)) &&
     ["sql", "profile"].includes(String(read.mode)) &&
     Array.isArray(read.sources) &&
     read.sources.length
@@ -390,10 +393,14 @@ export function numericResultContract(
     )
       fields.push("preserved/externalLinkDetails");
     if (!fields.length) return;
-  } else if (toolName === "workbook_analyze" && data.mode === "sort_preflight")
+  } else if (
+    ["workbook_analyze", "workbook_query"].includes(toolName) &&
+    data.mode === "sort_preflight"
+  )
     fields = ["sortPreflight"];
-  else if (toolName === "workbook_analyze" && data.mode === "sql") fields = ["rows"];
-  else if (toolName === "workbook_analyze" && data.mode === "profile")
+  else if (["workbook_analyze", "workbook_query"].includes(toolName) && data.mode === "sql")
+    fields = ["rows"];
+  else if (["workbook_analyze", "workbook_query"].includes(toolName) && data.mode === "profile")
     fields = ["columns", "dataRows"];
   else if (toolName === "run_script") {
     const provenance = object(data.provenance);
@@ -486,7 +493,7 @@ export function numericEvidence(toolCallId: string, toolName: string, output: un
       if (!["null", "array", "object", "string", "number", "boolean"].includes(type)) return;
       let origin = fieldOrigin;
       if (
-        toolName === "workbook_analyze" &&
+        ["workbook_analyze", "workbook_query"].includes(toolName) &&
         data.mode === "sql" &&
         trail.length === 2 &&
         Array.isArray(data.columns) &&

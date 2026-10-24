@@ -187,7 +187,7 @@ function targetOf(row: Receipt): Target | undefined {
   const p = object(row.data.sortPreflight),
     targetRange = normalizedRange(p.targetRange);
   if (
-    row.name !== "workbook_analyze" ||
+    !["workbook_analyze", "workbook_query"].includes(row.name) ||
     row.data.mode !== "sort_preflight" ||
     !targetRange ||
     typeof p.hasHeader !== "boolean" ||
@@ -691,7 +691,7 @@ export function planNumericCompleteness(
             row.seq > copy.row.seq &&
             row.data.docId === target.docId &&
             row.data.path === target.path &&
-            ["workbook_read", "workbook_analyze"].includes(row.name) &&
+            ["workbook_read", "workbook_analyze", "workbook_query"].includes(row.name) &&
             object(row.result.docRevs ?? row.data.docRevs)[target.docId] === 0 &&
             object(row.data.sourceFile).openedSha256 === sourceHash &&
             object(row.data.sourceFile).currentSha256 === sourceHash &&

@@ -23,10 +23,9 @@ export function Root() {
   const bootMessage = useAppStore((s) => s.bootMessage);
 
   useEffect(() => {
-    void bootApp(() => {
-      // Warm the same module without mounting it or delaying workspace restoration.
-      void loadClientLayout().catch(() => undefined);
-    });
+    // Preload and evaluate modules without mounting; auth/protocol gates remain intact.
+    void loadClientLayout().catch(() => undefined);
+    void bootApp();
   }, []);
 
   if (status === "booting") return <LoadingScreen message={bootMessage} />;
@@ -40,7 +39,12 @@ export function Root() {
   if (status === "protocol-mismatch")
     return <LoadingScreen error="界面与服务版本不一致，请刷新页面；桌面版请重启应用" />;
   if (status === "auth-failed")
-    return <LoadingScreen error="无法连接本机服务，请确认 ExcelManus 正在运行" />;
+    return (
+      <LoadingScreen
+        error="服务连接或加载超时，请检查网络后重试"
+        action={{ label: "重试", onClick: () => window.location.reload() }}
+      />
+    );
 
   // A completed preload must not suspend again on a fresh lazy initialization.
   // Pending/rejected resources still use the original Suspense/ErrorBoundary path.

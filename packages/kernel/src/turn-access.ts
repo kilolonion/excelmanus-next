@@ -16,6 +16,16 @@ function dataRows(db: DatabaseSync, sessionId: string, agentId: string, types: s
       .all(sessionId, agentId, ...types) as { type: string; data: string }[]
   ).map((row) => ({ ...JSON.parse(row.data), recordType: row.type }) as Record<string, unknown>);
 }
+function turnBindingRows(db: DatabaseSync, sessionId: string, agentId: string) {
+  // Fixed event literals let SQLite use the authorization-only partial covering index.
+  return (
+    db
+      .prepare(
+        "SELECT type, data FROM session_log WHERE session_id=? AND agent_id=? AND type IN ('turn.started', 'turn.access.updated') ORDER BY seq DESC",
+      )
+      .all(sessionId, agentId) as { type: string; data: string }[]
+  ).map((row) => ({ ...JSON.parse(row.data), recordType: row.type }) as Record<string, unknown>);
+}
 function bindingOf(data: Record<string, unknown> | undefined): TurnAccessBinding | undefined {
   const parsed = TurnAccessBinding.safeParse(data?.accessBinding);
   return parsed.success ? parsed.data : undefined;
@@ -26,7 +36,7 @@ export function turnAccessBinding(
   agentId: string,
   turnId: string,
 ): TurnAccessBinding | undefined {
-  const records = dataRows(db, sessionId, agentId, ["turn.started", "turn.access.updated"]);
+  const records = turnBindingRows(db, sessionId, agentId);
   const ownRecord = records.find((row) => row.turnId === turnId);
   const own = bindingOf(ownRecord);
   if (!own)
@@ -43,7 +53,7 @@ export function turnAccessBinding(
   const origins =
     own.originAgentId === agentId
       ? records
-      : dataRows(db, sessionId, own.originAgentId, ["turn.started", "turn.access.updated"]);
+      : turnBindingRows(db, sessionId, own.originAgentId);
   const originTurns = new Set([own.originTurnId]);
   for (const row of origins) {
     if (row.recordType !== "turn.started" || typeof row.turnId !== "string") continue;
@@ -210,4 +220,4 @@ export function accessDeliveryRequired(
   return turnAccessBinding(db, sessionId, agentId, turnId)?.accessDeliveryRequired === true;
 }
 export const ACCESS_DELIVERY_GUIDANCE =
-  "本轮有明确文件或目录限制。只能访问许可资源；有限文件任务的源文件只读、另存目标可读写，不得枚举父目录或查找其他文件。范围不明确时停止文件操作。最终必须使用 present.finalize 的受控交付，引用真实读取证据，访问清单由宿主生成；不得自由声称未访问文件或用 note 绕过。无法完成时用 status=incomplete。";
+  "本轮有明确文件或目录限制。只能访问许可资源；有限文件任务的源文件只读、另存目标可读写，不得枚举父目录或查找其他文件。范围不明确时停止文件操作。先用 deliver 的 inspect 获取当前授权下可见的读取证据与访问事实，再用 finalize 受控交付；使用 inspect 返回的当前交付句柄，访问清单由宿主生成。不得自由声称未访问文件、手写证据指针或用 note 绕过。无法完成时只能采用宿主 allowedOutcomes 允许的 partial 或 blocked；改写措辞不能绕过 unverified、待修复或访问限制。";

@@ -9,7 +9,7 @@ import { type CapabilityModule, kernelProjections, SessionLog } from "@excelmanu
 import { type ApiClient, createApiClient, type LogRecord } from "@excelmanus/protocol";
 import { importCsv, importXlsx } from "@excelmanus/workbook";
 import { MockLanguageModelV4 } from "ai/test";
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, describe, expect, onTestFinished, test } from "vitest";
 import { z } from "zod";
 import { minimalXlsx } from "../../modules/workbook/src/checkpoint.ts";
 import { type RunningServer, startServer } from "../src/index.ts";
@@ -92,6 +92,28 @@ async function boot(
   return { srv, api, dataDir };
 }
 
+// The log endpoint caps each page at 500 and returns ascending seq < before.
+async function readCompleteLog(api: ApiClient, sessionId: string): Promise<LogRecord[]> {
+  const records = new Map<number, LogRecord>();
+  let before: number | undefined;
+  for (;;) {
+    const { items } = await api.getSessionLog(sessionId, { limit: 500, ...(before === undefined ? {} : { before }) });
+    if (items.length === 0) break;
+    const nextBefore = Math.min(...items.map((item) => item.seq));
+    if (!Number.isSafeInteger(nextBefore) || nextBefore <= 0 ||
+      (before !== undefined && nextBefore >= before))
+      throw new Error("session log pagination did not advance");
+    for (const item of items) {
+      if (records.has(item.seq) || (before !== undefined && item.seq >= before))
+        throw new Error("session log pagination repeated a record");
+      records.set(item.seq, item);
+    }
+    if (items.length < 500) break;
+    before = nextBefore;
+  }
+  return [...records.values()].sort((left, right) => left.seq - right.seq);
+}
+
 async function waitLog(
   api: ApiClient,
   sessionId: string,
@@ -101,7 +123,7 @@ async function waitLog(
 ): Promise<LogRecord[]> {
   const t0 = Date.now();
   for (;;) {
-    const { items } = await api.getSessionLog(sessionId, { limit: 1000 });
+    const items = await readCompleteLog(api, sessionId);
     if (pred(items)) return items;
     if (Date.now() - t0 > timeoutMs)
       throw new Error(`等待超时：${what}；types=${items.map((i) => i.type).join(",")}`);
@@ -691,7 +713,83 @@ test.each(["main", "child", "child-pending"])(
     let providerRecovered = false;
     let calls = 0;
     let resumedPrompt: Prompt | undefined;
+    const diagnosticStartedAt = Date.now();
+    let phase = "boot";
+    let observed: LogRecord[] = [];
+    const providerTrace: Array<{
+      atMs: number; lane: "parent" | "child"; targetCallsBefore: number;
+      recovered: boolean; toolResultIds: unknown[]; visibleReportCount: number;
+    }> = [];
+    const notePhase = (next: string) => {
+      if (target === "main") return;
+      phase = next;
+      process.stderr.write("RESUME_CHILD_PHASE " + JSON.stringify({
+        target, phase, calls, providerRecovered, atMs: Date.now() - diagnosticStartedAt,
+      }) + "\n");
+    };
+    notePhase("boot");
     const { srv, api, dataDir } = await boot((prompt) => {
+      if (target !== "main") {
+        const visibleText = prompt.filter((m) => m.role === "user").flatMap((m) =>
+          typeof m.content === "string" ? [m.content] : Array.isArray(m.content)
+            ? m.content.filter((part) => part.type === "text").map((part) => String(part.text)) : [],
+        ).join("\n");
+        providerTrace.push({
+          atMs: Date.now() - diagnosticStartedAt,
+          lane: systemOf(prompt).includes("角色的子代理") ? "child" : "parent",
+          targetCallsBefore: calls,
+          recovered: providerRecovered,
+          toolResultIds: prompt.flatMap((m) => m.role === "tool" && Array.isArray(m.content)
+            ? m.content.filter((part) => part.type === "tool-result").map((part) => part.toolCallId) : []),
+          visibleReportCount: visibleText.match(/<message\b[^>]*\bkind="report"/g)?.length ?? 0,
+        });
+      }
+      const hasResult = (id: string) =>
+        prompt.some(
+          (m) =>
+            m.role === "tool" &&
+            Array.isArray(m.content) &&
+            m.content.some((part) => part.type === "tool-result" && part.toolCallId === id),
+        );
+      const object = (value: unknown): Record<string, unknown> => {
+        if (value === null || typeof value !== "object" || Array.isArray(value))
+          throw new Error("expected a provider-visible JSON object");
+        return value as Record<string, unknown>;
+      };
+      const partialFromInspect = (inspectId: string, finalizeId: string): Out => {
+        const part = prompt.flatMap((m) => m.role === "tool" && Array.isArray(m.content)
+          ? m.content : []).find((p) => p.type === "tool-result" && p.toolCallId === inspectId);
+        const output = object(object(part).output);
+        expect(output.type).toBe("json");
+        const result = object(output.value);
+        expect(result.status).toBe("ok");
+        const data = object(result.data);
+        expect(data.action).toBe("inspect");
+        expect(data.allowedOutcomes).toContain("partial");
+        expect(data.allowedOutcomes).not.toContain("completed");
+        expect(data.unverifiedObligationCount).toBeGreaterThan(0);
+        if (!Array.isArray(data.artifacts)) throw new Error("inspect omitted artifacts");
+        const artifacts = data.artifacts.map(object).filter((item) => item.path === "resume.xlsx");
+        expect(artifacts).toHaveLength(1);
+        const artifact = artifacts[0];
+        expect(artifact).toMatchObject({ execution: "succeeded", persistence: "saved", validation: "unverified" });
+        if (typeof artifact?.id !== "string") throw new Error("inspect omitted the artifact handle");
+        return call(finalizeId, "deliver", { action: "finalize", outcome: "partial", artifactIds: [artifact.id] });
+      };
+      if (target !== "main" && !systemOf(prompt).includes("角色的子代理")) {
+        const reports = prompt.filter((m) => m.role === "user").flatMap((m) =>
+          typeof m.content === "string" ? [m.content] : Array.isArray(m.content)
+            ? m.content.filter((part) => part.type === "text").map((part) => String(part.text)) : [],
+        ).join("\n").match(/<message\b[^>]*\bkind="report"/g)?.length ?? 0;
+        if (reports > 0) {
+          // A real report changes closure; the parent must inspect its own visible handles.
+          expect(hasResult("resume-inspect")).toBe(false);
+          const inspectId = `resume-parent-inspect-${reports}`;
+          return hasResult(inspectId)
+            ? partialFromInspect(inspectId, `resume-parent-finalize-${reports}`)
+            : call(inspectId, "deliver", { action: "inspect" });
+        }
+      }
       if (target !== "main" && !systemOf(prompt).includes("角色的子代理"))
         return prompt.some((m) => m.role === "tool")
           ? text("等待子代理报告")
@@ -702,13 +800,6 @@ test.each(["main", "child", "child-pending"])(
               files: ["resume.xlsx"],
             });
       calls += 1;
-      const hasResult = (id: string) =>
-        prompt.some(
-          (m) =>
-            m.role === "tool" &&
-            Array.isArray(m.content) &&
-            m.content.some((part) => part.type === "tool-result" && part.toolCallId === id),
-        );
       if (!hasResult("resume-read"))
         return call("resume-read", "workbook_read", {
           path: "resume.xlsx",
@@ -729,10 +820,40 @@ test.each(["main", "child", "child-pending"])(
           { type: "text-start", id: "partial" },
           { type: "text-delta", id: "partial", delta: "尚未完成的收尾" },
         ]);
-      resumedPrompt = prompt;
-      return text("继续后仅补收尾");
+      if (target !== "main") {
+        expect(hasResult("resume-parent-inspect-1")).toBe(false);
+        expect(hasResult("resume-parent-inspect-2")).toBe(false);
+      }
+      resumedPrompt ??= prompt;
+      return hasResult("resume-inspect")
+        ? partialFromInspect("resume-inspect", "resume-finalize")
+        : call("resume-inspect", "deliver", { action: "inspect" });
     });
+    notePhase("create-session");
     const { session } = await api.createSession({});
+    if (target !== "main") {
+      // Keep phase/trace evidence and the original 20s test cap during migration.
+      const diagnosticTimer = setTimeout(() => {
+        void (async () => {
+          try {
+            const items = await readCompleteLog(api, session.id);
+            const state = await api.getSession(session.id);
+            process.stderr.write("RESUME_CHILD_DIAGNOSTIC " + JSON.stringify({
+              target, phase, calls, providerRecovered, resumedPromptSeen: resumedPrompt !== undefined,
+              atMs: Date.now() - diagnosticStartedAt, running: srv.hasRunningAgents(),
+              agents: state.agents, providerTrace, records: items,
+              logHeadSeq: items.at(-1)?.seq, logCompleteThroughHead: true,
+            }) + "\n");
+          } catch (error) {
+            process.stderr.write("RESUME_CHILD_DIAGNOSTIC " + JSON.stringify({
+              target, phase, calls, providerRecovered, atMs: Date.now() - diagnosticStartedAt,
+              providerTrace, records: observed, logCompleteThroughHead: false, error: String(error),
+            }) + "\n");
+          }
+        })();
+      }, 17_000);
+      onTestFinished(() => clearTimeout(diagnosticTimer));
+    }
     const file = join(srv.workspaceRoot, "resume.xlsx");
     writeFileSync(
       file,
@@ -740,17 +861,25 @@ test.each(["main", "child", "child-pending"])(
         importCsv(new TextEncoder().encode("marker\noriginal-one\ntail\n"), "resume.csv").snapshot,
       ),
     );
+    notePhase("open-document");
     const { document } = await api.openDoc(session.workspaceId, { path: "resume.xlsx" });
+    notePhase("send-initial-message");
     await api.sendMessage(session.id, "main", {
       clientMessageId: "resume-failed",
       text: "在第 2 行前插入一行，写入 applied-once",
     });
+    notePhase("wait-exhausted-stream-and-idle");
     const failed = await waitLog(
       api,
       session.id,
-      (all) => all.some((r) => r.type === "turn.failed") && !srv.hasRunningAgents(),
+      (all) => {
+        if (target !== "main") observed = all;
+        return all.some((r) => r.type === "turn.failed") && !srv.hasRunningAgents() &&
+          (target === "main" || resultsOf(all, "resume-parent-finalize-1").length === 1);
+      },
       "断流重试耗尽",
     );
+    notePhase("assert-exhausted-stream");
     const agentId =
       target === "main"
         ? "main"
@@ -769,12 +898,14 @@ test.each(["main", "child", "child-pending"])(
     const db = new DatabaseSync(join(dataDir, "excelmanus.db"), { readOnly: true });
     try {
       // 等待真实异步检查点；继续前后文件与修订都只能包含这一次非幂等插行。
+      notePhase("wait-checkpoint-revision-one");
       const deadline = Date.now() + 5_000;
       while (
         (await api.getDocSnapshot(session.workspaceId, document.id)).document.checkpointRev !== 1 &&
         Date.now() < deadline
       )
         await sleep(20);
+      notePhase("assert-committed-workbook");
       const documentState = () =>
         db
           .prepare("SELECT rev, head_rev, checkpoint_rev FROM documents WHERE id = ?")
@@ -790,8 +921,10 @@ test.each(["main", "child", "child-pending"])(
         "tail",
       ]);
 
+      notePhase("allow-provider-recovery");
       providerRecovered = true;
       if (target === "child-pending") {
+        notePhase("queue-child-continuation");
         const { dispatch } = await api.sendMessage(session.id, agentId, {
           clientMessageId: "pending-after-failure",
           text: "只补收尾，不要重复插行",
@@ -803,21 +936,26 @@ test.each(["main", "child", "child-pending"])(
         ).toBe("failed");
         expect(calls).toBe(8);
       }
+      notePhase("explicit-resume");
       expect(await api.resumeAgent(session.id, agentId)).toMatchObject({
         resumed: target === "child-pending" ? 1 : 0,
         started: true,
       });
-      const completed = (
-        await waitLog(
-          api,
-          session.id,
-          (all) =>
-            all.some((r) => r.type === "turn.completed" && r.agentId === agentId) &&
-            !srv.hasRunningAgents(),
-          "失败后继续完成",
-        )
-      ).filter((r) => r.agentId === agentId);
-      expect(calls).toBe(9);
+      notePhase("wait-resumed-turn-completed-and-idle");
+      const allCompleted = await waitLog(
+        api,
+        session.id,
+        (all) => {
+          if (target !== "main") observed = all;
+          return all.some((r) => r.type === "turn.completed" && r.agentId === agentId) &&
+            !srv.hasRunningAgents() &&
+            (target === "main" || resultsOf(all, "resume-parent-finalize-2").length === 1);
+        },
+        "失败后继续完成",
+      );
+      notePhase("assert-resumed-workbook-and-idempotence");
+      const completed = allCompleted.filter((r) => r.agentId === agentId);
+      expect(calls).toBe(10);
       expect(resumedPrompt).toContainEqual({
         role: "tool",
         content: expect.arrayContaining([
@@ -835,6 +973,47 @@ test.each(["main", "child", "child-pending"])(
       expect(
         completed.filter((r) => r.type === "tool.intent" && r.data.toolName === "workbook_edit"),
       ).toHaveLength(1);
+      // Operational completion is truthful partial delivery, not business validation.
+      for (const id of ["resume-inspect", "resume-finalize"]) {
+        expect(completed.filter((r) => r.type === "tool.intent" && r.data.toolCallId === id)).toHaveLength(1);
+        expect(resultsOf(completed, id)).toHaveLength(1);
+        expect(resultsOf(completed, id)[0]?.data.status).toBe("ok");
+      }
+      expect(resultsOf(completed, "resume-finalize")[0]?.data.result).toMatchObject({
+        status: "ok", data: { outcome: "partial", finalizationStatus: "incomplete" },
+      });
+      expect(completed.filter((r) => r.type === "model.output").at(-1)?.data).toMatchObject({
+        sourceToolCallId: "resume-finalize", deliveryStatus: "incomplete", text: expect.any(String),
+      });
+      expect(completed.filter((r) => r.type === "retry.scheduled")).toHaveLength(5);
+      expect(completed.filter((r) => r.type === "attempt.discarded")).toHaveLength(6);
+      if (target !== "main") {
+        expect(allCompleted.filter((r) => r.type === "tool.intent" && r.data.toolCallId === "resume-spawn")).toHaveLength(1);
+        const reports = allCompleted.filter((r) => r.type === "inbox.sent" &&
+          r.data.fromAgentId === agentId && r.data.toAgentId === "main" && r.data.kind === "report");
+        expect(reports).toHaveLength(2);
+        expect(String(reports[0]?.data.message)).toContain("本轮出错");
+        expect(String(reports[1]?.data.message)).toContain("任务部分完成");
+        const parent = allCompleted.filter((r) => r.agentId === "main");
+        for (const report of reports) {
+          expect(parent.filter((r) => r.type === "inbox.delivered" &&
+            r.data.messageId === report.data.messageId)).toHaveLength(1);
+        }
+        for (const report of [1, 2]) {
+          for (const id of [`resume-parent-inspect-${report}`, `resume-parent-finalize-${report}`]) {
+            expect(parent.filter((r) => r.type === "tool.intent" && r.data.toolCallId === id)).toHaveLength(1);
+            expect(resultsOf(parent, id)).toHaveLength(1);
+            expect(resultsOf(parent, id)[0]?.data.status).toBe("ok");
+          }
+          expect(resultsOf(parent, `resume-parent-finalize-${report}`)[0]?.data.result).toMatchObject({
+            status: "ok", data: { outcome: "partial", finalizationStatus: "incomplete" },
+          });
+        }
+        expect(parent.filter((r) => r.type === "model.output").at(-1)?.data).toMatchObject({
+          sourceToolCallId: "resume-parent-finalize-2", deliveryStatus: "incomplete",
+        });
+        expect(parent.filter((r) => r.type === "turn.failed")).toHaveLength(0);
+      }
       expect(documentState()).toMatchObject({ rev: 1, head_rev: 1, checkpoint_rev: 1 });
       expect(
         db.prepare("SELECT rev, tool_call_id FROM doc_ops WHERE doc_id = ?").all(document.id),
@@ -844,7 +1023,8 @@ test.each(["main", "child", "child-pending"])(
         resumed: 0,
         started: false,
       });
-      expect(calls).toBe(9);
+      expect(calls).toBe(10);
+      notePhase("finished");
     } finally {
       db.close();
     }

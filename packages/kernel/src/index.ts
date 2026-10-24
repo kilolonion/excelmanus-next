@@ -11,6 +11,7 @@ export * from "./change-summary.ts";
 export * from "./compaction.ts";
 export * from "./db.ts";
 export * from "./leases.ts";
+export * from "./harness-state.ts";
 export * from "./migrations.ts";
 export * from "./model-gateway.ts";
 export { numericDeliveryState } from "./numeric-delivery.ts";

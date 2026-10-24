@@ -1,7 +1,7 @@
 // 会话列表与导航：全部工作区的会话（侧栏按工作区分组），当前会话决定当前工作区。
 // 每个工作区记住上次打开的会话；组内手动排序与折叠是本地偏好。
 
-import type { SessionSummary } from "@excelmanus/protocol";
+import { ApiError, type ApiReadOptions, type SessionSummary } from "@excelmanus/protocol";
 import { create } from "zustand";
 import { api, errorMessage, saveBlob } from "@/lib/backend/api";
 import { onSync } from "@/lib/backend/channel";
@@ -71,9 +71,9 @@ let navRequest = 0;
 
 let latestListRead: Promise<SessionSummary[]> | null = null;
 
-export function refreshSessions(): Promise<SessionSummary[]> {
+export function refreshSessions(options?: ApiReadOptions): Promise<SessionSummary[]> {
   const request = ++listRequest;
-  const pending = readSessions(request).catch((error: unknown) => {
+  const pending = readSessions(request, options).catch((error: unknown) => {
     if (request !== listRequest && latestListRead) return latestListRead;
     throw error;
   });
@@ -81,12 +81,13 @@ export function refreshSessions(): Promise<SessionSummary[]> {
   return pending;
 }
 
-async function readSessions(request: number): Promise<SessionSummary[]> {
+async function readSessions(request: number, options?: ApiReadOptions): Promise<SessionSummary[]> {
   const all = new Map<string, SessionSummary>();
   let cursor: string | undefined;
   do {
-    const page = await api().listSessions({ limit: 200, ...(cursor ? { cursor } : {}) });
+    const page = await api().listSessions({ limit: 200, ...(cursor ? { cursor } : {}) }, options);
     if (request !== listRequest) return latestListRead ?? get().sessions;
+    options?.signal?.throwIfAborted();
     for (const s of page.items) all.set(s.id, s);
     cursor = page.nextCursor;
   } while (cursor !== undefined);
@@ -156,14 +157,45 @@ export function preferredWorkspaceId(): string | null {
   );
 }
 
+/** Boot-only fast path: a partial sidebar is never evidence that a session is absent.
+ * true also means a newer navigation took ownership, so boot must not fall back.
+ */
+export async function restoreSavedWorkspace(
+  workspaceId: string,
+  options?: ApiReadOptions,
+): Promise<boolean> {
+  const request = ++navRequest;
+  const saved = readJson<Navigation>(NAV_KEY, { sessions: {} }).sessions[workspaceId];
+  if (!saved) return false;
+  try {
+    const detail = await api().getSession(saved, options);
+    if (request !== navRequest) return true;
+    options?.signal?.throwIfAborted();
+    if (detail.session.workspaceId !== workspaceId) return false;
+    set({ activeSessionId: saved, activeWorkspaceId: workspaceId });
+    markSessionsRead([saved]);
+    await loadChatSession(saved, options, workspaceId);
+    if (request !== navRequest) return true;
+    options?.signal?.throwIfAborted();
+    remember(workspaceId, saved);
+    return true;
+  } catch (error) {
+    if (request !== navRequest) return true;
+    if (error instanceof ApiError && error.status === 404) return false;
+    throw error;
+  }
+}
+
 /** 打开一个会话（切换对话区、工作区随之切换）。 */
-export async function selectSession(sessionId: string): Promise<void> {
+export async function selectSession(sessionId: string, options?: ApiReadOptions): Promise<void> {
+  options?.signal?.throwIfAborted();
   const request = ++navRequest;
   const known = get().sessions.find((session) => session.id === sessionId);
   set({ activeSessionId: sessionId, activeWorkspaceId: known?.workspaceId ?? null });
   markSessionsRead([sessionId]);
-  const { workspaceId } = await loadChatSession(sessionId);
+  const { workspaceId } = await loadChatSession(sessionId, options);
   if (request !== navRequest) return;
+  options?.signal?.throwIfAborted();
   set({ activeWorkspaceId: workspaceId });
   remember(workspaceId, sessionId);
 }
@@ -171,17 +203,20 @@ export async function selectSession(sessionId: string): Promise<void> {
 /**
  * 进入某工作区：恢复该工作区上次的会话；没有会话时复用（或新建）一个空白会话。
  */
-export async function openWorkspace(workspaceId: string): Promise<void> {
+export async function openWorkspace(workspaceId: string, options?: ApiReadOptions): Promise<void> {
+  options?.signal?.throwIfAborted();
   const saved = readJson<Navigation>(NAV_KEY, { sessions: {} }).sessions[workspaceId];
   const inWorkspace = get().sessions.filter((s) => s.workspaceId === workspaceId);
   const target = inWorkspace.find((s) => s.id === saved) ?? inWorkspace[0];
-  if (target) return selectSession(target.id);
+  if (target) return selectSession(target.id, options);
   const request = ++navRequest;
   const { session } = await api().createSession({ workspaceId, reuseBlank: true });
   if (request !== navRequest) return;
-  await refreshSessions();
+  options?.signal?.throwIfAborted();
+  await refreshSessions(options);
   if (request !== navRequest) return;
-  await selectSession(session.id);
+  options?.signal?.throwIfAborted();
+  await selectSession(session.id, options);
 }
 
 /** 新建对话；当前对话本身还是空白（同一工作区）时直接留在它上面，不再堆出空会话。 */
