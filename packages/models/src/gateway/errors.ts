@@ -47,6 +47,16 @@ function bodyHints(text?: string): string {
   return scrubSecrets(text.slice(0, 400));
 }
 
+function isModelNotFound(body: string): boolean {
+  try {
+    const parsed = JSON.parse(body);
+    const error = parsed?.error ?? parsed;
+    return error?.code === "model_not_found" || error?.type === "model_not_found";
+  } catch {
+    return false;
+  }
+}
+
 function causeText(err: unknown): string {
   const parts: string[] = [];
   let cur: unknown = err;
@@ -89,6 +99,10 @@ function byStatus(
   const { msg, rawMsg, body, detail } = ctx;
   if (status === 401 || status === 403) {
     return { kind: "auth", retryable: false, message: msg, statusCode: status, detail };
+  }
+  // 代理可能把明确的模型不存在包装成 5xx；仅识别结构化错误码，不匹配历史错误文案。
+  if (isModelNotFound(body)) {
+    return { kind: "model_not_found", retryable: false, message: msg, statusCode: status, detail };
   }
   if (status === 429) {
     if (QUOTA_PATTERNS.some((p) => p.test(body) || p.test(rawMsg))) {
@@ -148,7 +162,24 @@ function byStatus(
   return { kind: "invalid_request", retryable: false, message: msg, statusCode: status, detail };
 }
 
+export function incompleteStreamError(): ClassifiedError {
+  return {
+    kind: "stream_interrupted",
+    retryable: true,
+    message: "模型响应未收到有效结束标记，流已提前结束，可以重试。",
+    detail: "incomplete_stream",
+  };
+}
+
 export function classifyError(err: unknown, sawContent: boolean): ClassifiedError {
+  // HTTP 200 也可能携带不完整 SSE；兼容适配器与 CPA 的收尾错误统一走重试。
+  if (
+    /Response stream ended without a finish reason|upstream stream closed before any chunk carried finish_reason/i.test(
+      causeText(err),
+    )
+  ) {
+    return incompleteStreamError();
+  }
   if (err instanceof APICallError) {
     const status = err.statusCode;
     const body = typeof err.responseBody === "string" ? err.responseBody : "";
@@ -179,6 +210,19 @@ export function classifyError(err: unknown, sawContent: boolean): ClassifiedErro
       err.statusCode ?? STREAM_ERROR_STATUS.find(([re]) => re.test(hint) || re.test(body))?.[1];
     const msg = scrubSecrets(err.message);
     const detail = bodyHints(body || hint);
+    if (
+      status !== 401 &&
+      status !== 403 &&
+      (err.code === "model_not_found" || err.type === "model_not_found" || isModelNotFound(body))
+    ) {
+      return {
+        kind: "model_not_found",
+        retryable: false,
+        message: msg,
+        detail,
+        ...(status !== undefined ? { statusCode: status } : {}),
+      };
+    }
     if (status !== undefined) {
       return byStatus(status, {
         msg,

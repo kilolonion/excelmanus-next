@@ -29,10 +29,10 @@ export function isAgentActive(status: string): boolean {
 }
 
 export function useAgentTeam() {
-  const session = useChatStore((s) => s.session);
+  const roster = useChatStore((s) => s.session.roster);
   return useMemo(() => {
-    const main = session.roster[MAIN_AGENT];
-    const subs = subAgents(session);
+    const main = roster[MAIN_AGENT];
+    const subs = subAgents({ roster });
     const members: TeamMember[] = [
       ...(main ? [{ agent: main, color: AGENT_COLORS[0], isMain: true }] : []),
       ...subs.map((agent, i) => ({
@@ -47,5 +47,5 @@ export function useAgentTeam() {
       activeCount: subs.filter((a) => isAgentActive(a.status)).length,
       blockedCount: subs.filter((a) => a.status === "blocked").length,
     };
-  }, [session]);
+  }, [roster]);
 }

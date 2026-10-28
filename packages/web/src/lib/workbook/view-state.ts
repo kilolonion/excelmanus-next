@@ -8,31 +8,39 @@ export interface ViewState {
   sheetId: string;
   selection: { row: number; col: number; rows: number; cols: number } | null;
   scroll: { row: number; col: number };
+  zoom: number;
   at: number;
 }
 
-/** 重建发生在销毁之后的一瞬间；超过这个时间说明是重新打开文件，不再恢复。 */
-const FRESH_MS = 3000;
+/** 同一标签页中切换文档仍保留视图位置。 */
+const FRESH_MS = 24 * 60 * 60 * 1000;
 
 export function captureView(docId: string, wb: FWorkbook): ViewState | null {
-  const sheet = wb.getActiveSheet();
-  if (!sheet) return null;
-  const range = sheet.getSelection()?.getActiveRange()?.getRange();
-  const { sheetViewStartRow, sheetViewStartColumn } = sheet.getScrollState();
-  return {
-    docId,
-    sheetId: sheet.getSheetId(),
-    selection: range
-      ? {
-          row: range.startRow,
-          col: range.startColumn,
-          rows: range.endRow - range.startRow + 1,
-          cols: range.endColumn - range.startColumn + 1,
-        }
-      : null,
-    scroll: { row: sheetViewStartRow, col: sheetViewStartColumn },
-    at: Date.now(),
-  };
+  try {
+    const sheet = wb.getActiveSheet();
+    if (!sheet) return null;
+    const range = sheet.getSelection()?.getActiveRange()?.getRange();
+    const { sheetViewStartRow, sheetViewStartColumn } = sheet.getScrollState();
+    return {
+      docId,
+      sheetId: sheet.getSheetId(),
+      selection: range
+        ? {
+            row: range.startRow,
+            col: range.startColumn,
+            rows: range.endRow - range.startRow + 1,
+            cols: range.endColumn - range.startColumn + 1,
+          }
+        : null,
+      scroll: { row: sheetViewStartRow, col: sheetViewStartColumn },
+      zoom: sheet.getZoom(),
+      at: Date.now(),
+    };
+  } catch {
+    // Unmount may dispose render services before React runs this final view capture.
+    // Keep the last saved view and let the remaining editor cleanup complete.
+    return null;
+  }
 }
 
 export function isFreshView(view: ViewState | null, docId: string): view is ViewState {
@@ -43,9 +51,53 @@ export function restoreView(wb: FWorkbook, view: ViewState): void {
   const sheet = wb.getSheetBySheetId(view.sheetId);
   if (!sheet) return;
   wb.setActiveSheet(sheet);
+  if (Number.isFinite(view.zoom)) sheet.zoom(Math.min(4, Math.max(0.1, view.zoom)));
+  const maxRows = sheet.getMaxRows(),
+    maxCols = sheet.getMaxColumns();
+  const clampRow = (n: number) => Math.max(0, Math.min(maxRows - 1, Math.floor(n)));
+  const clampCol = (n: number) => Math.max(0, Math.min(maxCols - 1, Math.floor(n)));
   if (view.selection) {
-    const { row, col, rows, cols } = view.selection;
+    const row = clampRow(view.selection.row),
+      col = clampCol(view.selection.col);
+    const rows = Math.max(1, Math.min(maxRows - row, Math.floor(view.selection.rows)));
+    const cols = Math.max(1, Math.min(maxCols - col, Math.floor(view.selection.cols)));
     sheet.getRange(row, col, rows, cols).activate();
   }
-  sheet.scrollToCell(view.scroll.row, view.scroll.col);
+  sheet.scrollToCell(clampRow(view.scroll.row), clampCol(view.scroll.col));
+}
+
+const views = new Map<string, ViewState>();
+export function saveView(view: ViewState | null): void {
+  if (!view) return;
+  views.set(view.docId, view);
+  try {
+    sessionStorage.setItem(`excelmanus.view.${view.docId}`, JSON.stringify(view));
+  } catch {
+    /* storage may be unavailable */
+  }
+}
+export function loadView(docId: string): ViewState | null {
+  if (views.has(docId)) return views.get(docId)!;
+  try {
+    const value = JSON.parse(sessionStorage.getItem(`excelmanus.view.${docId}`) ?? "null");
+    if (
+      value &&
+      value.docId === docId &&
+      typeof value.sheetId === "string" &&
+      typeof value.at === "number" &&
+      Number.isFinite(value.scroll?.row) &&
+      Number.isFinite(value.scroll?.col) &&
+      (value.selection === null ||
+        [
+          value.selection?.row,
+          value.selection?.col,
+          value.selection?.rows,
+          value.selection?.cols,
+        ].every(Number.isFinite))
+    )
+      return value;
+  } catch {
+    /* ignore malformed saved state */
+  }
+  return null;
 }

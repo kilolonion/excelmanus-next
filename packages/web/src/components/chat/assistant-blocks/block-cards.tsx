@@ -149,6 +149,7 @@ function changeSummary(change: DocChange): string {
     cells > 0 ? `${cells} 格` : null,
     change.ranges.length > 0 ? `${change.ranges.length} 处区域` : null,
     change.structural.length > 0 ? change.structural.join("，") : null,
+    change.metadataLimited === true ? "已存工作表名称元数据不足，缺失名称以 sheetId 表示" : null,
   ]
     .filter(Boolean)
     .join(" · ");

@@ -49,16 +49,16 @@ export const FilesInput = z.strictObject({ ops: z.array(FileOp).min(1).max(100) 
 export type FilesInput = z.infer<typeof FilesInput>;
 
 export const WorkbookExportInput = z.strictObject({
-  docId: z.string().optional(),
-  path: z.string().optional(),
+  docId: z.string().min(1).optional().describe("源工作簿的已打开文档 id；与 path 至少提供一个"),
+  path: z.string().min(1).optional().describe("源工作簿的工作区相对路径；与 docId 至少提供一个，to 不是源路径"),
   mode: z.enum(["convert", "split"]).default("convert"),
   to: z.string().min(1).describe("新文件路径；split 模式为输出目录"),
-  format: z.enum(["xlsx", "csv", "tsv"]),
+  format: z.enum(["xlsx", "csv", "tsv"]).default("xlsx").describe("输出格式，省略默认 xlsx；CSV/TSV 必须显式指定"),
   sheet: z.string().optional().describe("CSV/TSV 或 split 模式的工作表名"),
   encoding: z.enum(["utf-8", "utf-8-bom", "gbk"]).optional(),
   rowsPerFile: z.int().positive().optional(),
   column: z.int().nonnegative().optional().describe("按列分组拆分，零起算列号"),
-});
+}).refine((a) => Boolean(a.docId || a.path), {path: ["path"], message: "需要源工作簿 path 或 docId；to 仅为输出目标"});
 export const AnalyzeSaveTo = z.strictObject({
   path: z.string().optional().describe("新 xlsx 文件路径；省略表示当前文档"),
   sheet: z.string().min(1).describe("新工作表名称"),

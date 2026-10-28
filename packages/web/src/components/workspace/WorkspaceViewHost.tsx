@@ -1,15 +1,11 @@
-// 主区域：对话 + 输入框；全屏表格时桌面端表格在左、对话停靠在右，手机端只显示表格（顶栏切回对话）。
+// 主区域：对话 + 输入框；全屏表格占满工作区，通过顶栏切回对话。
 
 import { MessageSquareText } from "lucide-react";
-import { lazy, type ReactNode, Suspense, useEffect } from "react";
-import { WorkbookLoadingState } from "@/components/excel/WorkbookLoadingState";
-import { useIsMobile } from "@/hooks/use-mobile";
+import { type ReactNode, useEffect } from "react";
+import { DeferredWorkbook } from "@/components/excel/DeferredWorkbook";
+import { useUIStore } from "@/stores/ui-store";
 import { useWorkbookStore } from "@/stores/workbook-store";
 import styles from "./WorkspaceViewHost.module.css";
-
-const WorkbookSurface = lazy(() =>
-  import("@/components/excel/WorkbookSurface").then((m) => ({ default: m.WorkbookSurface })),
-);
 
 export function WorkspaceViewHost({
   children,
@@ -18,24 +14,20 @@ export function WorkspaceViewHost({
   children: ReactNode;
   composer?: ReactNode;
 }) {
-  const isMobile = useIsMobile();
   const full = useWorkbookStore((s) => s.fullView);
   const tabCount = useWorkbookStore((s) => s.tabs.length);
-  const split = full && !isMobile;
-  const chatVisible = !full || split;
-  const composerVisible = !full || !isMobile;
+  const chatVisible = !full;
+  const composerVisible = !full;
 
   // 布局变化后让表格画布按新尺寸重排
   useEffect(() => {
+    if (full) useUIStore.getState().setSidebarOpen(false);
     const id = requestAnimationFrame(() => window.dispatchEvent(new Event("resize")));
     return () => cancelAnimationFrame(id);
-  }, [full, split]);
+  }, [full]);
 
   return (
-    <div
-      className={`${styles.host} ${split ? styles.split : ""}`}
-      data-workspace-surface={full ? "excel" : "chat"}
-    >
+    <div className={styles.host} data-workspace-surface={full ? "excel" : "chat"}>
       <div
         className={`${styles.chat} ${chatVisible ? "" : styles.inactive}`}
         aria-hidden={!chatVisible}
@@ -61,11 +53,7 @@ export function WorkspaceViewHost({
       </div>
       {full && (
         <div className={`${styles.sheet} ${styles.fullHeightSheet}`}>
-          <Suspense
-            fallback={<WorkbookLoadingState label="正在准备表格工作区" detail="正在挂载表格画布" />}
-          >
-            <WorkbookSurface placement="full" />
-          </Suspense>
+          <DeferredWorkbook placement="full" />
         </div>
       )}
     </div>

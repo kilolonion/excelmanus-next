@@ -1,3 +1,4 @@
+import { createTestProfile } from "./fixtures/create-model.ts";
 // M1 后端纵切集成测试（ADR 0006：真实 HTTP/WebSocket/SQLite 文件 + 假模型）。
 // 假模型只替代模型服务输出（doStream），不替代我们自己的任何代码：
 // 档案/会话/派发/日志/投影/票据/续传全部走真实路径。
@@ -205,7 +206,7 @@ describe("e2e：档案→会话→WS订阅→消息→只读工具→流式回�
     writeFileSync(join(srv.workspaceRoot, "note.txt"), "hello workspace\n", "utf8");
 
     const api = createApiClient(srv.url, srv.token);
-    expect(await api.health()).toMatchObject({ ok: true, protocolVersion: 3 });
+    expect(await api.health()).toMatchObject({ ok: true, protocolVersion: 4 });
     const boot = await api.bootstrap();
     expect(boot.hasModelProfile).toBe(false);
     expect(boot.modules).toContain("files");
@@ -214,7 +215,7 @@ describe("e2e：档案→会话→WS订阅→消息→只读工具→流式回�
     expect(providers.items.map((p) => p.id)).toContain("mimo");
 
     // 模型档案：apiKey 读回只有掩码
-    const { profile } = await api.createModelProfile({
+    const { profile } = await createTestProfile(api, {
       name: "测试档案",
       provider: "custom-openai-compatible",
       model: "mock-1",
@@ -420,7 +421,7 @@ describe("e2e：档案→会话→WS订阅→消息→只读工具→流式回�
     });
     servers.push(srv);
     const api = createApiClient(srv.url, srv.token);
-    await api.createModelProfile({
+    await createTestProfile(api, {
       name: "测试档案",
       provider: "custom-openai-compatible",
       model: "mock-1",
@@ -519,7 +520,7 @@ describe("e2e：档案→会话→WS订阅→消息→只读工具→流式回�
     cpSync(join(samples, "sales.xlsx"), join(srv.workspaceRoot, "sales.xlsx"));
 
     const api = createApiClient(srv.url, srv.token);
-    await api.createModelProfile({
+    await createTestProfile(api, {
       name: "mock",
       provider: "custom-openai-compatible",
       model: "mock-wb",

@@ -10,6 +10,13 @@ function argValue(name: string): string | undefined {
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
 
+const splitEnv = (name: string): string[] | undefined => {
+  const raw = process.env[name];
+  if (!raw) return undefined;
+  const items = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  return items.length > 0 ? items : undefined;
+};
+
 const dataDir =
   argValue("--data-dir") ?? process.env.EXCELMANUS_HOME ?? join(homedir(), ".excelmanus-next");
 const portArg = argValue("--port");
@@ -19,6 +26,10 @@ const dev = process.argv.includes("--dev") || process.env.EXCELMANUS_DEV === "1"
 const srv = await startServer({
   dataDir,
   autoTitle: true,
+  ...(splitEnv("EXCELMANUS_EXTRA_HOSTS") ? { extraHosts: splitEnv("EXCELMANUS_EXTRA_HOSTS") } : {}),
+  ...(splitEnv("EXCELMANUS_EXTRA_ORIGINS")
+    ? { extraOrigins: splitEnv("EXCELMANUS_EXTRA_ORIGINS") }
+    : {}),
   ...(port !== undefined ? { port } : {}),
   ...(dev ? { dev: true } : {}),
 });

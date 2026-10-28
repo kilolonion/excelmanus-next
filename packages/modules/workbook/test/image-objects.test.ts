@@ -9,6 +9,7 @@ import { importCsv } from "../src/csv.ts";
 import { objectsOf } from "../src/objects.ts";
 import {
   CHECKPOINT_MIGRATION,
+  DOC_MOVES_MIGRATION,
   DOC_OPS_MIGRATION,
   DOC_OPS_REVERTS_MIGRATION,
   DOCUMENTS_MIGRATION,
@@ -23,6 +24,7 @@ test("工作区图片新增、预览回滚与原始字节保真回读", async ()
     DOC_OPS_MIGRATION,
     BACKUPS_MIGRATION,
     CHECKPOINT_MIGRATION,
+    DOC_MOVES_MIGRATION,
     DOC_OPS_REVERTS_MIGRATION,
   ]);
   const service = new DocumentService(db);
@@ -75,6 +77,22 @@ test("工作区图片新增、预览回滚与原始字节保真回读", async ()
     });
     expect(Buffer.from(unzipSync(bytes)[image.mediaPart!]!)).toEqual(png);
     expect(readFileSync(join(dir, "source.png"))).toEqual(png);
+    // Reopen the actual checkpoint: imported images have mediaPart, not inline data.
+    writeFileSync(join(dir, "reopened.xlsx"), bytes);
+    const reopened = await service.open("w", dir, "reopened.xlsx");
+    const plain = await service.snapshot(reopened.meta.id, dir);
+    const rich = await service.snapshot(reopened.meta.id, dir, true);
+    const rsid = rich.snapshot.sheetOrder[0]!;
+    expect(objectsOf(plain.snapshot.sheets[rsid]).images[0]?.data).toBeUndefined();
+    expect(Buffer.from(objectsOf(rich.snapshot.sheets[rsid]).images[0]!.data!, "base64")).toEqual(
+      png,
+    );
+    expect(rich.meta.rev).toBe(plain.meta.rev);
+    expect(
+      objectsOf((await service.snapshot(reopened.meta.id, dir)).snapshot.sheets[rsid]).images[0]
+        ?.data,
+    ).toBeUndefined();
+
     const bad = await apply("../outside.png");
     expect(bad.ok).toBe(false);
   } finally {

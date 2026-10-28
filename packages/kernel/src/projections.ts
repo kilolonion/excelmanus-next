@@ -182,6 +182,10 @@ function userText(d: Record<string, unknown>): string {
     (r) =>
       `- 用户当前选区：文档 ${String(r.docId ?? "")}（rev ${String(r.rev ?? "?")}）区域 ${String(r.range ?? "")}`,
   );
+  if (Array.isArray(d.attachments) && d.attachments.length > 0) {
+    const names = d.attachments.map((a: { name?: unknown }) => typeof a.name === "string" ? a.name : "未命名图片");
+    lines.push(`- 本次消息图片附件：${JSON.stringify(names)}（消息附件存储，非工作区文件路径；未指定关联文件）。`);
+  }
   if (memories.length > 0) {
     lines.push("相关记忆：");
     for (const m of memories)
@@ -393,6 +397,8 @@ const agentContext: Projection = {
     }
     if (targetAgentId === null) return;
     if (rec.type === "model.output") {
+      // The rejected draft remains in the log, but is neither visible text nor model history.
+      if (d.deliveryStatus === "rejected") return;
       item = {
         kind: "assistant",
         ...(d.text !== undefined ? { text: d.text as string } : {}),

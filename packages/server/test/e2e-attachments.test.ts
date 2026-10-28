@@ -1,3 +1,4 @@
+import { createTestProfile } from "./fixtures/create-model.ts";
 // 图片附件 e2e（01 §3、04 §7、11 §4）：真实 HTTP + SQLite + blob 存储，假模型只记录收到的提示。
 // 上传 → 发消息带附件 → 模型收到图片（视觉开）/文字说明（视觉关）；非图片与未上传附件被拒。
 
@@ -65,7 +66,7 @@ describe("e2e：图片附件", () => {
     });
     servers.push(srv);
     const api = createApiClient(srv.url, srv.token);
-    const { profile } = await api.createModelProfile({
+    const { profile } = await createTestProfile(api, {
       name: "mock",
       provider: "custom-openai-compatible",
       model: "mock-att",
@@ -107,18 +108,20 @@ describe("e2e：图片附件", () => {
     await api.overrideCapabilities(profile.id, { vision: true });
     await api.sendMessage(session.id, "main", {
       clientMessageId: "m1",
-      text: "看图",
+      text: "",
       attachments: [att],
     });
     await waitTurns(1);
     const user1 = prompts.at(-1)?.findLast((m) => m.role === "user");
     const parts1 = (user1?.content ?? []) as { type: string; mediaType?: string }[];
+    expect(JSON.stringify(parts1)).toContain("消息图片附件");
+    expect(JSON.stringify(parts1)).toContain("未指定关联文件");
     expect(parts1.some((p) => p.type === "file" && p.mediaType === "image/png")).toBe(true);
 
     // 日志只存引用，不存图片内容
     const log = await api.getSessionLog(session.id, { limit: 500 });
     const userRec = log.items.find((r) => r.type === "user.message");
-    expect(userRec?.data).toMatchObject({ attachments: [att] });
+    expect(userRec?.data).toMatchObject({ text: "", attachments: [att] });
     expect(JSON.stringify(log)).not.toContain(PNG.toString("base64"));
 
     // 视觉关：不发图片，改为文字说明

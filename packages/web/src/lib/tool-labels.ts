@@ -25,7 +25,7 @@ import {
   Users,
   Wrench,
 } from "lucide-react";
-import { fileName } from "@/lib/paths";
+import { fileName } from "./paths";
 
 type Args = Record<string, unknown> | undefined;
 
@@ -155,6 +155,12 @@ function editOps(args: Args): string[] {
       ? [(op as { op: string }).op]
       : [],
   );
+}
+
+export function pendingToolLabel(name: string, text: string): string {
+  const progress =
+    text.length > 0 ? `已接收 ${text.length.toLocaleString("zh-CN")} 字符` : "等待参数";
+  return `正在准备：${toolActionTitle(name, {}) || "工具调用"} · ${progress}`;
 }
 
 export function toolActionTitle(name: string, args?: Args): string {

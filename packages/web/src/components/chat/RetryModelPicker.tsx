@@ -5,6 +5,7 @@ import { hasProviderLogo, ProviderLogo } from "@/components/settings/model/Provi
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -29,14 +30,18 @@ export function RetryModelPicker({
   const models = usePickerModels();
   const current = useCurrentProfileId();
   const isMobile = useIsMobile();
-  const [sheetOpen, setSheetOpen] = useState(false);
+  const [open, setOpen] = useState(false);
+  const selectModel = (profileId: string) => {
+    setOpen(false);
+    onSelect(profileId);
+  };
   const trigger = (
     <button
       type="button"
       aria-label={`${triggerLabel}重试`}
       title={`${triggerLabel}重试`}
       className={triggerClassName}
-      onClick={isMobile ? () => setSheetOpen(true) : undefined}
+      onClick={isMobile ? () => setOpen(true) : undefined}
     >
       <ArrowRightLeft className="h-3.5 w-3.5 shrink-0" />
       {!iconOnly && <span>{triggerLabel}</span>}
@@ -48,17 +53,17 @@ export function RetryModelPicker({
       <>
         {trigger}
         <ModelListBottomSheet
-          open={sheetOpen}
-          onOpenChange={setSheetOpen}
+          open={open}
+          onOpenChange={setOpen}
           models={models}
           currentModel={current}
-          onSelect={onSelect}
+          onSelect={selectModel}
           mode="retry"
         />
       </>
     );
   return (
-    <DropdownMenu>
+    <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
       <DropdownMenuContent
         align="start"
@@ -69,45 +74,48 @@ export function RetryModelPicker({
           <span className="text-xs font-medium text-foreground/70">选择模型重试</span>
         </div>
         <div className="max-h-[36vh] overflow-y-auto py-1">
-          {models.map((m) => {
+          {models.map((m, index) => {
             const isCurrent = m.id === current;
             const color = getProviderColor(m.brand);
             return (
-              <button
-                key={m.id}
-                type="button"
-                disabled={m.unhealthy}
-                onClick={() => onSelect(m.id)}
-                className={`flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-accent/50 disabled:opacity-50 ${isCurrent ? "bg-[var(--em-primary-alpha-06)]" : ""}`}
-              >
-                {hasProviderLogo(m.brand) ? (
-                  <ProviderLogo id={m.brand} color={color} className="h-3.5 w-3.5" />
-                ) : (
-                  <span
-                    className="h-2 w-2 shrink-0 rounded-full"
-                    style={{ backgroundColor: color }}
-                  />
+              <div key={m.id}>
+                {(index === 0 || models[index - 1]?.connectionId !== m.connectionId) && (
+                  <p className="px-3 pt-2 text-[10px] text-muted-foreground">{m.providerLabel}</p>
                 )}
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-xs font-medium">{m.label}</span>
-                  {m.label !== m.model && (
-                    <span className="block truncate font-mono text-[10px] text-muted-foreground/60">
-                      {m.model}
+                <DropdownMenuItem
+                  disabled={m.unhealthy}
+                  onSelect={() => selectModel(m.id)}
+                  className={`flex w-full items-center gap-2 rounded-none px-3 py-2 text-left transition-colors hover:bg-accent/50 ${isCurrent ? "bg-[var(--em-primary-alpha-06)]" : ""}`}
+                >
+                  {hasProviderLogo(m.brand) ? (
+                    <ProviderLogo id={m.brand} color={color} className="h-3.5 w-3.5" />
+                  ) : (
+                    <span
+                      className="h-2 w-2 shrink-0 rounded-full"
+                      style={{ backgroundColor: color }}
+                    />
+                  )}
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-xs font-medium">{m.label}</span>
+                    {m.label !== m.profileName && (
+                      <span className="block truncate font-mono text-[10px] text-muted-foreground/60">
+                        {m.profileName}
+                      </span>
+                    )}
+                  </span>
+                  {isCurrent && (
+                    <span
+                      className="rounded-full px-1.5 py-px text-[9px] font-medium"
+                      style={{
+                        backgroundColor: "var(--em-primary-alpha-10)",
+                        color: "var(--em-primary)",
+                      }}
+                    >
+                      当前
                     </span>
                   )}
-                </span>
-                {isCurrent && (
-                  <span
-                    className="rounded-full px-1.5 py-px text-[9px] font-medium"
-                    style={{
-                      backgroundColor: "var(--em-primary-alpha-10)",
-                      color: "var(--em-primary)",
-                    }}
-                  >
-                    当前
-                  </span>
-                )}
-              </button>
+                </DropdownMenuItem>
+              </div>
             );
           })}
         </div>

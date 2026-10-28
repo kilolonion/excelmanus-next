@@ -9,12 +9,14 @@ import { afterAll, describe, expect, test } from "vitest";
 import {
   assertCellsWritable,
   exportXlsx,
+  minimalXlsx,
   pendingChanges,
   remapSheetIndexes,
 } from "../src/checkpoint.ts";
 import { exportCsv, importCsv } from "../src/csv.ts";
 import {
   CHECKPOINT_MIGRATION,
+  DOC_MOVES_MIGRATION,
   DOC_OPS_MIGRATION,
   DOC_OPS_REVERTS_MIGRATION,
   DOCUMENTS_MIGRATION,
@@ -80,6 +82,62 @@ const cells = (s: IWorkbookData, id: string) => s.sheets[id]?.cellData as Cells;
 const sheetData = (x: string) => /<sheetData>[\s\S]*<\/sheetData>/.exec(x)?.[0];
 
 describe("xlsx 写回保真", () => {
+  test("工作表默认行高导入并保持原始格式属性", () => {
+    const bytes = book([
+      '<sheetFormatPr defaultRowHeight="18" baseColWidth="10"/><sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData>',
+    ]);
+    expect(importXlsx(bytes, "height.xlsx").snapshot.sheets.s0?.defaultRowHeight).toBe(24);
+    const out = edit(
+      bytes,
+      (s) => {
+        cells(s, "s0")[0]![0] = { v: 2, t: 2 };
+      },
+      undefined,
+    );
+    expect(dec(out["xl/worksheets/sheet1.xml"])).toContain(
+      '<sheetFormatPr defaultRowHeight="18" baseColWidth="10"/>',
+    );
+  });
+
+  test("新文件显式写出默认行高，默认值行不丢失高度", () => {
+    const snapshot = importXlsx(book(["<sheetData/>"]), "height.xlsx").snapshot;
+    snapshot.sheets.s0!.defaultRowHeight = 24;
+    const out = unzipSync(minimalXlsx(snapshot));
+    expect(dec(out["xl/worksheets/sheet1.xml"])).toContain(
+      '<sheetFormatPr defaultRowHeight="18"/>',
+    );
+    expect(importXlsx(zipSync(out), "height.xlsx").snapshot.sheets.s0?.defaultRowHeight).toBe(24);
+  });
+
+  test("Excel 点数行高导入为画布像素", () => {
+    const bytes = book([
+      '<sheetData><row r="1" ht="18" customHeight="1"><c r="A1"><v>1</v></c></row></sheetData>',
+    ]);
+    expect(importXlsx(bytes, "height.xlsx").snapshot.sheets.s0?.rowData?.[0]?.h).toBe(24);
+  });
+
+  test("修改与新增行高按像素转点数，未改动的行高原样保留", () => {
+    const bytes = book([
+      '<sheetData><row r="1" ht="18" customHeight="1"><c r="A1"><v>1</v></c></row><row r="2" ht="15" customHeight="1"><c r="A2"><v>2</v></c></row></sheetData>',
+    ]);
+    const out = edit(
+      bytes,
+      (s) => {
+        const sheet = s.sheets.s0!;
+        sheet.rowData = { ...sheet.rowData, 0: { h: 36 }, 5: { h: 48 } };
+        sheet.rowCount = 6;
+      },
+      undefined,
+    );
+    const xml = dec(out["xl/worksheets/sheet1.xml"]);
+    expect(xml).toContain('<row r="1" ht="27" customHeight="1">');
+    expect(xml).toContain('<row r="6" ht="36" customHeight="1">');
+    expect(xml).toContain('<row r="2" ht="15" customHeight="1"><c r="A2"><v>2</v></c></row>');
+    const reimported = importXlsx(zipSync(out), "height.xlsx").snapshot.sheets.s0;
+    expect(reimported?.rowData?.[0]?.h).toBe(36);
+    expect(reimported?.rowData?.[5]?.h).toBe(48);
+  });
+
   test("未在写集中的表逐字节保留，即使引擎重算改了其公式值（P0-04）", () => {
     const bytes = book([
       `<sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData>`,
@@ -271,7 +329,7 @@ describe("xlsx 写回保真", () => {
         1,
         4,
       ),
-    ).toThrow("数组公式区域");
+    ).toThrow("不能修改数组公式的一部分");
   });
 });
 
@@ -294,6 +352,7 @@ async function openBook(bytes: Uint8Array) {
     DOC_OPS_MIGRATION,
     BACKUPS_MIGRATION,
     CHECKPOINT_MIGRATION,
+    DOC_MOVES_MIGRATION,
     DOC_OPS_REVERTS_MIGRATION,
   ]);
   const svc = new DocumentService(db);
@@ -390,7 +449,7 @@ describe("xlsx 写回保真（真实 DocumentService + SQLite + 公式引擎）"
     const xml = await sheetXml();
     expect(xml).toContain(`<col min="1" max="1" width="10" customWidth="1" style="1"/>`);
     expect(xml).toMatch(/<col min="2" max="2" width="20" customWidth="1" style="1"\/>/);
-    expect(xml).toMatch(/<row r="1" s="1" customFormat="1" ht="30" customHeight="1">/);
+    expect(xml).toMatch(/<row r="1" s="1" customFormat="1" ht="22.5" customHeight="1">/);
     expect(xml).toMatch(/<row r="2" hidden="1">/);
   });
 

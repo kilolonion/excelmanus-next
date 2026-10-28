@@ -2,13 +2,16 @@
 // 写集与结构操作直接从 op 推导（agent 来源，坐标用变换前的写入坐标）。
 
 import {
+  assertSortableRange,
   indexToCol,
   MAX_C,
   MAX_R,
   newId,
+  normalizeDataValidationRule,
   parseRange,
   type RangeRef,
   rangeRefToA1,
+  rewriteTableReferences,
   type StructuralOp,
   structuralTouchesInterior,
   transformRange,
@@ -18,25 +21,85 @@ import {
   ChartObject,
   ImageObject,
   OBJECT_LAYER_MUTATION,
+  PRINT_STATE_MUTATION,
+  printNamesOf,
+  printSettingsOf,
+  ShapeObject,
+  TABLE_STATE_MUTATION,
 } from "@excelmanus/protocol";
 import { Direction, type IWorkbookData, type IWorksheetData } from "@univerjs/core";
+import { type ITableJson, TableColumnDataTypeEnum } from "@univerjs/sheets-table";
 import { z } from "zod";
-import { FIND_REPLACE_COMMAND } from "./find-replace.ts";
+import { namesOf, setNames } from "./defined-names.ts";
+import { FIND_REPLACE_COMMAND, findReplacePattern } from "./find-replace.ts";
+import { shiftFormula } from "./formula-shift.ts";
 import {
   AXIS_SIZE_COMMAND,
   COPY_SHEET_COMMAND,
   FILL_COMMAND,
   FILTER_COMMAND,
   LINK_COMMAND,
+  RENAME_SHEET_COMMAND,
 } from "./layout-commands.ts";
 import { objectsOf } from "./objects.ts";
+import { resolvePivotRefreshTarget } from "./pivot-codec.ts";
 import { CF_RESOURCE, DV_RESOURCE, rulesResource, setRulesResource } from "./rule-codec.ts";
 import { BORDER_STYLES } from "./style-constants.ts";
 import { sheetNamesOf } from "./summary.ts";
+import { setTables, tablesOf } from "./tables.ts";
+import { visualToolRule } from "./visual-tool-rule.ts";
+import type { XlsxPreservation } from "./xlsx.ts";
 
 // ---------- 输入 schema ----------
 
 const cellScalar = z.union([z.string(), z.number(), z.boolean(), z.null()]);
+const writeRange = z
+  .string()
+  .min(1)
+  .describe(
+    "A1 区域。多工作表时必须显式写表名，如 '核对'!A1:B5；只有单表时可省略，sheet.add 不会切换默认表。",
+  );
+
+const tableAdd = z.strictObject({
+  op: z.literal("table.add"),
+  range: writeRange.describe("包含表头和至少一行数据的区域；创建真正的 Excel 表对象，不是普通筛选"),
+  name: z.string().min(1).max(255),
+  columns: z
+    .array(
+      z.strictObject({
+        name: z.string().min(1).max(255),
+        formula: z
+          .string()
+          .startsWith("=")
+          .optional()
+          .describe("可选计算列公式，以首个数据行为基准，向下平移相对引用，保留绝对引用"),
+      }),
+    )
+    .min(1)
+    .max(1000)
+    .describe("按区域列顺序提供列名，写入表头；formula 同时写入计算列元数据与每行公式"),
+});
+const tableColumnFormula = z.strictObject({
+  op: z.literal("table.column_formula"),
+  sheet: z.string().min(1),
+  table: z.string().min(1),
+  column: z.string().min(1).describe("表对象中的列名"),
+  formula: z
+    .string()
+    .startsWith("=")
+    .describe("首个数据行公式，向下平移相对引用；不改表头及合计行"),
+});
+
+const pivotMarkRefreshOnLoad = z.strictObject({
+  op: z.literal("pivot.mark_refresh_on_load"),
+  sheet: z.string().min(1).describe("已有缓存的本地源工作表，不是透视表显示工作表"),
+  cacheId: z
+    .string()
+    .regex(/^\d+$/)
+    .describe(
+      "workbook_read mode=objects 返回的 workbook cacheId；只设置 refreshOnLoad=true，影响共享该缓存的所有透视表，不立即刷新",
+    ),
+});
 
 const sheetAdd = z.strictObject({
   op: z.literal("sheet.add"),
@@ -67,30 +130,88 @@ const sheetHide = z.strictObject({
 });
 const cellsFill = z.strictObject({
   op: z.literal("cells.fill"),
-  source: z.string(),
-  range: z.string(),
+  source: writeRange.describe("已写入的模板区域，如 订单!F2:H2；可来自同批前面的 cells.set"),
+  range: writeRange.describe(
+    "填充目标，如 订单!F3:H13；copy 自动平移公式相对引用并保留 $ 绝对引用",
+  ),
   mode: z.enum(["copy", "series"]).default("copy"),
 });
-const axisSize = z.strictObject({
-  op: z.literal("axis.size"),
-  sheet: z.string(),
-  axis: z.enum(["rows", "cols"]),
-  at: z.int().positive(),
-  count: z.int().positive().max(1000),
-  mode: z.enum(["pixels", "scale", "auto"]),
-  value: z.number().positive().max(2000).optional(),
-});
+const axisSize = z
+  .strictObject({
+    op: z.literal("axis.size"),
+    sheet: z.string(),
+    axis: z.enum(["rows", "cols"]),
+    at: z.int().positive(),
+    count: z.int().positive().max(1000),
+    mode: z.enum(["pixels", "scale", "auto"]),
+    value: z
+      .number()
+      .positive()
+      .max(2000)
+      .optional()
+      .describe("pixels 模式为像素数，scale 模式为倍率"),
+    pixels: z
+      .number()
+      .positive()
+      .max(2000)
+      .optional()
+      .describe("仅 mode=pixels，等价于 value；二者同时提供必须相同"),
+  })
+  .superRefine((a, ctx) => {
+    if (a.pixels !== undefined && a.mode !== "pixels")
+      ctx.addIssue({
+        code: "custom",
+        path: ["pixels"],
+        message: "pixels 只适用于 mode=pixels；scale 请用 value 倍率",
+      });
+    if (a.mode !== "auto" && a.value === undefined && a.pixels === undefined)
+      ctx.addIssue({
+        code: "custom",
+        path: ["value"],
+        message: "pixels 模式需要 value 或 pixels；scale 模式需要 value",
+      });
+    if (a.value !== undefined && a.pixels !== undefined && a.value !== a.pixels)
+      ctx.addIssue({
+        code: "custom",
+        path: ["pixels"],
+        message: "pixels 与 value 不一致，不能确定目标尺寸",
+      });
+  });
 const filterSet = z.strictObject({
   op: z.literal("filter.set"),
   range: z.string(),
-  clear: z.boolean().default(false),
+  clear: z
+    .boolean()
+    .default(false)
+    .describe("true 仅移除筛选，不能同时传筛选 columns；设置筛选请省略或传 false"),
   columns: z
     .array(
-      z.object({
-        column: z.int().positive(),
-        values: z.array(z.union([z.string(), z.number(), z.boolean()])).max(1000),
-        blank: z.boolean().default(false),
-      }),
+      z.union([
+        z.strictObject({
+          column: z.int().positive(),
+          values: z
+            .array(z.union([z.string(), z.number(), z.boolean()]))
+            .max(1000)
+            .describe("精确枚举匹配，不解析 >=300 等表达式；数值比较请用 condition"),
+          blank: z.boolean().default(false).describe("是否同时显示空白单元格，默认不包含"),
+        }),
+        z.strictObject({
+          column: z.int().positive(),
+          condition: z
+            .strictObject({
+              operator: z.enum([
+                "equal",
+                "notEqual",
+                "greaterThan",
+                "greaterThanOrEqual",
+                "lessThan",
+                "lessThanOrEqual",
+              ]),
+              value: z.number(),
+            })
+            .describe("数值比较条件，例如金额至少300：operator=greaterThanOrEqual,value=300"),
+        }),
+      ]),
     )
     .max(100)
     .default([]),
@@ -107,12 +228,12 @@ const hyperlinkSet = z.strictObject({
 });
 const cellsSet = z.strictObject({
   op: z.literal("cells.set"),
-  range: z.string().min(1),
+  range: writeRange,
   values: z.array(z.array(cellScalar)).min(1),
 });
 const cellsClear = z.strictObject({
   op: z.literal("cells.clear"),
-  range: z.string().min(1),
+  range: writeRange,
   what: z.enum(["contents", "formats", "all"]).default("all"),
 });
 const borderSide = z
@@ -124,31 +245,39 @@ const borderSide = z
       .default("#000000"),
   })
   .nullable();
-const styleSet = z.strictObject({
-  op: z.literal("style.set"),
-  range: z.string().min(1),
-  bold: z.boolean().optional(),
-  italic: z.boolean().optional(),
-  fontColor: z.string().optional(),
-  fill: z.string().optional(),
-  numFmt: z.string().optional(),
-  hAlign: z.enum(["left", "center", "right"]).optional(),
-  vAlign: z.enum(["top", "center", "bottom"]).optional(),
-  fontSize: z.number().min(1).max(409).optional(),
-  fontFamily: z.string().min(1).max(100).optional(),
-  indent: z.int().min(0).max(250).optional(),
-  borders: z
-    .object({
-      top: borderSide.optional(),
-      bottom: borderSide.optional(),
-      left: borderSide.optional(),
-      right: borderSide.optional(),
-    })
-    .optional(),
-  wrap: z.boolean().optional(),
-});
-const mergeOp = z.strictObject({ op: z.literal("merge"), range: z.string().min(1) });
-const unmergeOp = z.strictObject({ op: z.literal("unmerge"), range: z.string().min(1) });
+const styleSet = z.strictObject(
+  {
+    op: z.literal("style.set"),
+    range: writeRange,
+    bold: z.boolean().optional(),
+    italic: z.boolean().optional(),
+    fontColor: z.string().optional(),
+    fill: z.string().optional(),
+    numFmt: z.string().optional(),
+    hAlign: z.enum(["left", "center", "right"]).optional(),
+    vAlign: z.enum(["top", "center", "bottom"]).optional(),
+    fontSize: z.number().min(1).max(409).optional(),
+    fontFamily: z.string().min(1).max(100).optional(),
+    indent: z.int().min(0).max(250).optional(),
+    borders: z
+      .object({
+        top: borderSide.optional(),
+        bottom: borderSide.optional(),
+        left: borderSide.optional(),
+        right: borderSide.optional(),
+      })
+      .optional(),
+    wrap: z.boolean().optional(),
+  },
+  {
+    error: (issue) =>
+      issue.code === "unrecognized_keys"
+        ? `style.set 多余字段：${issue.keys.join(", ")}。style.set 不传 sheet；表名写入 range，如 {"op":"style.set","range":"'汇总'!A1:D5","bold":true}。样式字段直接放在操作内，不嵌套 style。`
+        : undefined,
+  },
+);
+const mergeOp = z.strictObject({ op: z.literal("merge"), range: writeRange });
+const unmergeOp = z.strictObject({ op: z.literal("unmerge"), range: writeRange });
 const rowsInsert = z.strictObject({
   op: z.literal("rows.insert"),
   sheet: z.string().min(1),
@@ -186,7 +315,18 @@ const findReplace = z.strictObject({
   op: z.literal("find_replace"),
   range: z.string(),
   find: z.string().min(1).max(10000),
-  replacement: z.string().max(32767),
+  replacement: z
+    .string()
+    .max(32767)
+    .describe(
+      "替换文本；regex=true 时支持 JS 替换标记 $1、$2、$&、$$、$<name>；否则全部按字面量处理",
+    ),
+  regex: z
+    .boolean()
+    .default(false)
+    .describe(
+      "find_replace 专用：true 时 find 是 JS 正则源文本，不含 / 分隔符；默认 false 为字面量。始终全局替换，大小写由 caseSensitive 控制",
+    ),
   caseSensitive: z.boolean().default(false),
   formulas: z.boolean().default(false),
 });
@@ -206,16 +346,95 @@ const axisGroup = z.strictObject({
   count: z.int().positive().max(10000),
   level: z.int().min(0).max(7),
 });
+const axisCollapse = z.strictObject({
+  op: z.literal("axis.collapse"),
+  sheet: z.string(),
+  axis: z.enum(["rows", "cols"]),
+  at: z.int().positive(),
+  count: z.int().positive().max(10000),
+  collapsed: z
+    .boolean()
+    .describe(
+      "只改指定汇总行/列的折叠标记，不改 hidden 或分组层级；完整展开需同批 axis.hide hidden=false 和 axis.collapse collapsed=false",
+    ),
+});
 const imageAdd = z.strictObject({
   op: z.literal("image.add"),
   sheet: z.string(),
   path: z.string().min(1),
-  anchor: z.string().default("E2"),
+  anchor: ImageObject.shape.anchor.default("E2"),
   width: z.int().min(1).max(4000).default(320),
   height: z.int().min(1).max(4000).default(240),
   title: z.string().max(500).default(""),
+  offsetX: ImageObject.shape.offsetX,
+  offsetY: ImageObject.shape.offsetY,
 });
-const chartFields = ChartObject.omit({ id: true, chartPart: true, drawingPart: true });
+const imageUpdate = ImageObject.pick({
+  anchor: true,
+  width: true,
+  height: true,
+  offsetX: true,
+  offsetY: true,
+})
+  .partial()
+  .extend({
+    op: z.literal("image.update"),
+    sheet: z.string().min(1),
+    id: z.string().min(1),
+  })
+  .strict();
+const shapeFields = ShapeObject.omit({ id: true, drawingObjectId: true });
+const shapeAdd = shapeFields
+  .extend({
+    op: z.literal("shape.add"),
+    sheet: z.string().min(1),
+    id: ShapeObject.shape.id.optional(),
+    title: ShapeObject.shape.title.default(""),
+    text: ShapeObject.shape.text.default(""),
+    anchor: ShapeObject.shape.anchor.default("E2"),
+    width: ShapeObject.shape.width.default(160),
+    height: ShapeObject.shape.height.default(80),
+    fill: ShapeObject.shape.fill.default("#4472C4"),
+    stroke: ShapeObject.shape.stroke.default("#2F528F"),
+    textColor: ShapeObject.shape.textColor.default("#FFFFFF"),
+  })
+  .strict();
+const shapeUpdate = ShapeObject.pick({
+  anchor: true,
+  width: true,
+  height: true,
+  offsetX: true,
+  offsetY: true,
+})
+  .partial()
+  .extend({
+    op: z.literal("shape.update"),
+    sheet: z.string().min(1),
+    id: z.string().min(1),
+  })
+  .strict();
+const shapeDelete = z.strictObject({
+  op: z.literal("shape.delete"),
+  sheet: z.string().min(1),
+  id: z.string().min(1),
+});
+const noteSet = z.strictObject({
+  op: z.literal("note.set"),
+  sheet: z.string().min(1),
+  ref: z.string().regex(/^[A-Z]{1,3}[1-9][0-9]{0,6}$/),
+  text: z.string().max(32767).nullable(),
+  author: z.string().max(500).default(""),
+});
+const imageDelete = z.strictObject({
+  op: z.literal("image.delete"),
+  sheet: z.string().min(1),
+  id: z.string().min(1),
+});
+const chartFields = ChartObject.omit({ id: true, chartPart: true, drawingPart: true }).extend({
+  range: ChartObject.shape.range.describe(
+    "chart.add/update 的数据区域必须位于目标 sheet；当前不支持跨表数据源。需要跨表看板时可在目标表建立公式引用的数据区域。",
+  ),
+});
 const chartAdd = chartFields.extend({
   op: z.literal("chart.add"),
   sheet: z.string().min(1),
@@ -225,6 +444,11 @@ const chartAdd = chartFields.extend({
     .optional(),
 });
 const chartUpdate = chartFields
+  .extend({
+    anchor: ChartObject.shape.anchor.removeDefault(),
+    width: ChartObject.shape.width.removeDefault(),
+    height: ChartObject.shape.height.removeDefault(),
+  })
   .partial()
   .extend({ op: z.literal("chart.update"), sheet: z.string().min(1), id: z.string().min(1) });
 const chartRemove = z.strictObject({
@@ -232,20 +456,59 @@ const chartRemove = z.strictObject({
   sheet: z.string().min(1),
   id: z.string().min(1),
 });
-const rowHeight = z.strictObject({
-  op: z.literal("rows.height"),
-  sheet: z.string(),
-  at: z.int().positive(),
-  count: z.int().positive(),
-  pixels: z.number().min(1).max(1000),
-});
-const colWidth = z.strictObject({
-  op: z.literal("cols.width"),
-  sheet: z.string(),
-  at: z.int().positive(),
-  count: z.int().positive(),
-  pixels: z.number().min(1).max(2000),
-});
+function validatePixelSize(
+  input: { pixels?: number; mode?: "pixels"; value?: number },
+  ctx: z.RefinementCtx,
+) {
+  if (input.pixels === undefined && !(input.mode === "pixels" && input.value !== undefined))
+    ctx.addIssue({
+      code: "custom",
+      path: ["pixels"],
+      message: "提供 pixels，或 mode:'pixels' 与 value",
+    });
+  if (input.value !== undefined && input.mode !== "pixels")
+    ctx.addIssue({ code: "custom", path: ["mode"], message: "value 必须同时指定 mode:'pixels'" });
+  if (input.pixels !== undefined && input.value !== undefined && input.pixels !== input.value)
+    ctx.addIssue({
+      code: "custom",
+      path: ["value"],
+      message: "pixels 与 value 不一致，不能确定目标尺寸",
+    });
+}
+const rowHeight = z
+  .strictObject({
+    op: z.literal("rows.height"),
+    axis: z.literal("rows").optional().describe("可省略；如提供，必须为 rows"),
+    sheet: z.string(),
+    at: z.int().positive(),
+    count: z.int().positive(),
+    pixels: z
+      .number()
+      .min(1)
+      .max(1000)
+      .optional()
+      .describe("目标像素数；也可用 mode=pixels 与 value"),
+    mode: z.literal("pixels").optional(),
+    value: z.number().min(1).max(1000).optional(),
+  })
+  .superRefine(validatePixelSize);
+const colWidth = z
+  .strictObject({
+    op: z.literal("cols.width"),
+    axis: z.literal("cols").optional().describe("可省略；如提供，必须为 cols"),
+    sheet: z.string(),
+    at: z.int().positive(),
+    count: z.int().positive(),
+    pixels: z
+      .number()
+      .min(1)
+      .max(2000)
+      .optional()
+      .describe("目标像素数；也可用 mode=pixels 与 value"),
+    mode: z.literal("pixels").optional(),
+    value: z.number().min(1).max(2000).optional(),
+  })
+  .superRefine(validatePixelSize);
 const sortRange = z.strictObject({
   op: z.literal("sort"),
   range: z.string(),
@@ -266,13 +529,27 @@ const ruleOperator = z.enum([
   "lessThanOrEqual",
 ]);
 const cfSet = z.strictObject({
-  op: z.literal("cf.add"),
+  op: z
+    .literal("cf.add")
+    .describe("新增规则置于最高优先级；批量多条按提交顺序后加者优先。同 id 更新也移到最高优先级。"),
   range: z.string(),
   id: z.string().optional(),
-  kind: z.enum(["formula", "number", "blank", "duplicate", "unique"]),
+  kind: z.enum(["formula", "number", "blank", "duplicate", "unique", "dataBar", "colorScale"]),
   formula: z.string().optional(),
   operator: ruleOperator.optional(),
-  values: z.array(z.number()).max(2).optional(),
+  values: z
+    .array(z.number())
+    .max(3)
+    .optional()
+    .describe(
+      "number 条件的1或2个界值；dataBar 固定最小/最大值；colorScale 固定2或3个递增阈值；视觉规则省略时按数据最小/最大（3色中点50%分位）",
+    ),
+  colors: z
+    .array(z.string().regex(/^#[0-9a-fA-F]{6}$/))
+    .min(2)
+    .max(3)
+    .optional()
+    .describe("仅 colorScale，按低到高提供2或3种颜色；dataBar 使用 fill 指定条颜色"),
   fill: z
     .string()
     .regex(/^#[0-9a-fA-F]{6}$/)
@@ -294,7 +571,11 @@ const dvSet = z.strictObject({
   id: z.string().optional(),
   type: z.enum(["whole", "decimal", "list", "date", "time", "textLength", "custom"]),
   operator: ruleOperator.optional(),
-  formula1: z.string(),
+  formula1: z
+    .string()
+    .describe(
+      'list 使用逗号分隔选项，也接受 Excel 引号字符串（如 "待处理,完成"）；范围或名称引用以 = 开头。其他类型为比较值或公式。',
+    ),
   formula2: z.string().optional(),
   allowBlank: z.boolean().default(true),
   error: z.string().max(255).optional(),
@@ -304,7 +585,85 @@ const dvRemove = z.strictObject({
   sheet: z.string(),
   id: z.string(),
 });
+const nameSet = z.strictObject({
+  op: z.literal("name.set"),
+  name: z.string().min(1).max(255),
+  range: z
+    .string()
+    .describe("命名区域，带工作表名的 A1 区域；保存为绝对引用。可用于 dv.add 的 =名称。"),
+  scope: z
+    .string()
+    .optional()
+    .describe("可选作用域工作表名或 id；省略为工作簿级。相同名称与作用域则更新。"),
+});
+const printSet = z.strictObject({
+  op: z.literal("print.set"),
+  sheet: z.string().min(1),
+  printArea: z
+    .string()
+    .min(1)
+    .nullable()
+    .optional()
+    .describe("单矩形 A1 区域，如 A1:F24；可带本表名。null 清除本表打印区域，省略保留。"),
+  repeatRows: z
+    .string()
+    .regex(/^\$?[1-9]\d*:\$?[1-9]\d*$/)
+    .nullable()
+    .optional()
+    .describe("重复标题整行，如 1:3（1–1048576）；保留已有重复标题列。null 仅清除重复行。"),
+  afterRows: z
+    .array(z.int().min(1).max(1048575))
+    .max(1026)
+    .nullable()
+    .optional()
+    .describe("完整替换手动水平分页：1 基第几行之后，例如 [10] 是第 10 行后；null 清除手动分页。"),
+  afterColumns: z
+    .array(z.int().min(1).max(16383))
+    .max(1026)
+    .nullable()
+    .optional()
+    .describe("完整替换手动垂直分页：1 基第几列之后，例如 [4] 是 D 列后；null 清除手动分页。"),
+  paperSize: z
+    .int()
+    .positive()
+    .max(65535)
+    .nullable()
+    .optional()
+    .describe("OOXML paperSize 编号，9=A4；null 删除显式设置。"),
+  orientation: z.enum(["default", "portrait", "landscape"]).nullable().optional(),
+  fitToWidth: z
+    .int()
+    .min(0)
+    .max(32767)
+    .nullable()
+    .optional()
+    .describe("横向页数，0 不限；非 null 同时启用 fitToPage。"),
+  fitToHeight: z
+    .int()
+    .min(0)
+    .max(32767)
+    .nullable()
+    .optional()
+    .describe("纵向页数，0 不限；非 null 同时启用 fitToPage。"),
+  oddHeader: z
+    .string()
+    .max(32767)
+    .nullable()
+    .optional()
+    .describe("Excel 原始页眉串，保留 &F/&A/&P/&N 动态字段；null 删除。"),
+  oddFooter: z
+    .string()
+    .max(32767)
+    .nullable()
+    .optional()
+    .describe("Excel 原始页脚串，保留 &F/&A/&P/&N 动态字段；null 删除。"),
+});
 export const ChangeOp = z.discriminatedUnion("op", [
+  printSet,
+  nameSet,
+  pivotMarkRefreshOnLoad,
+  tableAdd,
+  tableColumnFormula,
   filterSet,
   hyperlinkSet,
   sheetCopy,
@@ -315,7 +674,14 @@ export const ChangeOp = z.discriminatedUnion("op", [
   findReplace,
   axisHide,
   axisGroup,
+  axisCollapse,
   imageAdd,
+  imageUpdate,
+  imageDelete,
+  shapeAdd,
+  shapeUpdate,
+  shapeDelete,
+  noteSet,
   cfSet,
   cfRemove,
   dvSet,
@@ -377,6 +743,7 @@ export class OpCompileError extends Error {
 }
 
 interface CompileCtx {
+  preservation?: XlsxPreservation;
   images?: Record<string, { data: string; mediaType: ImageObject["mediaType"] }>;
   unitId: string;
   snapshot: IWorkbookData;
@@ -404,6 +771,14 @@ function regionOf(
   defaultSheet?: string,
 ): { sheet: SheetCtx; ref: RangeRef } {
   const parsed = parseRange(a1);
+  if (
+    parsed.sheet === undefined &&
+    defaultSheet === undefined &&
+    ctx.snapshot.sheetOrder.length > 1
+  )
+    throw new OpCompileError(
+      `区域 ${a1} 缺少工作表名称。多表写入必须使用 '工作表名'!${a1}；新增工作表不会切换后续操作目标，请给每个区域指定表名。`,
+    );
   const sheet = resolveSheet(ctx, parsed.sheet ?? defaultSheet);
   return {
     sheet,
@@ -443,6 +818,25 @@ const HALIGN = { left: 1, center: 2, right: 3 } as const;
 
 export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
   ctx = { ...ctx, snapshot: structuredClone(ctx.snapshot) };
+  // Validate every target before producing any command, even when cells.set precedes it.
+  const pivotOps = ops.filter((op) => op.op === "pivot.mark_refresh_on_load");
+  if (
+    pivotOps.length &&
+    ops.some((op) =>
+      /^(rows|cols)\.(insert|delete)$|^sheet\.(rename|delete|copy|move)$/.test(op.op),
+    )
+  )
+    throw new OpCompileError("透视缓存刷新标记不能与源结构变化同批提交");
+  for (const op of pivotOps) {
+    const sheet = resolveSheet(ctx, op.sheet);
+    resolvePivotRefreshTarget(
+      ctx.preservation?.parts ?? {},
+      ctx.preservation?.sheetParts ?? {},
+      ctx.snapshot,
+      sheet.id,
+      op.cacheId,
+    );
+  }
   const sheetNames = sheetNamesOf(ctx.snapshot);
   const commands: CompiledCommand[] = [];
   const ranges: RangeRef[] = [];
@@ -454,6 +848,396 @@ export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
 
   for (const op of ops) {
     switch (op.op) {
+      case "pivot.mark_refresh_on_load": {
+        const sheet = resolveSheet(ctx, op.sheet);
+        const objects = objectsOf(sheet.data);
+        objects.pivotRefreshOnLoad = { ...objects.pivotRefreshOnLoad, [op.cacheId]: "true" };
+        sheet.data.custom = { ...sheet.data.custom, excelmanusObjects: objects };
+        commands.push({
+          id: OBJECT_LAYER_MUTATION,
+          params: { unitId, subUnitId: sheet.id, objects },
+        });
+        ranges.push({ sheetId: sheet.id, r0: 0, c0: 0, r1: MAX_R, c1: MAX_C });
+        break;
+      }
+      case "print.set": {
+        const sheet = resolveSheet(ctx, op.sheet);
+        const settings = structuredClone(printSettingsOf(sheet.data));
+        const parsedNames = printNamesOf(ctx.snapshot, sheet.id);
+        const namePrefix = `'${sheet.data.name.replaceAll("'", "''")}'!`;
+        const checkSupported = (field: string) => {
+          if (
+            settings.unsupported?.some(
+              (key) =>
+                key === "invalidPrintMetadata" || key === field || field.startsWith(`${key}.`),
+            )
+          )
+            throw new OpCompileError(`打印设置 ${field} 含不支持的结构，仅保留，不能编辑`);
+        };
+        const setBuiltin = (builtin: string, formulaOrRefString: string | null) => {
+          const names = namesOf(ctx.snapshot);
+          const matches = Object.values(names).filter(
+            (name) =>
+              name.localSheetId === sheet.id && name.name.toLowerCase() === builtin.toLowerCase(),
+          );
+          if (matches.length > 1)
+            throw new OpCompileError(`本表 ${builtin} 重复，不能确定编辑目标`);
+          const old = matches[0];
+          if (formulaOrRefString === null) {
+            if (old) {
+              delete names[old.id];
+              commands.push({
+                id: "formula.mutation.remove-defined-name",
+                params: { unitId, id: old.id },
+              });
+            }
+          } else {
+            const id = old?.id ?? newId("name");
+            const name = { ...old, id, name: builtin, localSheetId: sheet.id, formulaOrRefString };
+            names[id] = name;
+            commands.push({ id: "formula.mutation.set-defined-name", params: { unitId, ...name } });
+          }
+          setNames(ctx.snapshot, names);
+        };
+        if (op.printArea !== undefined) {
+          let formula: string | null = null;
+          if (op.printArea !== null) {
+            const addressStart = op.printArea.lastIndexOf("!") + 1;
+            const address = op.printArea.slice(addressStart).replaceAll("$", "");
+            if (!/^[A-Z]{1,3}[1-9]\d*(?::[A-Z]{1,3}[1-9]\d*)?$/i.test(address))
+              throw new OpCompileError("printArea 只支持单个矩形 A1 区域");
+            const target = regionOf(ctx, op.printArea.slice(0, addressStart) + address, sheet.id);
+            if (target.sheet.id !== sheet.id)
+              throw new OpCompileError("printArea 必须属于指定的工作表");
+            formula = `${namePrefix}$${indexToCol(target.ref.c0 + 1)}$${target.ref.r0 + 1}:$${indexToCol(target.ref.c1 + 1)}$${target.ref.r1 + 1}`;
+          }
+          setBuiltin("_xlnm.Print_Area", formula);
+        }
+        if (op.repeatRows !== undefined) {
+          if (parsedNames.unsupported.includes("Print_Titles"))
+            throw new OpCompileError("现有重复标题含不支持的引用，不能安全保留重复列");
+          const refs: string[] = [];
+          if (op.repeatRows !== null) {
+            const [start, end] = op.repeatRows.replaceAll("$", "").split(":").map(Number);
+            if (!start || !end || start > end || end > MAX_R + 1)
+              throw new OpCompileError("repeatRows 必须是顺序有效的整行范围，如 1:3");
+            refs.push(`${namePrefix}$${start}:$${end}`);
+          }
+          if (parsedNames.repeatColumns)
+            refs.push(
+              `${namePrefix}${parsedNames.repeatColumns
+                .split(":")
+                .map((col) => `$${col}`)
+                .join(":")}`,
+            );
+          setBuiltin("_xlnm.Print_Titles", refs.length ? refs.join(",") : null);
+        }
+        for (const field of ["paperSize", "orientation", "fitToWidth", "fitToHeight"] as const) {
+          if (op[field] === undefined) continue;
+          checkSupported("pageSetup");
+          const attrs = { ...settings.pageSetup };
+          if (op[field] === null) delete attrs[field];
+          else attrs[field] = String(op[field]);
+          settings.pageSetup = attrs;
+          if ((field === "fitToWidth" || field === "fitToHeight") && op[field] !== null) {
+            checkSupported("pageSetUpPr");
+            settings.pageSetUpPr = { ...settings.pageSetUpPr, fitToPage: "1" };
+          }
+        }
+        for (const field of ["oddHeader", "oddFooter"] as const) {
+          if (op[field] === undefined) continue;
+          checkSupported(`headerFooter.${field}`);
+          settings.headerFooter ??= { attributes: {} };
+          if (op[field] === null) delete settings.headerFooter[field];
+          else settings.headerFooter[field] = op[field];
+        }
+        for (const [field, key, max] of [
+          ["afterRows", "rowBreaks", MAX_C],
+          ["afterColumns", "colBreaks", MAX_R],
+        ] as const) {
+          if (op[field] === undefined) continue;
+          checkSupported(key);
+          const positions = [...new Set(op[field] ?? [])].sort((a, b) => a - b);
+          // Replace manual breaks only; implicit/automatic breaks remain untouched.
+          const automatic =
+            settings[key]?.breaks.filter((entry) => entry.man !== "1" && entry.man !== "true") ??
+            [];
+          const entries = [
+            ...automatic,
+            ...positions.map((id) => ({ id: String(id), min: "0", max: String(max), man: "1" })),
+          ];
+          settings[key] = {
+            attributes: {
+              ...settings[key]?.attributes,
+              count: String(entries.length),
+              manualBreakCount: String(positions.length),
+            },
+            breaks: entries,
+          };
+        }
+        sheet.data.custom = { ...sheet.data.custom, excelmanusPrintSettings: settings };
+        commands.push({
+          id: PRINT_STATE_MUTATION,
+          params: { unitId, subUnitId: sheet.id, settings },
+        });
+        ranges.push({ sheetId: sheet.id, r0: 0, c0: 0, r1: MAX_R, c1: MAX_C });
+        break;
+      }
+      case "name.set": {
+        if (/^_xlnm\.Print_(Area|Titles)$/i.test(op.name))
+          throw new OpCompileError("打印内置名称请使用 print.set，避免丢失整行标题或工作表作用域");
+        if (
+          !/^[\p{L}_\\][\p{L}\p{N}_.\\]*$/u.test(op.name) ||
+          /^(?:[A-Z]{1,3}[1-9]\d*|R\d+C\d+|R|C)$/i.test(op.name)
+        )
+          throw new OpCompileError("定义名不能是单元格地址，需以文字或下划线开头");
+        const addressStart = op.range.lastIndexOf("!") + 1;
+        const { sheet, ref } = regionOf(
+          ctx,
+          op.range.slice(0, addressStart) + op.range.slice(addressStart).replaceAll("$", ""),
+        );
+        const localSheetId = op.scope ? resolveSheet(ctx, op.scope).id : undefined;
+        const names = namesOf(ctx.snapshot);
+        const old = Object.values(names).find(
+          (n) =>
+            n.name.toLowerCase() === op.name.toLowerCase() &&
+            (n.localSheetId === "AllDefaultWorkbook" ? undefined : n.localSheetId) === localSheetId,
+        );
+        const id = old?.id ?? newId("name");
+        const formulaOrRefString = `'${sheet.data.name.replaceAll("'", "''")}'!$${indexToCol(ref.c0 + 1)}$${ref.r0 + 1}:$${indexToCol(ref.c1 + 1)}$${ref.r1 + 1}`;
+        const name = {
+          ...old,
+          id,
+          name: op.name,
+          formulaOrRefString,
+          ...(localSheetId ? { localSheetId } : {}),
+        };
+        setNames(ctx.snapshot, { ...names, [id]: name });
+        commands.push({ id: "formula.mutation.set-defined-name", params: { unitId, ...name } });
+        for (const sheetId of ctx.snapshot.sheetOrder)
+          ranges.push({ sheetId, r0: 0, c0: 0, r1: MAX_R, c1: MAX_C });
+        needsSnapshot = true;
+        break;
+      }
+      case "table.add":
+      case "table.column_formula": {
+        const all = tablesOf(ctx.snapshot);
+        const sheet =
+          op.op === "table.add" ? regionOf(ctx, op.range).sheet : resolveSheet(ctx, op.sheet);
+        const tables = all[sheet.id]?.tables ?? [];
+        let table: ITableJson | undefined;
+        let changedColumns: number[];
+        if (op.op === "table.add") {
+          if (
+            !/^[\p{L}_][\p{L}\p{N}_.]*$/u.test(op.name) ||
+            /^(?:[A-Z]{1,3}\d+|R\d+C\d+|R|C)$/i.test(op.name)
+          )
+            throw new OpCompileError("表名称不能是单元格地址，需以文字或下划线开头");
+          if (
+            Object.values(all).some((s) =>
+              s.tables.some((t) => t.name.toLowerCase() === op.name.toLowerCase()),
+            )
+          )
+            throw new OpCompileError("表名称已存在");
+          const { ref } = regionOf(ctx, op.range);
+          if (ref.r1 <= ref.r0 || ref.c1 - ref.c0 + 1 !== op.columns.length)
+            throw new OpCompileError("表范围需包含表头和数据行，columns 数量须与区域列数一致");
+          if ((ref.r1 - ref.r0 + 1) * op.columns.length > 200000)
+            throw new OpCompileError("单次表对象操作最多20万格");
+          if (new Set(op.columns.map((c) => c.name.toLowerCase())).size !== op.columns.length)
+            throw new OpCompileError("表列名称不能重复");
+          const range = univerRange(ref);
+          const overlaps = (r: typeof range) =>
+            r.startRow <= range.endRow &&
+            r.endRow >= range.startRow &&
+            r.startColumn <= range.endColumn &&
+            r.endColumn >= range.startColumn;
+          if (tables.some((t) => overlaps(t.range)) || (sheet.data.mergeData ?? []).some(overlaps))
+            throw new OpCompileError("表范围不能与已有表或合并单元格重叠");
+          table = {
+            id: newId("tbl"),
+            name: op.name,
+            range,
+            options: {
+              showHeader: true,
+              showFooter: false,
+              showAutoFilter: true,
+              tableStyleId: "table-default-0",
+            },
+            columns: op.columns.map((c, i) => ({
+              id: String(i + 1),
+              displayName: c.name,
+              dataType: TableColumnDataTypeEnum.None,
+              formula: c.formula ?? "",
+              meta: {},
+              style: {},
+            })),
+            filters: {},
+            meta: {},
+          };
+          tables.push(table);
+          commands.push({
+            id: "sheet.mutation.set-range-values",
+            params: {
+              unitId,
+              subUnitId: sheet.id,
+              cellValue: {
+                [ref.r0]: Object.fromEntries(
+                  op.columns.map((c, i) => [
+                    ref.c0 + i,
+                    { v: c.name, f: null, si: null, p: null, t: 1 },
+                  ]),
+                ),
+              },
+              trigger: "excelmanus.table-edit",
+            },
+          });
+          changedColumns = op.columns.flatMap((c, i) => (c.formula ? [i] : []));
+        } else {
+          table = tables.find((t) => t.name.toLowerCase() === op.table.toLowerCase());
+          if (!table)
+            throw new OpCompileError("表对象不存在；先用 workbook_read overview 核对表对象名称");
+          const index = table.columns.findIndex(
+            (c) => c.displayName.toLowerCase() === op.column.toLowerCase(),
+          );
+          if (index < 0) throw new OpCompileError("计算列名称不存在");
+          table.columns[index]!.formula = op.formula;
+          changedColumns = [index];
+        }
+        const first = table.range.startRow + (table.options.showHeader === false ? 0 : 1);
+        const last = table.range.endRow - (table.options.showFooter ? 1 : 0);
+        if (last < first || (last - first + 1) * Math.max(1, changedColumns.length) > 200000)
+          throw new OpCompileError("计算列范围无效或超过20万格");
+        all[sheet.id] = { ...all[sheet.id], tables };
+        const cellValue: Record<
+          number,
+          Record<number, { f: string; v: null; si: null; p: null }>
+        > = {};
+        for (const i of changedColumns)
+          for (let r = first; r <= last; r++) {
+            const c = table.range.startColumn + i;
+            cellValue[r] ??= {};
+            let f = shiftFormula(table.columns[i]!.formula, 0, r - first);
+            // Use the engine-compatible current-row spelling without losing table references.
+            for (const [sid, entry] of Object.entries(all))
+              for (const t of entry.tables) {
+                const reference = {
+                  name: t.name,
+                  sheet: ctx.snapshot.sheets[sid]!.name ?? sid,
+                  range: t.range,
+                  columns: t.columns.map((column) => column.displayName),
+                  showHeader: t.options.showHeader !== false,
+                  showFooter: !!t.options.showFooter,
+                };
+                f = rewriteTableReferences(
+                  f,
+                  reference,
+                  reference,
+                  r,
+                  sid === sheet.id && t.id === table.id,
+                  true,
+                );
+              }
+            cellValue[r]![c] = {
+              f,
+              v: null,
+              si: null,
+              p: null,
+            };
+            formulas.push(`${sheet.data.name ?? sheet.id}!${indexToCol(c + 1)}${r + 1}`);
+          }
+        setTables(ctx.snapshot, all);
+        commands.push({
+          id: TABLE_STATE_MUTATION,
+          params: { unitId, subUnitId: sheet.id, tables: structuredClone(tables) },
+        });
+        if (changedColumns.length)
+          commands.push({
+            id: "sheet.mutation.set-range-values",
+            params: { unitId, subUnitId: sheet.id, cellValue, trigger: "excelmanus.table-edit" },
+          });
+        ranges.push({ sheetId: sheet.id, r0: 0, c0: 0, r1: MAX_R, c1: MAX_C });
+        estCells += (last - first + 1) * changedColumns.length + table.columns.length;
+        needsSnapshot = true;
+        break;
+      }
+      case "note.set": {
+        const sheet = resolveSheet(ctx, op.sheet);
+        const objects = objectsOf(sheet.data);
+        objects.notes = (objects.notes ?? []).filter((note) => note.ref !== op.ref);
+        if (op.text !== null) objects.notes.push({ ref: op.ref, text: op.text, author: op.author });
+        sheet.data.custom = { ...sheet.data.custom, excelmanusObjects: objects };
+        commands.push({
+          id: OBJECT_LAYER_MUTATION,
+          params: { unitId, subUnitId: sheet.id, objects },
+        });
+        ranges.push({ sheetId: sheet.id, r0: 0, c0: 0, r1: MAX_R, c1: MAX_C });
+        break;
+      }
+      case "image.delete": {
+        const sheet = resolveSheet(ctx, op.sheet);
+        const objects = objectsOf(sheet.data);
+        if (!objects.images.some((image) => image.id === op.id))
+          throw new OpCompileError("图片不存在");
+        objects.images = objects.images.filter((image) => image.id !== op.id);
+        sheet.data.custom = { ...sheet.data.custom, excelmanusObjects: objects };
+        commands.push({
+          id: OBJECT_LAYER_MUTATION,
+          params: { unitId, subUnitId: sheet.id, objects },
+        });
+        ranges.push({ sheetId: sheet.id, r0: 0, c0: 0, r1: MAX_R, c1: MAX_C });
+        break;
+      }
+      case "image.update":
+      case "shape.add":
+      case "shape.update":
+      case "shape.delete": {
+        const sheet = resolveSheet(ctx, op.sheet);
+        const objects = objectsOf(sheet.data);
+        if (op.op === "image.update") {
+          const image = objects.images.find((item) => item.id === op.id);
+          if (!image) throw new OpCompileError("图片不存在");
+          const { op: _op, sheet: _sheet, id: _id, ...patch } = op;
+          Object.assign(
+            image,
+            patch,
+            op.anchor !== undefined ? { offsetX: op.offsetX ?? 0, offsetY: op.offsetY ?? 0 } : {},
+          );
+        } else {
+          const shapes = objects.shapes ?? [];
+          objects.shapes = shapes;
+          if (op.op === "shape.add") {
+            const id = op.id ?? newId("shape");
+            if (shapes.some((item) => item.id === id)) throw new OpCompileError("形状 ID 已存在");
+            shapes.push(ShapeObject.parse({ ...op, id }));
+          } else {
+            const shape = shapes.find((item) => item.id === op.id);
+            if (!shape)
+              throw new OpCompileError(
+                "该 ID 不属于当前可编辑形状；复杂或未知绘图仅保留，不支持修改。请先读取 objects 与 preserved.drawings",
+              );
+            if (op.op === "shape.delete")
+              objects.shapes = shapes.filter((item) => item.id !== op.id);
+            else {
+              const { op: _op, sheet: _sheet, id: _id, ...patch } = op;
+              Object.assign(
+                shape,
+                patch,
+                op.anchor !== undefined
+                  ? { offsetX: op.offsetX ?? 0, offsetY: op.offsetY ?? 0 }
+                  : {},
+              );
+            }
+          }
+        }
+        sheet.data.custom = { ...sheet.data.custom, excelmanusObjects: objects };
+        commands.push({
+          id: OBJECT_LAYER_MUTATION,
+          params: { unitId, subUnitId: sheet.id, objects },
+        });
+        ranges.push({ sheetId: sheet.id, r0: 0, c0: 0, r1: MAX_R, c1: MAX_C });
+        break;
+      }
       case "image.add": {
         const sheet = resolveSheet(ctx, op.sheet),
           image = ctx.images?.[op.path];
@@ -467,6 +1251,8 @@ export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
             anchor: op.anchor,
             width: op.width,
             height: op.height,
+            offsetX: op.offsetX,
+            offsetY: op.offsetY,
             ...image,
           }),
         );
@@ -496,55 +1282,67 @@ export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
           });
         let rule: Record<string, unknown>;
         if (op.op === "cf.add") {
-          if (op.fill === undefined && op.fontColor === undefined && op.bold === undefined)
-            throw new OpCompileError("条件格式至少需要一个样式字段");
-          const style = {
-            ...(op.fill ? { bg: { rgb: op.fill } } : {}),
-            ...(op.fontColor ? { cl: { rgb: op.fontColor } } : {}),
-            ...(op.bold !== undefined ? { bl: op.bold ? 1 : 0 } : {}),
-          };
-          let condition: Record<string, unknown>;
-          if (op.kind === "formula") {
-            if (!op.formula) throw new OpCompileError("公式条件格式需要 formula");
-            condition = {
-              subType: "formula",
-              value: op.formula.startsWith("=") ? op.formula : `=${op.formula}`,
+          if (op.kind === "dataBar" || op.kind === "colorScale") {
+            rule = {
+              cfId: id,
+              ranges: [univerRange(ref)],
+              stopIfTrue: false,
+              rule: visualToolRule(op),
             };
-          } else if (op.kind === "number") {
-            const between = op.operator === "between" || op.operator === "notBetween";
-            if (!op.operator || op.values?.length !== (between ? 2 : 1))
-              throw new OpCompileError("数值条件格式需要 operator 及相应1或2个 values");
-            condition = {
-              subType: "number",
-              operator: op.operator,
-              value: between ? op.values : op.values[0],
+          } else {
+            if (op.fill === undefined && op.fontColor === undefined && op.bold === undefined)
+              throw new OpCompileError("条件格式至少需要一个样式字段");
+            const style = {
+              ...(op.fill ? { bg: { rgb: op.fill } } : {}),
+              ...(op.fontColor ? { cl: { rgb: op.fontColor } } : {}),
+              ...(op.bold !== undefined ? { bl: op.bold ? 1 : 0 } : {}),
             };
-          } else if (op.kind === "blank")
-            condition = { subType: "text", operator: "containsBlanks" };
-          else
-            condition = { subType: op.kind === "duplicate" ? "duplicateValues" : "uniqueValues" };
-          rule = {
-            cfId: id,
-            ranges: [univerRange(ref)],
-            stopIfTrue: false,
-            rule: { type: "highlightCell", ...condition, style },
-          };
+            let condition: Record<string, unknown>;
+            if (op.kind === "formula") {
+              if (!op.formula) throw new OpCompileError("公式条件格式需要 formula");
+              condition = {
+                subType: "formula",
+                value: op.formula.startsWith("=") ? op.formula : `=${op.formula}`,
+              };
+            } else if (op.kind === "number") {
+              const between = op.operator === "between" || op.operator === "notBetween";
+              if (!op.operator || op.values?.length !== (between ? 2 : 1))
+                throw new OpCompileError("数值条件格式需要 operator 及相应1或2个 values");
+              condition = {
+                subType: "number",
+                operator: op.operator,
+                value: between ? op.values : op.values[0],
+              };
+            } else if (op.kind === "blank")
+              condition = { subType: "text", operator: "containsBlanks" };
+            else
+              condition = { subType: op.kind === "duplicate" ? "duplicateValues" : "uniqueValues" };
+            rule = {
+              cfId: id,
+              ranges: [univerRange(ref)],
+              stopIfTrue: false,
+              rule: { type: "highlightCell", ...condition, style },
+            };
+          }
         } else {
           if ((op.operator === "between" || op.operator === "notBetween") && !op.formula2)
             throw new OpCompileError("区间验证需要 formula2");
-          rule = {
+          rule = normalizeDataValidationRule({
             uid: id,
             ranges: [univerRange(ref)],
             type: op.type,
             operator: op.operator ?? "between",
-            formula1: op.formula1,
+            formula1:
+              op.type === "list" && /^=?"(?:[^"]|"")*"$/.test(op.formula1)
+                ? op.formula1.replace(/^=/, "").slice(1, -1).replaceAll('""', '"')
+                : op.formula1,
             ...(op.formula2 ? { formula2: op.formula2 } : {}),
             allowBlank: op.allowBlank,
             showErrorMessage: true,
             errorStyle: "stop",
             showDropDown: true,
             error: op.error ?? "输入不满足数据验证规则",
-          };
+          });
         }
         stored[sheet.id] = [...rules.filter((r) => (isCf ? r.cfId : r.uid) !== id), rule];
         setRulesResource(ctx.snapshot, resource, stored);
@@ -606,7 +1404,8 @@ export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
         break;
       }
       case "axis.hide":
-      case "axis.group": {
+      case "axis.group":
+      case "axis.collapse": {
         const sheet = resolveSheet(ctx, op.sheet),
           rows = op.axis === "rows";
         const end = op.at + op.count - 2;
@@ -629,8 +1428,11 @@ export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
               unitId,
               subUnitId: sheet.id,
               axis: op.axis,
-              levels: Object.fromEntries(
-                Array.from({ length: op.count }, (_, i) => [op.at - 1 + i, op.level]),
+              [op.op === "axis.group" ? "levels" : "collapsed"]: Object.fromEntries(
+                Array.from({ length: op.count }, (_, i) => [
+                  op.at - 1 + i,
+                  op.op === "axis.group" ? op.level : op.collapsed,
+                ]),
               ),
             },
           });
@@ -647,6 +1449,8 @@ export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
       case "cols.width": {
         const sheet = resolveSheet(ctx, op.sheet);
         const rows = op.op === "rows.height";
+        const pixels = op.pixels ?? op.value;
+        if (pixels === undefined) throw new OpCompileError("缺少像素尺寸");
         const range = {
           startRow: rows ? op.at - 1 : 0,
           endRow: rows ? op.at + op.count - 2 : MAX_R,
@@ -663,7 +1467,7 @@ export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
             unitId,
             subUnitId: sheet.id,
             ranges: [range],
-            ...(rows ? { rowHeight: op.pixels } : { colWidth: op.pixels }),
+            ...(rows ? { rowHeight: pixels } : { colWidth: pixels }),
           },
         });
         ranges.push({
@@ -677,6 +1481,10 @@ export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
       }
       case "sort": {
         const { sheet, ref } = regionOf(ctx, op.range);
+        assertSortableRange(
+          { ...univerRange(ref), startRow: ref.r0 + (op.header ? 1 : 0) },
+          sheet.data.mergeData ?? [],
+        );
         if (op.keys.some((key) => key.column < ref.c0 + 1 || key.column > ref.c1 + 1))
           throw new OpCompileError("排序键必须在目标区域内，列号从1开始");
         commands.push({
@@ -695,6 +1503,10 @@ export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
         break;
       }
       case "filter.set": {
+        if (op.clear && op.columns.length)
+          throw new OpCompileError(
+            "clear=true 表示移除筛选，不能同时设置 columns；设置筛选请用 clear=false",
+          );
         const { sheet, ref } = regionOf(ctx, op.range);
         if (
           ref.r1 <= ref.r0 ||
@@ -771,12 +1583,17 @@ export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
       }
       case "axis.size": {
         const sheet = resolveSheet(ctx, op.sheet);
+        const { pixels, ...size } = op;
+        const value = op.value ?? pixels;
         if (
           op.at + op.count - 2 > (op.axis === "rows" ? MAX_R : MAX_C) ||
-          (op.mode !== "auto" && op.value === undefined)
+          (op.mode !== "auto" && value === undefined)
         )
           throw new OpCompileError("尺寸参数无效");
-        commands.push({ id: AXIS_SIZE_COMMAND, params: { ...op, unitId, subUnitId: sheet.id } });
+        commands.push({
+          id: AXIS_SIZE_COMMAND,
+          params: { ...size, value, unitId, subUnitId: sheet.id },
+        });
         ranges.push({
           sheetId: sheet.id,
           r0: op.axis === "rows" ? op.at - 1 : 0,
@@ -787,6 +1604,13 @@ export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
         break;
       }
       case "find_replace": {
+        try {
+          findReplacePattern(op.find, op.regex, op.caseSensitive);
+        } catch {
+          throw new OpCompileError(
+            "find_replace.find 正则表达式无效；请检查括号、转义及字符组，不要包含 / 分隔符",
+          );
+        }
         const { sheet, ref } = regionOf(ctx, op.range);
         const size = (ref.r1 - ref.r0 + 1) * (ref.c1 - ref.c0 + 1);
         if (size > 200000) throw new OpCompileError("查找替换单次最多20万格");
@@ -951,6 +1775,17 @@ export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
               ...(index === 0 ? { direction: Direction.UP } : {}),
             },
           });
+          // 新插入行是空白行，不继承相邻汇总行的行高、隐藏或分组元数据。
+          commands.push({
+            id: "sheet.mutation.set-row-data",
+            params: {
+              unitId,
+              subUnitId: sheet.id,
+              rowData: Object.fromEntries(
+                Array.from({ length: op.count }, (_, i) => [index + i, null]),
+              ),
+            },
+          });
           sheet.data.rowCount = Math.max(rowCount, index) + op.count;
         } else {
           commands.push({
@@ -1040,6 +1875,8 @@ export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
         if (
           objectsOf(source.data).charts.length ||
           objectsOf(source.data).images.length ||
+          (objectsOf(source.data).shapes?.length ?? 0) ||
+          (objectsOf(source.data).threadedComments?.length ?? 0) ||
           [CF_RESOURCE, DV_RESOURCE, "SHEET_FILTER_PLUGIN"].some((name) => {
             const value: unknown = rulesResource(ctx.snapshot, name)[source.id];
             return Array.isArray(value)
@@ -1123,7 +1960,7 @@ export function compileOps(ctx: CompileCtx, ops: ChangeOp[]): CompiledOps {
       case "sheet.rename": {
         const sheet = resolveSheet(ctx, op.sheet);
         commands.push({
-          id: "sheet.command.set-worksheet-name",
+          id: RENAME_SHEET_COMMAND,
           params: { unitId, subUnitId: sheet.id, name: op.name },
         });
         if (
@@ -1212,6 +2049,11 @@ export function transformChangeOp(
   sheetIdOf: SheetResolver,
 ): ChangeOp | "deleted" | "ambiguous" {
   switch (op.op) {
+    case "pivot.mark_refresh_on_load":
+    case "print.set":
+    case "name.set":
+    case "table.add":
+    case "table.column_formula":
     case "cells.fill":
       return structurals.length ? "ambiguous" : op;
     case "cells.set": {
@@ -1259,7 +2101,8 @@ export function transformChangeOp(
     }
     case "axis.size":
     case "axis.hide":
-    case "axis.group": {
+    case "axis.group":
+    case "axis.collapse": {
       const sheetId = sheetIdOf(op.sheet);
       if (sheetId === undefined) return "deleted";
       const rows = op.axis === "rows";
@@ -1302,6 +2145,12 @@ export function transformChangeOp(
     case "cf.remove":
     case "dv.remove":
     case "image.add":
+    case "image.update":
+    case "image.delete":
+    case "shape.add":
+    case "shape.update":
+    case "shape.delete":
+    case "note.set":
     case "chart.add":
     case "chart.update":
     case "chart.delete":
@@ -1334,6 +2183,15 @@ export function changeOpTarget(
   sheetIdOf: SheetResolver,
 ): { axis: "rect" | "rows" | "cols"; ref: RangeRef } | undefined {
   switch (op.op) {
+    case "pivot.mark_refresh_on_load":
+    case "print.set":
+    case "table.column_formula": {
+      const sheetId = sheetIdOf(op.sheet);
+      return sheetId === undefined
+        ? undefined
+        : { axis: "rect", ref: { sheetId, r0: 0, c0: 0, r1: MAX_R, c1: MAX_C } };
+    }
+    case "table.add":
     case "cells.fill":
     case "cells.set":
     case "filter.set":
@@ -1363,7 +2221,8 @@ export function changeOpTarget(
     }
     case "axis.size":
     case "axis.hide":
-    case "axis.group": {
+    case "axis.group":
+    case "axis.collapse": {
       const sheetId = sheetIdOf(op.sheet);
       if (sheetId === undefined) return undefined;
       const a0 = op.at - 1,
@@ -1453,6 +2312,31 @@ export function transformMutation<M extends { id: string; params: unknown }>(
     return "deleted";
   }
   const params: MutationParams = { ...src };
+  if (m.id === AXIS_GROUP_MUTATION) {
+    if (sid === undefined || (src.axis !== "rows" && src.axis !== "cols")) return "ambiguous";
+    const rows = src.axis === "rows";
+    let remaining = 0;
+    for (const key of ["levels", "collapsed"] as const) {
+      const values = src[key];
+      if (values === undefined) continue;
+      const mapped: Record<string, unknown> = {};
+      for (const [index, value] of Object.entries(values as Record<string, unknown>)) {
+        const at = Number(index);
+        const ref = {
+          sheetId: sid,
+          r0: rows ? at : 0,
+          r1: rows ? at : MAX_R,
+          c0: rows ? 0 : at,
+          c1: rows ? MAX_C : at,
+        };
+        const shifted = applyStructurals(ref, rel);
+        if (shifted !== "deleted") mapped[String(rows ? shifted.r0 : shifted.c0)] = value;
+      }
+      remaining += Object.keys(mapped).length;
+      params[key] = mapped;
+    }
+    if (!remaining) return "deleted";
+  }
   if (params.range !== undefined) {
     if (sid === undefined) return "ambiguous";
     const t = applyStructurals(iRangeToRef(sid, params.range), rel);

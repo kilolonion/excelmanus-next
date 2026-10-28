@@ -13,7 +13,7 @@ import {
   Loader2,
   XCircle,
 } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { api, errorMessage } from "@/lib/backend/api";
@@ -94,15 +94,26 @@ export function ProviderGuideStep({
     }
   }, [connection, model, provider.id]);
 
+  const savedConnectionId = useRef<string | undefined>(undefined);
   // 保存为默认模型档案；向导在完成页刷新档案列表后关闭。
   const handleSave = useCallback(async () => {
     setSaving(true);
     try {
+      const { connection: savedConnection } = savedConnectionId.current
+        ? await api().updateProviderConnection(savedConnectionId.current, {
+            name: provider.label,
+            ...connection(),
+          })
+        : await api().createProviderConnection({
+            name: provider.label,
+            provider: provider.id,
+            ...connection(),
+          });
+      savedConnectionId.current = savedConnection.id;
       const { profile } = await api().createModelProfile({
         name: `${provider.label} · ${model.trim()}`,
-        provider: provider.id,
+        connectionId: savedConnection.id,
         model: model.trim(),
-        ...connection(),
         isDefault: true,
       });
       onComplete(profile.id);

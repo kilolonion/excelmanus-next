@@ -1,13 +1,22 @@
 // M1 只读文件工具：read（文本按行分页，默认 2000 行/16000 字符截断带 cursor；
-// xlsx/csv 返回概况提示）与 find（path/glob/contains/depth/limit）。
+// CSV/TSV 同样分页读取，xlsx 返回概况提示）与 find（path/glob/contains/depth/limit）。
 
 import { createHash } from "node:crypto";
 import { type Dirent, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { extname, join, relative } from "node:path";
 import type { ToolDefinition } from "@excelmanus/kernel";
-import { PathSafetyError, resolveWorkspacePath } from "@excelmanus/kernel";
+import {
+  PathSafetyError,
+  listWorkspaceRootNamesSync,
+  readVerifiedResourceSync,
+  statVerifiedResourceSync,
+  resolveWorkspacePath,
+  TurnAccessError,
+  withFileAccessSync,
+} from "@excelmanus/kernel";
 import type { ToolResult } from "@excelmanus/protocol";
 import { z } from "zod";
+import { readPdf } from "./pdf.ts";
 
 const MAX_READ_CHARS = 16_000;
 const DEFAULT_READ_LINES = 2000;
@@ -58,6 +67,12 @@ function fail(p: PathSafetyError): ToolResult {
 
 const ReadInput = z.object({
   path: z.string().describe("工作区内相对路径"),
+  page: z.int().positive().optional().describe("PDF 起始页，1 起算，默认 1"),
+  pageCount: z.int().min(1).max(3).optional().describe("PDF 本次页数，默认 1，最多 3"),
+  render: z
+    .boolean()
+    .optional()
+    .describe("PDF 是否同时返回页图像；无内嵌文本的扫描页会自动返回图像"),
   offset: z.int().min(1).optional().describe("起始行号（1 起算），用于分页续读"),
   limit: z.int().min(1).max(10_000).optional().describe(`最多返回行数，默认 ${DEFAULT_READ_LINES}`),
   charOffset: z
@@ -70,6 +85,21 @@ type ReadArgs = z.infer<typeof ReadInput>;
 
 const ReadOutput = z.object({
   kind: z.string(),
+  totalPages: z.number().optional(),
+  page: z.number().optional(),
+  returnedPages: z.number().optional(),
+  pages: z
+    .array(
+      z.object({
+        page: z.number(),
+        textChars: z.number(),
+        textComplete: z.boolean(),
+        rendered: z.boolean(),
+      }),
+    )
+    .optional(),
+  nextPage: z.number().nullable().optional(),
+  renderedPages: z.array(z.number()).optional(),
   content: z.string().optional(),
   offset: z.number().optional(),
   shownLines: z.number().optional(),
@@ -87,13 +117,13 @@ function isProbablyText(buf: Buffer): boolean {
   return !buf.subarray(0, 8192).includes(0);
 }
 
-function readText(args: ReadArgs, abs: string, rel: string, size: number): ToolResult {
+function readText(args: ReadArgs, abs: string, rel: string, size: number, root: string): ToolResult {
   if (size > MAX_FILE_BYTES) {
     return err("LIMIT_EXCEEDED", `文件 ${size} 字节，超过 ${MAX_FILE_BYTES} 上限`, {
       hint: "请缩小读取范围",
     });
   }
-  const buf = readFileSync(abs);
+  const buf = readVerifiedResourceSync(root, abs, { purpose: "read-text" }).bytes;
   if (!isProbablyText(buf)) {
     return err("UNSUPPORTED_FEATURE", `${rel} 是二进制文件，暂不支持读取`);
   }
@@ -161,9 +191,9 @@ const readTool: ToolDefinition<ReadArgs> = {
   name: "read",
   title: "读取文件",
   description: `读取工作区内文件的内容。
-何时使用：查看文本文件内容；大文件按行分页读取；图片（png/jpg/gif/webp）作为视觉输入返回；技能资源用 skill://<技能名>/<路径> 读取。
+何时使用：查看文本及 CSV/TSV 原始内容（保留前导零）；大文件按行分页读取；图片（png/jpg/gif/webp）作为视觉输入返回；PDF 按页提取文字，扫描页自动返回页图像；技能资源用 skill://<技能名>/<路径> 读取。
 不要用于：列出目录或按名字/内容找文件（改用 find）；xlsx/xlsm 工作簿请先看本工具返回的概况提示，再决定后续方式。
-参数要点：path 为工作区内相对路径；offset 从 1 开始；结果超限时把 nextOffset 作为下一次 offset 继续读；单行超过 16000 字符时按字符分段返回，同时把 nextCharOffset 作为 charOffset 传入。
+参数要点：PDF 使用 page/pageCount（默认第1页、最多3页），nextPage 继续下一页，页内长文本按 nextCharOffset 续读；render=true 可核对可见版式。其他文本 path 为工作区内相对路径；offset 从 1 开始；结果超限时把 nextOffset 作为下一次 offset 继续读；单行超过 16000 字符时按字符分段返回，同时把 nextCharOffset 作为 charOffset 传入。
 常见错误：NOT_FOUND → 先用 find 确认路径；OUT_OF_WORKSPACE → 只用工作区内路径。
 示例：{"path": "notes/a.txt", "limit": 200}`,
   input: ReadInput,
@@ -173,7 +203,7 @@ const readTool: ToolDefinition<ReadArgs> = {
   replay: "safe",
   timeoutMs: 30_000,
   roles: ["main", "lead", "worker", "reader"],
-  execute(args, ctx) {
+  async execute(args, ctx) {
     if (args.path.startsWith("skill://")) {
       const res = ctx.resolveResource?.(args.path);
       if (!res) return err("NOT_FOUND", "技能资源不可用");
@@ -182,13 +212,19 @@ const readTool: ToolDefinition<ReadArgs> = {
     }
     try {
       const { abs, rel } = resolveWorkspacePath(ctx.workspaceRoot, args.path);
-      const st = statSync(abs);
+      const st = statVerifiedResourceSync(ctx.workspaceRoot, abs);
       if (st.isDirectory()) {
         return err("INVALID_ARGUMENT", `${rel || "."} 是目录，请改用 find 列出内容`, {
           field: "path",
         });
       }
       const ext = extname(abs).toLowerCase();
+      if (ext === ".pdf") {
+        if (st.size > MAX_FILE_BYTES) return err("LIMIT_EXCEEDED", "PDF 超过 50 MB，请拆分后读取");
+        const bytes = readVerifiedResourceSync(ctx.workspaceRoot, abs, { purpose: "read-pdf" }).bytes;
+        const result = await readPdf(bytes, args, ctx.signal);
+        return { ...result, versions: { [rel]: createHash("sha256").update(bytes).digest("hex") } };
+      }
       if (SPREADSHEET_EXTS.has(ext)) {
         return {
           status: "ok",
@@ -204,7 +240,7 @@ const readTool: ToolDefinition<ReadArgs> = {
         if (st.size > MAX_IMAGE_BYTES) {
           return err("LIMIT_EXCEEDED", `图片 ${st.size} 字节，超过 ${MAX_IMAGE_BYTES} 上限`);
         }
-        const buf = readFileSync(abs);
+        const buf = readVerifiedResourceSync(ctx.workspaceRoot, abs, { purpose: "read-image" }).bytes;
         return {
           status: "ok",
           data: { kind: "image", mediaType: imageType, sizeBytes: st.size },
@@ -213,23 +249,21 @@ const readTool: ToolDefinition<ReadArgs> = {
         };
       }
       if (CSV_EXTS.has(ext)) {
-        const buf = readFileSync(abs);
-        const text = buf.toString("utf8");
-        const lines = text.split("\n");
-        const preview = lines.slice(0, 5).join("\n");
+        const result = readText(args, abs, rel, st.size, ctx.workspaceRoot);
+        if (result.status !== "ok") return result;
         return {
-          status: "ok",
+          ...result,
           data: {
+            ...(result.data as Record<string, unknown>),
             kind: "csv",
-            message: "这是 CSV/TSV 数据文件，下方为开头几行预览。",
-            approxRows: Math.max(0, lines.filter((l) => l !== "").length),
-            preview,
-            sizeBytes: st.size,
+            message:
+              "CSV/TSV 原始文本，保留前导零与空值；按物理行分页（引号内换行不等于新记录）。truncated=false 表示已读到文件末尾；结构化区域与统计可用 workbook_read/workbook_analyze。",
           },
         };
       }
-      return readText(args, abs, rel, st.size);
+      return readText(args, abs, rel, st.size, ctx.workspaceRoot);
     } catch (e) {
+      if (e instanceof TurnAccessError) return err(e.code, e.message);
       if (e instanceof PathSafetyError) return fail(e);
       if ((e as NodeJS.ErrnoException).code === "ENOENT") {
         return err("NOT_FOUND", `路径不存在：${args.path}`);
@@ -241,14 +275,21 @@ const readTool: ToolDefinition<ReadArgs> = {
 
 // ---------- find ----------
 
-const FindInput = z.object({
-  path: z.string().optional().describe("起始目录，默认工作区根"),
-  glob: z.string().optional().describe("文件名匹配，支持 * ** ?（如 **/*.xlsx）"),
-  contains: z.string().optional().describe("在文本文件中搜索包含的字符串"),
-  depth: z.int().min(0).max(10).optional().describe("向下递归层数，默认 4"),
-  limit: z.int().min(1).max(MAX_FIND_RESULTS).optional(),
-  offset: z.int().min(0).optional().describe("分页偏移"),
-});
+const FindInput = z
+  .strictObject({
+    path: z.string().optional().describe("起始目录，默认工作区根"),
+    namesOnly: z.boolean().optional().describe("仅列工作区根目录项名称，不递归、不读子项元数据或内容；path 必须为 .，depth 省略或 0。需 contract enumerate . exact 已 active；用户原文明示列举可直接生效，仅 needs_confirmation 时才 confirm"),
+    glob: z.string().optional().describe("文件名匹配，支持 * ** ?（如 **/*.xlsx）"),
+    pattern: z.string().optional().describe("glob 的等价别名；同时提供时须与 glob 一致"),
+    contains: z.string().optional().describe("在文本文件中搜索包含的字符串"),
+    depth: z.int().min(0).max(10).optional().describe("向下递归层数，默认 4"),
+    limit: z.int().min(1).max(MAX_FIND_RESULTS).optional(),
+    offset: z.int().min(0).optional().describe("分页偏移"),
+  })
+  .refine(
+    (args) => args.glob === undefined || args.pattern === undefined || args.glob === args.pattern,
+    { path: ["pattern"], message: "glob 与 pattern 不一致，请仅提供一个匹配条件" },
+  );
 type FindArgs = z.infer<typeof FindInput>;
 
 const FindOutput = z.object({
@@ -299,9 +340,10 @@ const findTool: ToolDefinition<FindArgs> = {
   title: "查找文件",
   description: `在工作区内列目录、按文件名或内容查找。
 何时使用：看目录结构、找某类文件、搜索文本内容。
-不要用于：读取已知文件的具体内容（改用 read）。
+仅列工作区根目录名称用 namesOnly:true；先提案 enumerate、target:{path:".",match:"exact"}，needs_confirmation 时用 contract confirm，不用 ask_user 替代。此模式不需要也不授予 read-content/read-metadata。
+已知准确路径可直接 read 或 workbook_read，无需先列目录。仅需定位已知文件名时，glob 可用完整文件名；目录未知可用 **/完整文件名，避免用过宽前缀返回无关文件。
 参数要点：path 为起始目录（默认工作区根）；glob 匹配相对路径（"*.xlsx" 只匹配根层文件名，"**/*.xlsx" 匹配任意层）；contains 只搜文本文件且不超过 2MB；结果按路径排序，limit/offset 分页。
-示例：{"path": ".", "glob": "**/*.xlsx"}`,
+示例：{"path": ".", "glob": "销售明细.xlsx"}；查找全部工作簿时才用 **/*.xlsx`,
   input: FindInput,
   output: FindOutput,
   effect: "read",
@@ -311,17 +353,30 @@ const findTool: ToolDefinition<FindArgs> = {
   roles: ["main", "lead", "worker", "reader"],
   execute(args, ctx) {
     try {
+      if (args.namesOnly) {
+        if ((args.path ?? ".") !== "." || args.contains !== undefined || (args.depth ?? 0) !== 0)
+          return err("INVALID_ARGUMENT", "namesOnly 仅支持根目录名称，不能递归或搜索内容");
+        const glob = args.glob ?? args.pattern;
+        const re = glob === undefined ? undefined : globToRegExp(glob);
+        const names = listWorkspaceRootNamesSync(ctx.workspaceRoot).filter(name => !re || re.test(name));
+        const offset = args.offset ?? 0, limit = args.limit ?? 200;
+        return { status: "ok", data: { entries: names.slice(offset, offset + limit).map(path => ({path, kind: "entry"})),
+          total: names.length, truncated: offset + limit < names.length } };
+      }
       const { abs: rootAbs } = resolveWorkspacePath(ctx.workspaceRoot, args.path ?? ".");
       const workspaceReal = realpathSync.native(ctx.workspaceRoot);
-      const rootStat = statSync(rootAbs);
+      const rootStat = withFileAccessSync({ kind: "file-metadata", path: rootAbs }, () =>
+        statSync(rootAbs),
+      );
       if (!rootStat.isDirectory()) {
         return err("INVALID_ARGUMENT", `${args.path ?? "."} 不是目录`, { field: "path" });
       }
       const depthMax = args.depth ?? 4;
       const limit = args.limit ?? 200;
       const offset = args.offset ?? 0;
-      const re = args.glob !== undefined ? globToRegExp(args.glob) : null;
-      const globHasSlash = (args.glob ?? "").includes("/");
+      const glob = args.glob ?? args.pattern;
+      const re = glob !== undefined ? globToRegExp(glob) : null;
+      const globHasSlash = (glob ?? "").includes("/");
       const needle = args.contains;
       const out: WalkEntry[] = [];
 
@@ -333,8 +388,12 @@ const findTool: ToolDefinition<FindArgs> = {
       const walk = (dir: string, relDir: string, depth: number): void => {
         let ents: Dirent[];
         try {
-          ents = readdirSync(dir, { withFileTypes: true });
-        } catch {
+          ents = withFileAccessSync(
+            { kind: "directory-enumeration", path: dir, purpose: "find" },
+            () => readdirSync(dir, { withFileTypes: true }),
+          );
+        } catch (error) {
+          if (error instanceof TurnAccessError) throw error;
           return;
         }
         ents.sort((a, b) => a.name.localeCompare(b.name));
@@ -347,7 +406,8 @@ const findTool: ToolDefinition<FindArgs> = {
               ctx.workspaceRoot,
               relative(workspaceReal, join(dir, ent.name)),
             ).abs;
-          } catch {
+          } catch (error) {
+            if (error instanceof TurnAccessError) throw error;
             continue;
           }
           if (ent.isDirectory()) {
@@ -359,8 +419,11 @@ const findTool: ToolDefinition<FindArgs> = {
           } else if (ent.isFile() || ent.isSymbolicLink()) {
             let st: ReturnType<typeof statSync>;
             try {
-              st = statSync(p);
-            } catch {
+              st = withFileAccessSync({ kind: "file-metadata", path: p, purpose: "find" }, () =>
+                statSync(p),
+              );
+            } catch (error) {
+              if (error instanceof TurnAccessError) throw error;
               continue; // 悬空链接等，跳过
             }
             if (!st.isFile()) continue;
@@ -371,10 +434,14 @@ const findTool: ToolDefinition<FindArgs> = {
               }
               let text: string;
               try {
-                const buf = readFileSync(p);
+                const buf = withFileAccessSync(
+                  { kind: "file-bytes", path: p, purpose: "contains" },
+                  () => readFileSync(p),
+                );
                 if (!isProbablyText(buf)) continue;
                 text = buf.toString("utf8");
-              } catch {
+              } catch (error) {
+                if (error instanceof TurnAccessError) throw error;
                 continue;
               }
               const cnt = text.split(needle).length - 1;
@@ -406,6 +473,7 @@ const findTool: ToolDefinition<FindArgs> = {
           : {}),
       };
     } catch (e) {
+      if (e instanceof TurnAccessError) return err(e.code, e.message);
       if (e instanceof PathSafetyError) return fail(e);
       if ((e as NodeJS.ErrnoException).code === "ENOENT") {
         return err("NOT_FOUND", `路径不存在：${args.path ?? "."}`);

@@ -1,6 +1,6 @@
 import type { Device } from "@excelmanus/protocol";
 import { Laptop, Loader2, LogOut, MonitorSmartphone, ShieldCheck, ShieldOff } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { confirmAction } from "@/components/ui/confirm-dialog";
@@ -35,17 +35,33 @@ export function AccessTab() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
 
+  const activeRead = useRef(true);
+  const readSequence = useRef(0);
+  const [loading, setLoading] = useState(true);
+
   const load = useCallback(async () => {
+    if (!activeRead.current) return;
+    const request = ++readSequence.current;
+    const current = () => activeRead.current && readSequence.current === request;
+    setLoading(true);
+    setError("");
     try {
-      setDevices(await listDevices());
-      setError("");
+      const result = await listDevices();
+      if (current()) setDevices(result);
     } catch (err) {
-      setError(errorMessage(err, "无法读取设备列表"));
+      if (current()) setError(errorMessage(err, "无法读取设备列表"));
+    } finally {
+      if (current()) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
+    activeRead.current = true;
     void load();
+    return () => {
+      activeRead.current = false;
+      readSequence.current++;
+    };
   }, [load]);
 
   async function revoke(device: Device) {
@@ -127,13 +143,18 @@ export function AccessTab() {
           </div>
         </div>
         {error && (
-          <p role="alert" className="mb-2 text-xs text-destructive">
-            {error}
-          </p>
+          <div role="alert" className="mb-2 space-y-2 text-xs text-destructive">
+            <p>{error}</p>
+            {devices && <p className="text-muted-foreground">以下保留上次读取的列表。</p>}
+            <Button variant="outline" size="sm" onClick={() => void load()}>
+              重新读取列表
+            </Button>
+          </div>
         )}
-        {!devices && !error ? (
+        {!devices && loading ? (
           <div className="flex justify-center py-6 text-muted-foreground">
             <Loader2 className="h-5 w-5 animate-spin" />
+            <span className="ml-2 text-xs">正在读取设备列表…</span>
           </div>
         ) : (
           <div className="space-y-1.5">

@@ -1,9 +1,9 @@
 // 截图渲染中转（07 §8、ADR 0010）：workbook_render 计算版式后经同步通道交给一个已连接的
-// 界面客户端（本机 Web 页签或桌面窗口）在 canvas 上绘制，回传 PNG。没有可用渲染端时
-// 明确报错，不伪造结果。
+// 界面客户端在 canvas 上绘制；没有客户端或客户端失败时，服务器复用相同绘制逻辑生成 PNG。
 
 import { newId } from "@excelmanus/core";
 import type { RenderLayout, ServerMessage } from "@excelmanus/protocol";
+import { renderHeadless } from "./headless-render.ts";
 
 interface Pending {
   resolve(png: string): void;
@@ -32,7 +32,7 @@ export class RenderBroker {
   }
 
   get available(): boolean {
-    return this.renderers.size > 0;
+    return true; // Headless rendering is always registered.
   }
 
   handleResult(connId: string, msg: { requestId: string; png?: string; error?: string }): void {
@@ -44,14 +44,21 @@ export class RenderBroker {
     else p.reject(new Error(msg.error ?? "渲染失败"));
   }
 
-  /** 选最近连接的渲染端；超时 20 秒。返回 PNG base64。 */
-  request(layout: RenderLayout, scale = 2, timeoutMs = 20_000): Promise<string> {
+  /** 选最近连接的渲染端；超时 5 秒后使用服务器绘制。返回 PNG base64。 */
+  request(layout: RenderLayout, scale = 2, timeoutMs = 5_000): Promise<string> {
     const entries = [...this.renderers.entries()];
     const target = entries[entries.length - 1];
-    if (!target) {
-      return Promise.reject(
-        new Error("没有可用的渲染端：请保持 ExcelManus 界面打开（浏览器页签或桌面窗口）"),
+    // Old connected clients may silently strip new layout fields. Rich renders stay
+    // server-side until explicit renderer capabilities are negotiated.
+    const rich =
+      layout.charts?.length ||
+      layout.images?.length ||
+      layout.shapes?.length ||
+      layout.cells.some(
+        (c) => Object.values(c.borders ?? {}).some((b) => b && b.style > 0) || c.dataBar || c.icon,
       );
+    if (!target || rich) {
+      return renderHeadless(layout, scale);
     }
     const [connId, send] = target;
     const requestId = newId("rnd");
@@ -62,6 +69,6 @@ export class RenderBroker {
       }, timeoutMs);
       this.pending.set(requestId, { resolve, reject, timer, renderer: connId });
       send({ type: "render.request", requestId, layout, scale });
-    });
+    }).catch(() => renderHeadless(layout, scale));
   }
 }

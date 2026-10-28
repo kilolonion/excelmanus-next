@@ -1,10 +1,11 @@
+import { formatTimestamp } from "@/lib/message-time";
 // 对话流：当前查看代理的时间线（用户消息、助手段落、系统条目）+ 排队中的消息 + 发送中的乐观消息。
 // 历史行虚拟化；最新一行放在文档流里，流式增长不被估高裁切。
 
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { elementScroll, useVirtualizer } from "@tanstack/react-virtual";
 import { AnimatePresence, motion } from "framer-motion";
 import { ArrowDown, Layers } from "lucide-react";
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { toast } from "@/components/ui/toaster";
@@ -21,13 +22,18 @@ import {
   cancelQueuedMessage,
   compactNow,
   discardFailedMessage,
+  loadOlderChat,
   type OptimisticMessage,
   resendFailedMessage,
   restartFrom,
   useChatStore,
 } from "@/stores/chat-store";
 import { AssistantMessage } from "./AssistantMessage";
-import { type ChangedFile, RollbackConfirmDialog } from "./RollbackConfirmDialog";
+import {
+  type ChangedFile,
+  filesChangedAfter,
+  RollbackConfirmDialog,
+} from "./RollbackConfirmDialog";
 import { CompactionNotice, ContextNotice, InboxNotice, RewindNotice } from "./SystemNotice";
 import { UserMessage } from "./UserMessage";
 
@@ -45,20 +51,6 @@ type Row =
     }
   | { key: string; kind: "queued"; item: UserItem; at: string }
   | { key: string; kind: "optimistic"; item: OptimisticMessage; at: string };
-
-function formatTimestamp(at: string): string {
-  const date = new Date(at);
-  const diff = Date.now() - date.getTime();
-  const today = new Date();
-  const time = date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
-  if (diff < 60_000) return "刚刚";
-  if (diff < 3600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
-  if (date.toDateString() === today.toDateString()) return time;
-  const yesterday = new Date(today);
-  yesterday.setDate(yesterday.getDate() - 1);
-  if (date.toDateString() === yesterday.toDateString()) return `昨天 ${time}`;
-  return `${date.getMonth() + 1}/${date.getDate()} ${time}`;
-}
 
 function TimestampSeparator({ at }: { at: string }) {
   return (
@@ -83,30 +75,6 @@ function RenderFallback({ error, onReset }: { error: Error; onReset: () => void 
       </button>
     </div>
   );
-}
-
-/** 这条用户消息之后改过的文件（用于重新开始前的确认）。 */
-function filesChangedAfter(seq: number, agentId: string): ChangedFile[] {
-  const { session } = useChatStore.getState();
-  const out = new Map<string, ChangedFile>();
-  for (const change of session.changes) {
-    if (change.seq <= seq || change.agentId !== agentId) continue;
-    const prev = out.get(change.path);
-    const cells = (prev?.detail ? Number.parseInt(prev.detail, 10) : 0) + change.cells;
-    out.set(change.path, {
-      path: change.path,
-      kind: "workbook",
-      detail: cells > 0 ? `${cells} 格` : "结构修改",
-    });
-  }
-  for (const tool of Object.values(session.tools)) {
-    if (tool.seq <= seq || tool.agentId !== agentId || tool.status !== "ok") continue;
-    if (tool.name !== "write" && tool.name !== "edit") continue;
-    const path = (tool.args as { path?: unknown })?.path;
-    if (typeof path === "string" && !out.has(path))
-      out.set(path, { path, kind: "text", detail: tool.name === "write" ? "写入" : "替换" });
-  }
-  return [...out.values()];
 }
 
 const RowView = memo(function RowView({
@@ -199,10 +167,37 @@ const RowView = memo(function RowView({
 });
 
 export function MessageStream() {
-  const session = useChatStore((s) => s.session);
+  const sessionId = useChatStore((s) => s.sessionId);
+  const agentId = useChatStore((s) => s.viewAgentId);
+  return <SessionMessageStream key={`${sessionId}:${agentId}`} />;
+}
+
+// Text deltas only wake this layout-only subscriber, not the virtualized message list.
+function StreamAutoFollow({
+  agentId,
+  rowCount,
+  onTick,
+}: {
+  agentId: string;
+  rowCount: number;
+  onTick: () => void;
+}) {
+  const tick = useChatStore((s) => {
+    const live = s.session.live[agentId];
+    return `${rowCount}:${live?.text.length ?? 0}:${live?.reasoning.length ?? 0}:${Object.keys(live?.toolArgs ?? {}).length}:${s.session.cursor}`;
+  });
+  useLayoutEffect(onTick, [tick, onTick]);
+  return null;
+}
+
+function SessionMessageStream() {
+  const cursor = useChatStore((s) => s.session.cursor);
   const agentId = useChatStore((s) => s.viewAgentId);
   const optimistic = useChatStore((s) => s.optimistic);
-  const sessionId = useChatStore((s) => s.sessionId);
+  const loading = useChatStore((s) => s.loading);
+  const hasOlder = useChatStore((s) => s.hasOlder);
+  const loadingOlder = useChatStore((s) => s.loadingOlder);
+  const olderError = useChatStore((s) => s.olderError);
   const compacting = useChatStore((s) => s.compacting[s.viewAgentId] === true);
   const viewportRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef<HTMLDivElement>(null);
@@ -212,6 +207,11 @@ export function MessageStream() {
   const lastScrollTop = useRef(0);
   const positioning = useRef(false);
   const initialDone = useRef(false);
+  const initialCursor = useRef(cursor);
+  const historyAnchor = useRef<{ key: string; offset: number; top: number; height: number } | null>(
+    null,
+  );
+  const [positioned, setPositioned] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
   const [confirm, setConfirm] = useState<{
     origin: UserItem;
@@ -219,10 +219,10 @@ export function MessageStream() {
     files: ChangedFile[];
   } | null>(null);
 
-  const timeline = visibleTimeline(session, agentId);
-  const queued = pendingDispatches(session, agentId);
-  const busy = agentBusy(session, agentId);
-  const restartFloor = rewindableFrom(session, agentId);
+  const timeline = useChatStore((s) => visibleTimeline(s.session, agentId));
+  const queued = useChatStore((s) => pendingDispatches(s.session, agentId));
+  const busy = useChatStore((s) => agentBusy(s.session, agentId));
+  const restartFloor = useChatStore((s) => rewindableFrom(s.session, agentId));
 
   const rows = useMemo(() => {
     const out: Row[] = [];
@@ -288,11 +288,18 @@ export function MessageStream() {
   );
 
   const pinned = rows.at(-1) ?? null;
-  const virtualRows = rows.slice(0, -1);
+  const virtualRows = useMemo(() => rows.slice(0, -1), [rows]);
+  const getItemKey = useCallback((i: number) => virtualRows[i]?.key ?? i, [virtualRows]);
   const virtualizer = useVirtualizer({
     count: virtualRows.length,
     getScrollElement: () => viewportRef.current,
-    getItemKey: (i) => virtualRows[i]?.key ?? i,
+    getItemKey,
+    scrollToFn: (offset, options, instance) => {
+      elementScroll(offset, options, instance);
+      // 虚拟行测量/折叠产生的补偿滚动不是用户上翻，按实际夹取后的坐标更新基线。
+      const vp = instance.scrollElement;
+      if (vp) lastScrollTop.current = vp.scrollTop;
+    },
     estimateSize: (i) => {
       const row = virtualRows[i];
       const cached = row ? sizeCache.current.get(row.key) : undefined;
@@ -306,17 +313,8 @@ export function MessageStream() {
       return timestamps.has(i) ? base + 22 : base;
     },
     overscan: 6,
-    paddingStart: 24,
+    paddingStart: hasOlder || olderError ? 60 : 24,
   });
-
-  // 会话或查看的代理切换：重置滚动状态
-  useEffect(() => {
-    seenKeys.current = new Set();
-    sizeCache.current = new Map();
-    autoScrollRef.current = true;
-    initialDone.current = false;
-    setAutoScroll(true);
-  }, [sessionId, agentId]);
 
   const scrollToEnd = useCallback(() => {
     const vp = viewportRef.current;
@@ -327,64 +325,123 @@ export function MessageStream() {
 
   // 首次有内容时直接定位到底部（不播放入场动画）
   useLayoutEffect(() => {
-    if (rows.length === 0 || initialDone.current) return;
-    initialDone.current = true;
+    if (loading || rows.length === 0 || initialDone.current) return;
+    autoScrollRef.current = true;
+    setAutoScroll(true);
     for (const row of rows) seenKeys.current.add(row.key);
     positioning.current = true;
     scrollToEnd();
-    requestAnimationFrame(() => {
+    const frame = requestAnimationFrame(() => {
       scrollToEnd();
+      initialDone.current = true;
       positioning.current = false;
+      setPositioned(true);
     });
-  }, [rows, scrollToEnd]);
+    return () => cancelAnimationFrame(frame);
+  }, [loading, rows, scrollToEnd]);
 
-  // 新行或流式增长：跟随到底部（用户上翻后不打扰）
-  const tick = useChatStore((s) => {
-    const live = s.session.live[agentId];
-    return `${rows.length}:${live?.text.length ?? 0}:${live?.reasoning.length ?? 0}:${Object.keys(live?.toolArgs ?? {}).length}:${s.session.cursor}`;
-  });
-  useLayoutEffect(() => {
-    if (!autoScrollRef.current || !initialDone.current) return;
-    scrollToEnd();
-  }, [tick, scrollToEnd]);
+  // Data deltas and size notifications share one follow pass per animation frame.
+  const followFrame = useRef<number | undefined>(undefined);
+  const followStream = useCallback(() => {
+    if (!autoScrollRef.current || !initialDone.current || followFrame.current !== undefined) return;
+    followFrame.current = requestAnimationFrame(() => {
+      followFrame.current = undefined;
+      if (autoScrollRef.current && initialDone.current) scrollToEnd();
+    });
+  }, [scrollToEnd]);
+  useLayoutEffect(
+    () => () => {
+      if (followFrame.current !== undefined) cancelAnimationFrame(followFrame.current);
+      followFrame.current = undefined;
+    },
+    [],
+  );
 
   // 最新行的高度写回缓存，它进入虚拟区时不跳动
   useLayoutEffect(() => {
     const el = pinnedRef.current;
     if (!el || !pinned) return;
-    const write = () => {
-      const h = el.getBoundingClientRect().height;
+    const write = (entries?: ResizeObserverEntry[]) => {
+      const h = entries?.[0]?.borderBoxSize?.[0]?.blockSize ?? el.getBoundingClientRect().height;
       if (h > 0) sizeCache.current.set(pinned.key, h);
-      if (autoScrollRef.current && initialDone.current) scrollToEnd();
+      followStream();
     };
     write();
     const ro = new ResizeObserver(write);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [pinned, scrollToEnd]);
+  }, [pinned, followStream]);
+
+  const requestOlder = useCallback(() => {
+    const vp = viewportRef.current;
+    if (!vp || loadingOlder || !hasOlder) return;
+    const top = vp.getBoundingClientRect().top;
+    const anchor = Array.from(vp.querySelectorAll<HTMLElement>("[data-message-key]")).find(
+      (el) => el.getBoundingClientRect().bottom > top + 24,
+    );
+    if (anchor)
+      historyAnchor.current = {
+        key: anchor.dataset.messageKey ?? "",
+        offset: anchor.getBoundingClientRect().top - top,
+        top: vp.scrollTop,
+        height: vp.scrollHeight,
+      };
+    autoScrollRef.current = false;
+    setAutoScroll(false);
+    void loadOlderChat();
+  }, [hasOlder, loadingOlder]);
 
   useLayoutEffect(() => {
-    virtualizer.measure();
-  }, [pinned?.key, virtualRows.length, virtualizer]);
+    const saved = historyAnchor.current;
+    const vp = viewportRef.current;
+    if (!saved || !vp || loadingOlder) return;
+    positioning.current = true;
+    const index = virtualRows.findIndex((row) => row.key === saved.key);
+    const offset = index >= 0 ? virtualizer.getOffsetForIndex(index, "start")?.[0] : undefined;
+    vp.scrollTop =
+      offset === undefined ? saved.top + vp.scrollHeight - saved.height : offset - saved.offset;
+    const frame = requestAnimationFrame(() => {
+      const anchor = Array.from(vp.querySelectorAll<HTMLElement>("[data-message-key]")).find(
+        (el) => el.dataset.messageKey === saved.key,
+      );
+      if (anchor)
+        vp.scrollTop +=
+          anchor.getBoundingClientRect().top - vp.getBoundingClientRect().top - saved.offset;
+      lastScrollTop.current = vp.scrollTop;
+      historyAnchor.current = null;
+      positioning.current = false;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [loadingOlder, virtualRows, virtualizer]);
 
-  const handleScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
-    if (positioning.current) return;
-    const { scrollTop, scrollHeight, clientHeight } = event.currentTarget;
-    const movedUp = scrollTop < lastScrollTop.current - 1;
-    const atBottom = scrollHeight - scrollTop - clientHeight <= 24;
-    const next = !movedUp && (autoScrollRef.current || atBottom);
-    lastScrollTop.current = scrollTop;
-    autoScrollRef.current = next;
-    setAutoScroll(next);
-  }, []);
+  const handleScroll = useCallback(
+    (event: React.UIEvent<HTMLDivElement>) => {
+      if (positioning.current) return;
+      const { scrollTop, scrollHeight, clientHeight } = event.currentTarget;
+      const atBottom = scrollHeight - scrollTop - clientHeight <= 24;
+      // 折叠内容或增大视口会把旧位置夹到新的底部，并非用户上翻。
+      const clampedToBottom =
+        atBottom && lastScrollTop.current > Math.max(0, scrollHeight - clientHeight) + 1;
+      const movedUp = !clampedToBottom && scrollTop < lastScrollTop.current - 1;
+      const next = !movedUp && (autoScrollRef.current || atBottom);
+      lastScrollTop.current = scrollTop;
+      autoScrollRef.current = next;
+      setAutoScroll(next);
+      if (movedUp && scrollTop < 160) requestOlder();
+    },
+    [requestOlder],
+  );
 
   const renderRow = (row: Row, index: number, isLatest: boolean) => {
-    const isNew = !seenKeys.current.has(row.key);
+    const isNew =
+      !seenKeys.current.has(row.key) &&
+      (row.kind === "optimistic" || row.item.seq > initialCursor.current);
     if (isNew) seenKeys.current.add(row.key);
     return (
       <>
         {timestamps.has(index) && <TimestampSeparator at={row.at} />}
         <motion.div
+          data-message-key={row.key}
           className="mx-auto max-w-4xl px-3 sm:px-4"
           variants={messageEnterVariants}
           initial={isNew ? "initial" : false}
@@ -405,10 +462,30 @@ export function MessageStream() {
     <div className="relative flex min-h-0 flex-1 flex-col">
       <ScrollArea
         className="min-h-0 flex-1"
+        style={{
+          visibility: positioned || rows.length === 0 ? "visible" : "hidden",
+          overflowAnchor: "none",
+        }}
         viewportRef={viewportRef}
         onViewportScroll={handleScroll}
       >
         <div style={{ height: virtualizer.getTotalSize(), position: "relative", width: "100%" }}>
+          {(hasOlder || olderError) && (
+            <div className="absolute inset-x-0 top-3 z-10 flex justify-center text-xs text-muted-foreground">
+              <button
+                type="button"
+                disabled={loadingOlder}
+                onClick={requestOlder}
+                className="px-3 py-1 hover:text-foreground"
+              >
+                {loadingOlder
+                  ? "正在加载更早消息…"
+                  : olderError
+                    ? `${olderError}，点击重试`
+                    : "加载更早消息"}
+              </button>
+            </div>
+          )}
           {virtualizer.getVirtualItems().map((v) => {
             const row = virtualRows[v.index];
             if (!row) return null;
@@ -442,6 +519,7 @@ export function MessageStream() {
           </div>
         )}
       </ScrollArea>
+      <StreamAutoFollow agentId={agentId} rowCount={rows.length} onTick={followStream} />
 
       <AnimatePresence>
         {!autoScroll && rows.length > 0 && (

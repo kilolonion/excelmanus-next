@@ -1,7 +1,10 @@
 import { z } from "zod";
 import { runSql, type SqlTable } from "./sql-runner.ts";
 
-const column = z.string().min(1);
+const column = z
+  .string()
+  .min(1)
+  .describe("区域首行的实际列标题；不是 Excel 列字母。先用 workbook_read mode=table 查看列名。");
 const expected = z.union([z.number(), z.string(), z.boolean(), z.null()]);
 export const CheckRule = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("required"), column }),
@@ -23,7 +26,11 @@ export const CheckRule = z.discriminatedUnion("kind", [
     tolerance: z.number().nonnegative().default(0),
   }),
   z.object({
-    kind: z.literal("total"),
+    kind: z
+      .literal("total")
+      .describe(
+        "对输入范围全部数据行求和（不含表头）；不会自动排除合计行。校验明细合计时 range 应只包含明细，避免重复累计。",
+      ),
     column,
     expected: z.number(),
     tolerance: z.number().nonnegative().default(0),
@@ -125,7 +132,8 @@ export async function checkTables(
   return {
     passed: results.every((r) => r.passed),
     rules: results,
-    rowNumbering: "1-based detail rows, excludes header",
+    rowNumbering:
+      "1-based detail rows, excludes header; row=0 denotes an aggregate over all input detail rows",
   };
 }
 export function diffTables(
@@ -137,25 +145,31 @@ export function diffTables(
   const columns = [...new Set([...left.columns, ...right.columns])];
   if (keys?.some((k) => !left.columns.includes(k) || !right.columns.includes(k)))
     throw new Error("业务键必须在两个区域都存在");
-  const make = (table: SqlTable) => {
-    const map = new Map<string, Record<string, unknown>>();
+  const make = (table: SqlTable, side: string) => {
+    const map = new Map<string, { values: Record<string, unknown>; row: number }>();
     for (const [i, row] of table.rows.entries()) {
       const object = Object.fromEntries(table.columns.map((c, j) => [c, row[j] ?? null]));
       const key = keys?.length ? JSON.stringify(keys.map((k) => object[k])) : String(i + 1);
-      if (map.has(key)) throw new Error(`业务键重复：${key}；请提供唯一的组合键`);
-      map.set(key, object);
+      const previous = map.get(key);
+      if (previous)
+        throw new Error(
+          `${side}业务键重复：${key}；明细行 ${previous.row}、${i + 1}（不含表头）；请提供唯一的组合键或先按业务口径汇总`,
+        );
+      map.set(key, { values: object, row: i + 1 });
     }
     return map;
   };
-  const a = make(left),
-    b = make(right),
+  const a = make(left, "左侧"),
+    b = make(right, "右侧"),
     changes = [];
   let added = 0,
     deleted = 0,
     modified = 0;
   for (const key of new Set([...a.keys(), ...b.keys()])) {
-    const before = a.get(key),
-      after = b.get(key);
+    const beforeEntry = a.get(key),
+      afterEntry = b.get(key);
+    const before = beforeEntry?.values,
+      after = afterEntry?.values;
     const changedColumns = columns.filter(
       (c) => JSON.stringify(before?.[c]) !== JSON.stringify(after?.[c]),
     );
@@ -166,7 +180,15 @@ export function diffTables(
     else modified++;
     const index = added + deleted + modified - 1;
     if (index >= offset && changes.length < 200)
-      changes.push({ kind, key, before: before ?? null, after: after ?? null, changedColumns });
+      changes.push({
+        kind,
+        key,
+        before: before ?? null,
+        after: after ?? null,
+        changedColumns,
+        beforeRow: beforeEntry?.row ?? null,
+        afterRow: afterEntry?.row ?? null,
+      });
   }
   const total = added + deleted + modified;
   return {
@@ -177,6 +199,7 @@ export function diffTables(
     columns,
     changes,
     alignment: keys?.length ? "business_key" : "position",
+    rowNumbering: "1-based detail rows, excludes header",
     ...(offset + changes.length < total ? { nextOffset: offset + changes.length } : {}),
     addedColumns: right.columns.filter((c) => !left.columns.includes(c)),
     deletedColumns: left.columns.filter((c) => !right.columns.includes(c)),

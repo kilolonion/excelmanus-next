@@ -1,10 +1,11 @@
 import { ChevronDown, ChevronUp } from "lucide-react";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useDeferredValue, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { isWorkspaceFileHref } from "@/lib/file-kind";
 import { openWorkspaceFile } from "@/lib/open-file";
 import { decodeUriEscapedPath, fileName } from "@/lib/paths";
+import { useStreamingMarkdownText } from "@/lib/use-streaming-markdown-text";
 import { baseMarkdownComponents } from "../MarkdownComponents";
 import { MentionHighlighter } from "../MentionHighlighter";
 
@@ -75,6 +76,16 @@ const markdownComponents: React.ComponentProps<typeof ReactMarkdown>["components
 };
 
 const MAX_COLLAPSED_HEIGHT_ASSISTANT = 400; // px
+// Keep ordinary responses formatted; measured dense tables become expensive at this size.
+const RAW_READING_CHARACTERS = 50_000;
+
+const MarkdownBody = React.memo(function MarkdownBody({ content }: { content: string }) {
+  return (
+    <ReactMarkdown remarkPlugins={remarkPluginsStable} components={markdownComponents}>
+      {content}
+    </ReactMarkdown>
+  );
+});
 
 export const MemoizedMarkdown = React.memo(function MemoizedMarkdown({
   content,
@@ -85,41 +96,71 @@ export const MemoizedMarkdown = React.memo(function MemoizedMarkdown({
   isStreamingText?: boolean;
   defaultExpanded?: boolean;
 }) {
+  const scheduledContent = useStreamingMarkdownText(content, !!isStreamingText);
+  const deferredContent = useDeferredValue(scheduledContent);
+  const renderedContent = isStreamingText ? deferredContent : content;
   const contentRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(defaultExpanded ?? false);
   const [needsExpand, setNeedsExpand] = useState(false);
+  const [formattedContent, setFormattedContent] = useState<string | null>(null);
+  const large = content.length > RAW_READING_CHARACTERS;
+  const showRaw = large && (!!isStreamingText || formattedContent !== content);
 
   useEffect(() => {
-    if (contentRef.current) {
+    if (formattedContent !== null && formattedContent !== content) setFormattedContent(null);
+  }, [content, formattedContent]);
+
+  useEffect(() => {
+    // Streaming is never collapsed. Measure the final body after deferred text catches up.
+    if (showRaw) setNeedsExpand(false);
+    else if (!isStreamingText && contentRef.current) {
       setNeedsExpand(contentRef.current.scrollHeight > MAX_COLLAPSED_HEIGHT_ASSISTANT);
     }
-  }, [content]);
+  }, [content, isStreamingText, showRaw]);
 
   return (
     <div className="relative">
+      {large && (
+        <div className="mb-2 flex items-center justify-between gap-3 text-[11px] text-muted-foreground">
+          <span>
+            {showRaw
+              ? isStreamingText
+                ? "原文 · 输出完成后可排版阅读"
+                : "长内容 · 原文预览"
+              : "长内容 · 排版视图"}
+          </span>
+          <button
+            type="button"
+            disabled={!!isStreamingText}
+            onClick={() => {
+              setFormattedContent(showRaw ? content : null);
+              if (showRaw) setExpanded(true);
+            }}
+            className="shrink-0 text-[var(--em-primary)] hover:underline disabled:cursor-wait disabled:opacity-50"
+          >
+            {showRaw ? "排版阅读" : "返回原文"}
+          </button>
+        </div>
+      )}
       <div
         ref={contentRef}
-        className={`prose prose-sm max-w-none text-foreground text-[13px] leading-relaxed transition-[max-height] duration-300${needsExpand && !expanded && !isStreamingText ? " overflow-hidden" : ""}${isStreamingText ? " streaming-cursor" : ""}`}
+        className={`prose prose-sm max-w-none text-foreground text-[13px] leading-relaxed transition-[max-height] duration-300${needsExpand && !expanded && !isStreamingText && !showRaw ? " overflow-hidden" : ""}${isStreamingText ? " streaming-cursor" : ""}`}
         style={{
           maxHeight:
-            needsExpand && !expanded && !isStreamingText
+            needsExpand && !expanded && !isStreamingText && !showRaw
               ? `${MAX_COLLAPSED_HEIGHT_ASSISTANT}px`
               : undefined,
         }}
       >
-        {isStreamingText ? (
-          // Parsing the entire accumulated Markdown document on every token
-          // batch is much more expensive than painting the delta.  Keep the
-          // stream responsive and perform the full Markdown pass once the
-          // assistant message is complete.
-          <div className="whitespace-pre-wrap break-words">{content}</div>
+        {showRaw ? (
+          <pre className="m-0 whitespace-pre-wrap break-words bg-transparent p-0 font-mono text-[12px] leading-relaxed text-foreground">
+            {renderedContent}
+          </pre>
         ) : (
-          <ReactMarkdown remarkPlugins={remarkPluginsStable} components={markdownComponents}>
-            {content}
-          </ReactMarkdown>
+          <MarkdownBody content={renderedContent} />
         )}
       </div>
-      {needsExpand && !expanded && !isStreamingText && (
+      {needsExpand && !expanded && !isStreamingText && !showRaw && (
         <div className="relative -mt-8 pt-8 bg-gradient-to-t from-background to-transparent">
           <button
             type="button"
@@ -131,7 +172,7 @@ export const MemoizedMarkdown = React.memo(function MemoizedMarkdown({
           </button>
         </div>
       )}
-      {needsExpand && expanded && !isStreamingText && (
+      {needsExpand && expanded && !isStreamingText && !showRaw && (
         <button
           type="button"
           onClick={() => setExpanded(false)}

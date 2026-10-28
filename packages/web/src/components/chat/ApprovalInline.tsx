@@ -2,7 +2,7 @@
 // 批准 = 只放行这一次；「本会话自动批准同类操作」= 记住规则；「允许本会话全部操作」= 切到自动模式。
 
 import { AlertCircle, Check, ChevronRight, Loader2, LocateFixed, Shield, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { MiniCheckbox } from "@/components/ui/MiniCheckbox";
 import { errorMessage } from "@/lib/backend/api";
 import type { ApprovalState } from "@/lib/session/types";
@@ -30,10 +30,22 @@ export function ApprovalInline({ approval }: { approval: ApprovalState }) {
   const [reason, setReason] = useState("");
   const [details, setDetails] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
-  const args = (approval.args ?? {}) as Record<string, unknown>;
-  const ctx = extractToolContext(approval.toolName, args);
-  const copy = approvalCopy(approval.toolName, approval.effect, ctx);
-  const plan = pendingWriteTargets(approval);
+  const copy = useMemo(() => {
+    const args = (approval.args ?? {}) as Record<string, unknown>;
+    return approvalCopy(
+      approval.toolName,
+      approval.effect,
+      extractToolContext(approval.toolName, args),
+    );
+  }, [approval.args, approval.toolName, approval.effect]);
+  const plan = useMemo(
+    () => pendingWriteTargets({ toolName: approval.toolName, args: approval.args }),
+    [approval.toolName, approval.args],
+  );
+  const argsText = useMemo(
+    () => (details ? JSON.stringify(approval.args, null, 2) : ""),
+    [details, approval.args],
+  );
   const badge =
     EFFECT_BADGE[approval.effect] ??
     (isWriteTool(approval.toolName) ? EFFECT_BADGE.write : undefined);
@@ -137,7 +149,7 @@ export function ApprovalInline({ approval }: { approval: ApprovalState }) {
           </button>
           {details && (
             <pre className="mt-1 max-h-48 overflow-auto rounded-md bg-background/70 p-2 font-mono text-[10.5px] leading-4 text-foreground/80">
-              {JSON.stringify(approval.args, null, 2)}
+              {argsText}
             </pre>
           )}
         </div>

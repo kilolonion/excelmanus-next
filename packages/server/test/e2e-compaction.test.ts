@@ -1,3 +1,4 @@
+import { createTestProfile } from "./fixtures/create-model.ts";
 // M3 上下文压缩集成测试（04 §6、10 §3.3，14 场景 12 与场景 22 的超限重试部分；
 // ADR 0006：真实 HTTP/WebSocket/SQLite 文件 + MockLanguageModelV4 只替代模型输出）。
 // 摘要调用通过 prompt 中 system 是否等于 COMPACTION_SYSTEM 与主调用区分。
@@ -155,7 +156,7 @@ async function boot(
   });
   servers.push(srv);
   const api = createApiClient(srv.url, srv.token);
-  await api.createModelProfile({
+  await createTestProfile(api, {
     name: "mock",
     provider: "custom-openai-compatible",
     model: "mock-compact",

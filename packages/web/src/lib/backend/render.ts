@@ -1,18 +1,19 @@
 // 截图渲染端（ADR 0010）：服务端下发版式，界面在离屏 canvas 上绘制并回传 PNG。
-// 只画文本、填充、网格与表头，不执行任何来自工作簿的代码或外部资源。
+// 绘制共享单元格与对象版式，不执行工作簿代码，不加载外部资源。
 
+import { chartPreviewOption, paintWorkbookCells, workbookShapeSource } from "@excelmanus/core";
 import type { RenderLayout } from "@excelmanus/protocol";
+import type { EChartsOption } from "echarts";
 
-const GRID = "#d9d9d9";
-const HEAD_BG = "#f3f3f3";
-const HEAD_TEXT = "#666666";
-const FONT = '"PingFang SC", "Microsoft YaHei", system-ui, sans-serif';
-
-function safeColor(c: string | undefined, fallback: string): string {
-  return c && /^#?[0-9a-fA-F]{3,8}$/.test(c) ? (c.startsWith("#") ? c : `#${c}`) : fallback;
-}
-
-export async function renderLayoutToPng(layout: RenderLayout, scale = 2): Promise<string> {
+export async function renderLayoutToPng(
+  layout: RenderLayout,
+  scale = 2,
+  isCurrent: () => boolean = () => true,
+): Promise<string> {
+  const checkCurrent = () => {
+    if (!isCurrent()) throw new DOMException("预览已关闭或切换", "AbortError");
+  };
+  checkCurrent();
   const w = Math.max(1, Math.ceil(layout.width));
   const h = Math.max(1, Math.ceil(layout.height));
   const canvas = document.createElement("canvas");
@@ -23,46 +24,72 @@ export async function renderLayoutToPng(layout: RenderLayout, scale = 2): Promis
   ctx.scale(scale, scale);
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, w, h);
-  ctx.textBaseline = "middle";
-  for (const cell of layout.cells) {
-    ctx.fillStyle = cell.header ? HEAD_BG : safeColor(cell.fill, "#ffffff");
-    if (cell.header || cell.fill) ctx.fillRect(cell.x, cell.y, cell.w, cell.h);
-  }
-  // 网格线：按单元格边界描边（合并单元格自然没有内部线）
-  ctx.strokeStyle = GRID;
-  ctx.lineWidth = 1;
-  for (const cell of layout.cells) ctx.strokeRect(cell.x + 0.5, cell.y + 0.5, cell.w, cell.h);
-  for (const cell of layout.cells) {
-    if (cell.text === "") continue;
-    const size = Math.min(Math.max(cell.fontSize ?? 11, 8), 28) * (96 / 72);
-    ctx.font = `${cell.italic ? "italic " : ""}${cell.bold ? "bold " : ""}${Math.round(size)}px ${FONT}`;
-    ctx.fillStyle = cell.header ? HEAD_TEXT : safeColor(cell.color, "#1a1c1c");
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(cell.x + 1, cell.y + 1, cell.w - 2, cell.h - 2);
-    ctx.clip();
-    const pad = 4;
-    let align = cell.align ?? "left";
-    // 放不下时先缩小字号（最多到 75%），仍放不下则左对齐从尾部裁剪，保证开头可读
-    const room = cell.w - pad * 2;
-    if (ctx.measureText(cell.text).width > room) {
-      const shrunk = Math.max(size * 0.75, (size * room) / ctx.measureText(cell.text).width);
-      ctx.font = `${cell.italic ? "italic " : ""}${cell.bold ? "bold " : ""}${Math.round(shrunk)}px ${FONT}`;
-      if (ctx.measureText(cell.text).width > room) align = "left";
+  paintWorkbookCells(ctx, layout.cells, '"PingFang SC", "Microsoft YaHei", system-ui, sans-serif');
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(44, 22, Math.max(0, w - 44), Math.max(0, h - 22));
+  ctx.clip();
+  if (layout.charts?.length) {
+    const [echarts, charts, components, renderers, features] = await Promise.all([
+      import("echarts/core"),
+      import("echarts/charts"),
+      import("echarts/components"),
+      import("echarts/renderers"),
+      import("echarts/features"),
+    ]);
+    checkCurrent();
+    echarts.use([
+      charts.BarChart,
+      charts.LineChart,
+      charts.PieChart,
+      charts.ScatterChart,
+      components.TitleComponent,
+      components.TooltipComponent,
+      components.LegendComponent,
+      components.GridComponent,
+      renderers.CanvasRenderer,
+      features.LabelLayout,
+      features.LegacyGridContainLabel,
+    ]);
+    for (const item of layout.charts) {
+      const target = document.createElement("canvas");
+      const chart = echarts.init(target, undefined, {
+        renderer: "canvas",
+        width: item.w,
+        height: item.h,
+        devicePixelRatio: scale,
+      });
+      try {
+        chart.setOption({
+          ...chartPreviewOption(item.chart, item.cells),
+          backgroundColor: "#ffffff",
+        } as EChartsOption);
+        ctx.drawImage(chart.renderToCanvas(), item.x, item.y, item.w, item.h);
+      } finally {
+        chart.dispose();
+      }
     }
-    ctx.textAlign = align;
-    const tx =
-      align === "center"
-        ? cell.x + cell.w / 2
-        : align === "right"
-          ? cell.x + cell.w - pad
-          : cell.x + pad;
-    ctx.fillText(cell.text, tx, cell.y + cell.h / 2);
-    ctx.restore();
   }
+  for (const item of layout.images ?? []) {
+    const image = new Image();
+    image.src = `data:${item.mediaType};base64,${item.data}`;
+    await image.decode();
+    checkCurrent();
+    ctx.drawImage(image, item.x, item.y, item.w, item.h);
+  }
+  for (const item of layout.shapes ?? []) {
+    const image = new Image();
+    image.src = workbookShapeSource(item.shape, scale);
+    await image.decode();
+    checkCurrent();
+    ctx.drawImage(image, item.x, item.y, item.w, item.h);
+  }
+  ctx.restore();
   const blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, "image/png"));
+  checkCurrent();
   if (!blob) throw new Error("PNG 编码失败");
   const buf = new Uint8Array(await blob.arrayBuffer());
+  checkCurrent();
   let bin = "";
   for (let i = 0; i < buf.length; i += 0x8000)
     bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));

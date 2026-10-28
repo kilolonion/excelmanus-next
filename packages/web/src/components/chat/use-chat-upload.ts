@@ -7,6 +7,7 @@ import { errorMessage } from "@/lib/backend/api";
 import {
   addComposerFiles,
   attachWorkspaceFile,
+  canAddComposerAttachments,
   setChatNotice,
   useChatStore,
 } from "@/stores/chat-store";
@@ -52,12 +53,16 @@ function isClipboardFileMetadata(data: DataTransfer, files: File[], text: string
 
 /** 附件需要工作区：还没有会话时先复用或新建一个。 */
 async function ensureComposerSession(): Promise<boolean> {
-  if (useChatStore.getState().workspaceId) return true;
+  if (!canAddComposerAttachments()) return false;
+  const origin = useChatStore.getState();
+  if (origin.workspaceId) return true;
   try {
     await ensureActiveSession();
     return !!useChatStore.getState().workspaceId;
   } catch (error) {
-    setChatNotice(errorMessage(error, "无法创建对话，附件未添加"), "error");
+    const current = useChatStore.getState();
+    if (current.sessionId === origin.sessionId && current.viewAgentId === origin.viewAgentId)
+      setChatNotice(errorMessage(error, "无法创建对话，附件未添加"), "error");
     return false;
   }
 }

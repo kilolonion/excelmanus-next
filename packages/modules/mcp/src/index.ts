@@ -6,7 +6,7 @@
 
 import { createHash } from "node:crypto";
 import { newId, nowIso } from "@excelmanus/core";
-import type { CapabilityModule, DatabaseSync, Migration, ToolDefinition } from "@excelmanus/kernel";
+import { currentToolAccess, hasTaskContractRequirement, type CapabilityModule, type DatabaseSync, type Migration, type ToolDefinition } from "@excelmanus/kernel";
 import type { McpServer, ToolResult } from "@excelmanus/protocol";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import {
@@ -569,6 +569,7 @@ export class McpService {
       inputJsonSchema: schema,
       output: z.unknown(),
       effect: readOnly ? "read" : "external",
+      externalTransport: true,
       targets: () => [],
       replay: readOnly ? "safe" : "unknown",
       timeoutMs,
@@ -579,6 +580,12 @@ export class McpService {
         return row ? this.autoApproveOf(row).includes(tool.name) : false;
       },
       execute: async (args, ctx) => {
+        const access=currentToolAccess() ?? ctx.access;
+        const contractRequired=access
+          ? hasTaskContractRequirement(access.db,access.sessionId,access.originAgentId,access.originTurnId)
+          : hasTaskContractRequirement(this.db,ctx.sessionId,ctx.agentId,ctx.turnId ?? "missing-tool-turn");
+        if(contractRequired)return {status:"error",error:{code:"UNSUPPORTED_FEATURE",
+          message:"当前任务不支持向外部MCP服务传送业务参数；只读提示或普通批准不能授予外发权限。",retryable:false}};
         const conn = this.conns.get(serverId);
         if (!conn?.client || conn.status !== "connected") {
           return mcpError(

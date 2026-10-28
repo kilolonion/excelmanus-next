@@ -6,6 +6,7 @@ import { createApiClient, type LogRecord } from "@excelmanus/protocol";
 import { MockLanguageModelV4 } from "ai/test";
 import { afterAll, describe, expect, test } from "vitest";
 import { type RunningServer, startServer } from "../src/index.ts";
+import { createTestProfile } from "./fixtures/create-model.ts";
 
 const servers: RunningServer[] = [];
 const dirs: string[] = [];
@@ -82,7 +83,7 @@ describe("ask_user 阻塞与恢复", () => {
     const server = await startServer({ dataDir, resolveLanguageModel: () => model });
     servers.push(server);
     const api = createApiClient(server.url, server.token);
-    await api.createModelProfile({
+    await createTestProfile(api, {
       name: "question",
       provider: "custom-openai-compatible",
       model: "mock-question",

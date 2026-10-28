@@ -3,6 +3,7 @@
 import { toast } from "@/components/ui/toaster";
 import { desktop, errorMessage } from "@/lib/backend/api";
 import { focusComposer } from "@/lib/workbook/ask";
+import { isWorkbookFormatShortcut } from "@/lib/workbook/shortcuts";
 import { stopAgent, useChatStore } from "@/stores/chat-store";
 import { createSession } from "@/stores/session-store";
 import { useUIStore } from "@/stores/ui-store";
@@ -95,7 +96,14 @@ export function installShortcuts(): () => void {
     return () => {};
   }
   const onKey = (e: KeyboardEvent) => {
-    if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
+    if (e.defaultPrevented || !(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
+    // 表格加粗与切换侧栏共用 Ctrl/⌘+B，画布内优先编辑表格。
+    if (
+      e.target instanceof Element &&
+      e.target.closest(".univer-host") &&
+      isWorkbookFormatShortcut(e)
+    )
+      return;
     const hit = SHORTCUTS.find((s) => s.key === e.key.toLowerCase());
     if (!hit) return;
     // 浏览器保留的 Cmd+N 等无法拦截时保持默认；其余阻止默认行为

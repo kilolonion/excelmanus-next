@@ -1,3 +1,4 @@
+import { createTestProfile } from "./create-model.ts";
 // 输入框验收：真实后端与模型网关，假模型只替代提供商输出。
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
@@ -48,9 +49,9 @@ const server = await startServer({
   }),
 });
 const api = createApiClient(server.url, server.token);
-const profile = await api.createModelProfile({ name: "输入框验收模型", provider: "custom-openai-compatible", model: "composer-settings", baseUrl: "https://mock.invalid/v1", apiKey: "fixture-only", reasoning: "low" });
+const profile = await createTestProfile(api, { name: "输入框验收模型", provider: "custom-openai-compatible", model: "composer-settings", baseUrl: "https://mock.invalid/v1", apiKey: "fixture-only", reasoning: "low" });
 await api.overrideCapabilities(profile.profile.id, { vision: true, tools: true, reasoning: true });
-await api.createModelProfile({ name: "备用验收模型", provider: "custom-openai-compatible", model: "composer-secondary", baseUrl: "https://mock.invalid/v1", apiKey: "fixture-only", reasoning: "minimal" });
+await createTestProfile(api, { name: "备用验收模型", provider: "custom-openai-compatible", model: "composer-secondary", baseUrl: "https://mock.invalid/v1", apiKey: "fixture-only", reasoning: "minimal" });
 const { items } = await api.listWorkspaces();
 const workspace = items.find((w) => w.isDefault);
 if (!workspace) throw new Error("default workspace missing");

@@ -8,7 +8,7 @@ import { importCsv } from "../src/csv.ts";
 import { ChangeOp } from "../src/ops.ts";
 import { rulesResource } from "../src/rule-codec.ts";
 import {
-  CHECKPOINT_MIGRATION,
+  CHECKPOINT_MIGRATION, DOC_MOVES_MIGRATION,
   DOC_OPS_MIGRATION,
   DOC_OPS_REVERTS_MIGRATION,
   DOCUMENTS_MIGRATION,
@@ -22,7 +22,7 @@ test("推荐操作实际闭环：复制移动隐藏工作表、公式填充、�
     DOCUMENTS_MIGRATION,
     DOC_OPS_MIGRATION,
     BACKUPS_MIGRATION,
-    CHECKPOINT_MIGRATION,
+    CHECKPOINT_MIGRATION, DOC_MOVES_MIGRATION,
     DOC_OPS_REVERTS_MIGRATION,
   ]);
   let service = new DocumentService(db);

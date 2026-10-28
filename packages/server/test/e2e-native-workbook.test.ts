@@ -7,6 +7,7 @@ import { MockLanguageModelV4 } from "ai/test";
 import { unzipSync } from "fflate";
 import { expect, test } from "vitest";
 import { startServer } from "../src/index.ts";
+import { createTestProfile } from "./fixtures/create-model.ts";
 
 test("真实 HTTP/SQLite/工具链创建汇总、原生图表和规则，工具与轮次摘要含图表，重启后仍可读", async () => {
   const dir = mkdtempSync(join(tmpdir(), "excelmanus-native-e2e-"));
@@ -92,7 +93,7 @@ test("真实 HTTP/SQLite/工具链创建汇总、原生图表和规则，工具�
   });
   try {
     const api = createApiClient(server.url, server.token);
-    await api.createModelProfile({
+    await createTestProfile(api, {
       name: "mock",
       provider: "custom-openai-compatible",
       model: "mock",

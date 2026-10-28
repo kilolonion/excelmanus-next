@@ -1,3 +1,4 @@
+import { createTestProfile } from "./fixtures/create-model.ts";
 // M5 扩展能力真实边界测试（ADR 0006）：真实 HTTP/SQLite、真实 stdio MCP 子进程、
 // 真实本机 OAuth 回调；假模型只替代模型输出，假 OAuth 发行方只替代 auth.openai.com。
 // 覆盖场景 18（备份替换）、19（订阅登录：设备码 + 浏览器，令牌刷新）、20（MCP + 审批）、
@@ -80,7 +81,13 @@ function scriptedModel(prompts: string[]) {
       if (!hasTool && text.includes("[[mcp-write]]"))
         return { stream: call("mcp__echo__shout", { text: "hi" }) };
       if (!hasTool && text.includes("[[render]]"))
-        return { stream: call("workbook_render", { path: "sales.xlsx", range: "A1:D6" }) };
+        return {
+          stream: call("workbook_render", {
+            path: "sales.xlsx",
+            range: "A1:D6",
+            mode: "reconstructed",
+          }),
+        };
       if (!hasTool && text.includes("[[remember]]"))
         return {
           stream: call("memory", {
@@ -150,7 +157,7 @@ async function waitTurn(api: ReturnType<typeof createApiClient>, sessionId: stri
 describe("M5 扩展能力", () => {
   test("规则注入系统提示词、中途修改追加说明、/技能 调用注入正文", async () => {
     const { api, call, prompts } = await boot();
-    await api.createModelProfile({
+    await createTestProfile(api, {
       name: "p",
       provider: "custom-openai-compatible",
       model: "m",
@@ -200,7 +207,7 @@ describe("M5 扩展能力", () => {
 
   test("场景 21：代理保存记忆后新开会话注入；用户删除后不再注入", async () => {
     const { api, call, prompts } = await boot();
-    await api.createModelProfile({
+    await createTestProfile(api, {
       name: "p",
       provider: "custom-openai-compatible",
       model: "m",
@@ -238,7 +245,7 @@ describe("M5 扩展能力", () => {
 
   test("场景 20：配置 stdio MCP 服务器；只读工具自动执行，其他工具需审批，可加入自动批准", async () => {
     const { api, call } = await boot();
-    await api.createModelProfile({
+    await createTestProfile(api, {
       name: "p",
       provider: "custom-openai-compatible",
       model: "m",
@@ -325,6 +332,15 @@ describe("M5 扩展能力", () => {
     writeFileSync(file, "v2");
     const list = await call("GET", `/workspaces/${ws.id}/backups`);
     expect(list.json.items).toHaveLength(1);
+    expect(list.json.items[0].sourceKind).toBeUndefined();
+    const preview = await call(
+      "GET",
+      `/workspaces/${ws.id}/backups/${list.json.items[0].id}/preview`,
+    );
+    expect(preview.status).toBe(200);
+    expect(preview.json).toMatchObject({ kind: "text", text: "v1", truncated: false });
+    expect(readFileSync(file, "utf8")).toBe("v2");
+    expect((await call("GET", `/workspaces/${ws.id}/backups`)).json.items).toHaveLength(1);
     const restored = await call(
       "POST",
       `/workspaces/${ws.id}/backups/${list.json.items[0].id}/restore`,
@@ -334,6 +350,15 @@ describe("M5 扩展能力", () => {
     expect(restored.json.backupOfCurrent).toBeTruthy();
     const after = await call("GET", `/workspaces/${ws.id}/backups`);
     expect(after.json.items).toHaveLength(2);
+    expect(
+      after.json.items.find((b: { id: string }) => b.id === restored.json.backupOfCurrent),
+    ).toMatchObject({ sourceKind: "user" });
+    await call("POST", `/workspaces/${ws.id}/files/manage`, {
+      ops: [{ op: "backup", path: "notes.txt" }],
+    });
+    const manual = await call("GET", `/workspaces/${ws.id}/backups`);
+    expect(manual.json.items).toHaveLength(3);
+    expect(manual.json.items[0]).toMatchObject({ sourceKind: "user" });
     const dl = await fetch(
       `${server.url}/api/v1/workspaces/${ws.id}/backups/${restored.json.backupOfCurrent}/download`,
       {
@@ -441,6 +466,18 @@ describe("M5 扩展能力", () => {
 
     // 浏览器授权：经真实本机回调完成（与设备码是同一账号，不重复建档案）
     const b = await call("POST", "/accounts/chatgpt/login", { method: "browser" });
+    const loginError = b.json.error;
+    expect(
+      b.status,
+      JSON.stringify({
+        status: b.status,
+        errorCode:
+          loginError && typeof loginError === "object"
+            ? Reflect.get(loginError, "code")
+            : typeof loginError,
+      }),
+    ).toBe(200);
+    expect(b.json.attempt).toBeDefined();
     const authorize = new URL(b.json.attempt.authorizeUrl);
     expect(authorize.searchParams.get("code_challenge_method")).toBe("S256");
     const cb = await fetch(
@@ -454,9 +491,9 @@ describe("M5 扩展能力", () => {
     expect((await call("GET", "/accounts")).json.items).toHaveLength(1);
   }, 30_000);
 
-  test("workbook_render：经同步通道的渲染端回传 PNG，图片进入模型视觉输入；无渲染端时明确报错", async () => {
+  test("workbook_render reconstructed：经同步通道的渲染端回传 PNG，图片进入模型视觉输入；无界面端时使用服务器绘制", async () => {
     const { api, server, prompts } = await boot();
-    await api.createModelProfile({
+    await createTestProfile(api, {
       name: "p",
       provider: "custom-openai-compatible",
       model: "m",
@@ -472,7 +509,7 @@ describe("M5 扩展能力", () => {
     const noRenderer = items.find(
       (r) => r.type === "tool.result" && r.data.toolName === "workbook_render",
     );
-    expect(JSON.stringify(noRenderer?.data.result)).toContain("没有可用的渲染端");
+    expect(noRenderer?.data.status).toBe("ok");
 
     // 真实 WebSocket 客户端订阅 app 主题充当渲染端（浏览器页签的替身，校验收到的版式）
     const { ticket } = await api.createTicket();
@@ -527,7 +564,7 @@ describe("M5 扩展能力", () => {
 
   test("设置、能力手动覆盖、切换模型、工作区登记", async () => {
     const { api, call } = await boot();
-    const p = await api.createModelProfile({
+    const p = await createTestProfile(api, {
       name: "p1",
       provider: "custom-openai-compatible",
       model: "m",

@@ -3,13 +3,14 @@
 import type { ModelProfile } from "@excelmanus/protocol";
 import { Bot, Crown, Layers, Loader2, Settings2 } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/toaster";
 import { api, errorMessage } from "@/lib/backend/api";
 import { getProviderColor } from "@/lib/provider-brand";
 import { refreshProfiles, refreshSettings, updateSettings, useAppStore } from "@/stores/app-store";
 import { SettingsFoldSection } from "../SettingsFoldSection";
 import { GlassSelect } from "./form-widgets";
-import { getProfileProviderId, getProviderGroupLabel, profileBrand } from "./helpers";
+import { profileBrand } from "./helpers";
 import { requestModelSubTab } from "./model-subtab";
 import { ProviderAvatar } from "./ProviderLogo";
 
@@ -42,26 +43,38 @@ function RoleRow({
 
 export function RoleModelSection() {
   const profiles = useAppStore((s) => s.profiles);
-  const providers = useAppStore((s) => s.providers);
+  const connections = useAppStore((s) => s.connections);
   const settings = useAppStore((s) => s.settings);
   const [saving, setSaving] = useState<string | null>(null);
 
+  const [loadError, setLoadError] = useState("");
+  const [loadAttempt, setLoadAttempt] = useState(0);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: loadAttempt explicitly retries the settings request
   useEffect(() => {
-    if (!settings) void refreshSettings().catch(() => undefined);
-  }, [settings]);
+    if (settings) return;
+    let active = true;
+    setLoadError("");
+    void refreshSettings().catch((error) => {
+      if (active) setLoadError(errorMessage(error, "无法读取模型角色设置"));
+    });
+    return () => {
+      active = false;
+    };
+  }, [settings, loadAttempt]);
 
   const defaultProfile = profiles.find((p) => p.isDefault) ?? null;
 
   const option = (profile: ModelProfile) => {
     const brand = profileBrand(profile);
-    const group = getProviderGroupLabel(getProfileProviderId(profile), profile.name, providers);
+    const group = connections.find((c) => c.id === profile.connectionId)?.name ?? profile.provider;
     return {
       value: profile.id,
-      label: `${profile.name} · ${group}`,
+      label: `${profile.model} · ${group}`,
       icon: (
         <ProviderAvatar
           id={brand}
-          label={profile.name}
+          label={profile.model}
           color={getProviderColor(brand)}
           className="h-5 w-5 rounded-md"
           iconClassName="h-3.5 w-3.5"
@@ -103,6 +116,17 @@ export function RoleModelSection() {
       coachId="coach-settings-model-roles"
     >
       <div className="px-3 pb-1">
+        {!settings && loadError && (
+          <div
+            role="alert"
+            className="flex items-center justify-between gap-2 py-3 text-sm text-destructive"
+          >
+            <span>{loadError}</span>
+            <Button size="sm" variant="outline" onClick={() => setLoadAttempt((n) => n + 1)}>
+              重新读取
+            </Button>
+          </div>
+        )}
         {profiles.length === 0 ? (
           <div className="my-2 rounded-xl border border-dashed px-4 py-8 text-center">
             <p className="text-xs text-muted-foreground">还没有模型。</p>
@@ -142,8 +166,13 @@ export function RoleModelSection() {
                   options={withMain}
                   onChange={(id) => void setRole("subAgentProfileId", id)}
                 />
+              ) : loadError ? (
+                <span className="text-xs text-muted-foreground">读取失败，请重试</span>
               ) : (
-                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                <span className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  正在读取设置…
+                </span>
               )}
             </RoleRow>
             <RoleRow
@@ -159,8 +188,13 @@ export function RoleModelSection() {
                   options={withMain}
                   onChange={(id) => void setRole("compactionProfileId", id)}
                 />
+              ) : loadError ? (
+                <span className="text-xs text-muted-foreground">读取失败，请重试</span>
               ) : (
-                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                <span className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  正在读取设置…
+                </span>
               )}
             </RoleRow>
           </>

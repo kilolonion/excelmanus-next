@@ -7,6 +7,7 @@ import {
   LoadingStatusSpinner,
 } from "@/components/ui/loading-visual";
 import { isDesktop } from "@/lib/backend/api";
+import { firstScreenMetrics } from "@/lib/first-screen-metrics";
 
 const SLOW_SECONDS = 15;
 const RECOVERY_SECONDS = 30;
@@ -37,6 +38,16 @@ interface LoadingScreenProps {
 }
 
 export function LoadingScreen({ message, error, action }: LoadingScreenProps) {
+  useEffect(() => {
+    if (!firstScreenMetrics || error) return;
+    const id = requestAnimationFrame(() => firstScreenMetrics?.mark("splash-commit-raf"));
+    return () => {
+      cancelAnimationFrame(id);
+      requestAnimationFrame(() => {
+        if (!document.querySelector(".em-splash")) firstScreenMetrics?.mark("splash-hidden-raf");
+      });
+    };
+  }, [error]);
   const desktop = isDesktop();
   const [seconds, setSeconds] = useState(() => Math.floor((Date.now() - startedAt) / 1000));
   useEffect(() => {

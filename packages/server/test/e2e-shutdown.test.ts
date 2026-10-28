@@ -5,6 +5,7 @@ import { createApiClient } from "@excelmanus/protocol";
 import { MockLanguageModelV4 } from "ai/test";
 import { expect, test } from "vitest";
 import { startServer } from "../src/index.ts";
+import { createTestProfile } from "./fixtures/create-model.ts";
 
 test("模型流运行时关闭服务器：中止 actor 后再关闭数据库，不留下迟到写入", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "excelmanus-shutdown-"));
@@ -29,7 +30,7 @@ test("模型流运行时关闭服务器：中止 actor 后再关闭数据库，�
   const server = await startServer({ dataDir, resolveLanguageModel: () => model, log: () => {} });
   try {
     const api = createApiClient(server.url, server.token);
-    await api.createModelProfile({
+    await createTestProfile(api, {
       name: "test",
       provider: "custom-openai-compatible",
       model: "test",

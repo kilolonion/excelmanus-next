@@ -22,7 +22,7 @@ import {
   XCircle,
   Zap,
 } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { SettingsEntityCard } from "@/components/settings/SettingsEntityCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -178,19 +178,33 @@ export function MCPTab() {
   const [busy, setBusy] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<Record<string, { ok: boolean; msg: string }>>({});
 
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const readRequest = useRef(0);
+  const active = useRef(true);
+
   const fetchServers = useCallback(async () => {
+    if (!active.current) return;
+    const request = ++readRequest.current;
+    setLoadError(null);
     try {
       const { items } = await api().listMcpServers();
+      if (!active.current || request !== readRequest.current) return;
       setServers(items);
     } catch (error) {
-      toast({ title: "读取 MCP 服务失败", description: errorMessage(error), tone: "error" });
+      if (!active.current || request !== readRequest.current) return;
+      setLoadError(errorMessage(error, "读取 MCP 服务失败"));
     } finally {
-      setLoading(false);
+      if (active.current && request === readRequest.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
+    active.current = true;
     void fetchServers();
+    return () => {
+      active.current = false;
+      readRequest.current += 1;
+    };
   }, [fetchServers]);
 
   useEffect(
@@ -362,19 +376,45 @@ export function MCPTab() {
     setCreateMode("form");
   };
 
+  const readFailure = loadError ? (
+    <div role="alert" className="space-y-2 rounded-xl border p-3 text-sm">
+      <p className="text-destructive">{loadError}</p>
+      {servers.length > 0 && (
+        <p className="text-xs text-muted-foreground">以下保留上次读取的列表。</p>
+      )}
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={() => {
+          setLoading(servers.length === 0);
+          void fetchServers();
+        }}
+      >
+        重新读取列表
+      </Button>
+    </div>
+  ) : null;
+
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-12">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      <div
+        role="status"
+        className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground"
+      >
+        <Loader2 className="h-6 w-6 animate-spin" />
+        正在读取 MCP 服务列表…
       </div>
     );
   }
+
+  if (loadError && servers.length === 0) return readFailure;
 
   const textareaClass =
     "w-full rounded-md border border-input bg-background px-3 py-1 text-xs font-mono resize-y";
 
   return (
     <div className="space-y-3">
+      {readFailure}
       <section className="em-plugin-panel space-y-3 rounded-xl border p-3">
         <div className="flex items-start justify-between gap-3">
           <div className="flex min-w-0 items-start gap-2">

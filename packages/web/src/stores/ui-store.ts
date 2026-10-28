@@ -19,6 +19,8 @@ interface UIState {
   sidebarTab: SidebarTab;
   settingsOpen: boolean;
   settingsTab: SettingsTab;
+  settingsOverview: boolean;
+  showSettingsOverview: () => void;
   /** 代理团队面板（子代理名册与控制）。 */
   teamOpen: boolean;
   /** Cmd/Ctrl+K 快速打开。 */
@@ -49,6 +51,8 @@ export const useUIStore = create<UIState>()((set) => ({
   sidebarTab: "chats",
   settingsOpen: false,
   settingsTab: "model",
+  settingsOverview: true,
+  showSettingsOverview: () => set({ settingsOverview: true }),
   teamOpen: false,
   quickOpen: false,
   workbookPicker: null,
@@ -57,7 +61,8 @@ export const useUIStore = create<UIState>()((set) => ({
   toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
   setSidebarOpen: (open) => set({ sidebarOpen: open }),
   setSidebarTab: (tab) => set({ sidebarTab: tab }),
-  openSettings: (tab) => set({ settingsOpen: true, settingsTab: tab ?? "model" }),
+  openSettings: (tab) =>
+    set({ settingsOpen: true, settingsTab: tab ?? "model", settingsOverview: tab === undefined }),
   closeSettings: () => set({ settingsOpen: false }),
   setTeamOpen: (open) => set({ teamOpen: open }),
   setQuickOpen: (open) => set({ quickOpen: open }),

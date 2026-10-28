@@ -11,6 +11,7 @@ export const ToolCall = z.object({
   id: z.string(),
   name: z.string(),
   args: z.unknown(),
+  inputError: z.string().optional(),
 });
 export type ToolCall = z.infer<typeof ToolCall>;
 
@@ -119,6 +120,7 @@ export interface ResolvedModel {
   apiKey: string;
   /** 模型上下文窗口 token 数；档案未配置时缺省（04 §6.1）。 */
   contextWindow?: number;
+  maxOutputTokens?: number;
   providerOptions?: JsonObject;
   reasoning?: string;
   /** 额外请求头（09 §3 extraHeaders）。 */
@@ -147,6 +149,8 @@ export type StepEvent =
       /** 已按 JSON 解析的参数；解析失败时 args=null 且 rawArgs 保留原文。 */
       args: unknown;
       rawArgs: string;
+      /** 参数 JSON 损坏时的诊断，不丢失为普通 null 参数错误。 */
+      inputError?: string;
     }
   | { kind: "finish"; reason: FinishReason; rawReason?: string }
   | { kind: "usage"; usage: Usage }

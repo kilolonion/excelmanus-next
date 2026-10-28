@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/overlay-card";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { api, errorMessage } from "@/lib/backend/api";
+import { compactionCount as countCompactions } from "@/lib/session/reducer";
 import { useChatStore } from "@/stores/chat-store";
 
 /** 达到窗口的这个比例时提示接近上限（服务端按自己的阈值自动压缩）。 */
@@ -25,11 +26,7 @@ export function ContextUsageButton() {
   const sessionId = useChatStore((s) => s.sessionId);
   const agentId = useChatStore((s) => s.viewAgentId);
   const usage = useChatStore((s) => s.session.live[s.viewAgentId]?.contextUsage ?? null);
-  const compactionCount = useChatStore(
-    (s) =>
-      (s.session.timelines[s.viewAgentId] ?? []).filter((item) => item.kind === "compaction")
-        .length,
-  );
+  const compactionCount = useChatStore((s) => countCompactions(s.session, s.viewAgentId));
   const [requesting, setCompacting] = useState(false);
   // 服务端推送的压缩进度（自动压缩也会触发），与手动发起的请求合并显示
   const serverCompacting = useChatStore((s) => s.compacting[s.viewAgentId] === true);

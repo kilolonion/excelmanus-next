@@ -1,131 +1,198 @@
-import { AlertCircle, ChevronDown, Loader2, X } from "lucide-react";
-import { useState } from "react";
-import { useIsMobile } from "@/hooks/use-mobile";
+import { AlertCircle, ChevronDown, ChevronUp, FileText, Loader2, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { isSpreadsheetFile } from "@/lib/file-kind";
 import { openWorkspaceFile } from "@/lib/open-file";
-import { type ComposerAttachment, removeComposerAttachment } from "@/stores/chat-store";
+import {
+  type ComposerAttachment,
+  removeComposerAttachment,
+  retryComposerAttachment,
+} from "@/stores/chat-store";
 
 interface FileAttachmentChipsProps {
   files: ComposerAttachment[];
-  /** 当前模型是否支持图片输入（未知为 null）。 */
   visionCapable: boolean | null;
 }
+export function attachmentVisibleCount(width: number) {
+  return Math.max(1, Math.floor((width + 6) / 186)) * 2;
+}
+function sizeLabel(size: number) {
+  if (!size) return "工作区文件";
+  return size < 1024
+    ? `${size} B`
+    : size < 1048576
+      ? `${Math.ceil(size / 1024)} KB`
+      : `${(size / 1048576).toFixed(1)} MB`;
+}
 
-const MOBILE_VISIBLE_COUNT = 2;
-
-/** 输入框里待发送的附件：图片缩略图与工作区文件引用。失败的附件需移除后重新添加。 */
+/** One bounded attachment shelf within the composer, sized to its actual column. */
 export function FileAttachmentChips({ files, visionCapable }: FileAttachmentChipsProps) {
-  const isMobile = useIsMobile();
+  const root = useRef<HTMLDivElement>(null);
+  const [capacity, setCapacity] = useState(2);
   const [expanded, setExpanded] = useState(false);
-
-  if (files.length === 0) return null;
-
-  const shouldCollapse = isMobile && files.length > MOBILE_VISIBLE_COUNT && !expanded;
-  const visibleFiles = shouldCollapse ? files.slice(0, MOBILE_VISIBLE_COUNT) : files;
-  const hiddenCount = files.length - visibleFiles.length;
-  const failed = files.filter((af) => af.status === "error");
-
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const [previewId, setPreviewId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!root.current) return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry) setCapacity(attachmentVisibleCount(entry.contentRect.width));
+    });
+    observer.observe(root.current);
+    return () => observer.disconnect();
+  }, [files.length > 0]);
+  useEffect(() => {
+    if (files.length <= capacity) setExpanded(false);
+  }, [files.length, capacity]);
+  if (!files.length) return null;
+  const failed = files.filter((file) => file.status === "error");
+  const uploading = files.filter((file) => file.status === "uploading").length;
+  const detail = files.find((file) => file.id === detailId);
+  const preview = files.find((file) => file.id === previewId);
+  const visible = expanded ? files : files.slice(0, capacity);
   return (
-    <div className="flex flex-col gap-1 px-3 pt-1.5 pb-0">
-      {files.some((af) => af.previewUrl) && visionCapable === false && (
-        <div className="flex items-center gap-1.5 text-[11px] text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 rounded-md px-2 py-1">
-          <AlertCircle className="h-3 w-3 flex-shrink-0" />
-          <span>当前模型不支持图片识别，图片将以文字说明代替</span>
+    <div ref={root} className="em-attachments" aria-label={`本次附件 ${files.length} 项`}>
+      {(failed.length > 0 || uploading > 0 || files.length > capacity) && (
+        <div className="em-attachment-summary" aria-live="polite">
+          <span>
+            {files.length} 个附件{uploading > 0 ? ` · ${uploading} 个上传中` : ""}
+            {failed.length > 0 ? ` · ${failed.length} 个未就绪` : ""}
+          </span>
+          {files.length > capacity && (
+            <button type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
+              {expanded ? "收起" : `展开 ${files.length - capacity} 项`}
+              {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+            </button>
+          )}
         </div>
       )}
-      <div className="flex flex-wrap gap-1">
-        {visibleFiles.map((af) =>
-          af.previewUrl ? (
-            <span
-              key={af.id}
-              className={`relative inline-flex items-end rounded-lg overflow-hidden bg-muted/40 border ${
-                af.status === "error" ? "border-2 border-destructive/60" : "border-border/40"
-              }`}
-              style={{ maxWidth: "80px" }}
+      {files.some((file) => file.ref || file.previewUrl) && visionCapable === false && (
+        <div className="em-attachment-warning" role="status">
+          <AlertCircle size={14} />
+          当前模型无法查看图片内容，请切换支持图片的模型。继续发送只会告知模型有图片未发送。
+        </div>
+      )}
+      <div className="em-attachment-grid" data-expanded={expanded}>
+        {visible.map((file) => (
+          <div key={file.id} className="em-attachment-item" data-status={file.status}>
+            <button
+              type="button"
+              className="em-attachment-main"
+              title={file.path ?? file.name}
+              aria-label={file.previewUrl ? `预览 ${file.name}` : `附件详情 ${file.name}`}
+              onClick={() =>
+                file.previewUrl
+                  ? setPreviewId(file.id)
+                  : setDetailId(detailId === file.id ? null : file.id)
+              }
             >
-              <img
-                src={af.previewUrl}
-                alt={af.name}
-                className={`h-12 w-full object-cover ${af.status === "error" ? "opacity-50" : ""}`}
-              />
-              {af.status === "uploading" && (
-                <div className="absolute inset-0 flex items-center justify-center bg-black/30">
-                  <Loader2 className="h-4 w-4 text-white animate-spin" />
-                </div>
-              )}
-              {af.status === "error" && (
-                <div className="absolute inset-0 flex items-center justify-center bg-black/40">
-                  <AlertCircle className="h-3.5 w-3.5 text-white" />
-                </div>
-              )}
+              <span className="em-attachment-icon">
+                {file.previewUrl ? <img src={file.previewUrl} alt="" /> : <FileText size={20} />}
+              </span>
+              <span className="em-attachment-copy">
+                <span className="em-attachment-name">{file.name}</span>
+                <span className="em-attachment-meta">
+                  {file.status === "uploading" ? (
+                    <>
+                      <Loader2 size={12} className="animate-spin" />
+                      上传中
+                    </>
+                  ) : file.status === "error" ? (
+                    <>
+                      <AlertCircle size={12} />
+                      未就绪
+                    </>
+                  ) : (
+                    sizeLabel(file.size)
+                  )}
+                </span>
+              </span>
+            </button>
+            <button
+              type="button"
+              className="em-attachment-remove"
+              aria-label={`移除 ${file.name}`}
+              title="从本次消息移除"
+              onClick={() => removeComposerAttachment(file.id)}
+            >
+              <X size={14} />
+            </button>
+            {file.status === "error" && (
               <button
                 type="button"
-                aria-label={`移除 ${af.name}`}
-                className="touch-compact absolute top-0.5 right-0.5 h-5 w-5 flex items-center justify-center rounded-full bg-black/60 text-white hover:bg-black/80 transition-colors shadow-sm"
-                onClick={() => removeComposerAttachment(af.id)}
+                className="em-attachment-detail"
+                onClick={() => setDetailId(detailId === file.id ? null : file.id)}
+                aria-label={`查看错误 ${file.name}`}
               >
-                <X className="h-2.5 w-2.5" />
+                详情
               </button>
-            </span>
-          ) : (
-            <span
-              key={af.id}
-              className={`inline-flex items-center gap-1 rounded-full text-xs font-medium pl-2.5 pr-1 py-0.5 max-w-[200px] ${
-                af.status === "error"
-                  ? "bg-destructive/10 text-destructive"
-                  : "bg-[var(--em-primary-alpha-10)] text-[var(--em-primary)]"
-              }`}
-            >
-              {af.status === "uploading" && (
-                <Loader2 className="h-3 w-3 animate-spin flex-shrink-0" />
-              )}
-              {af.status === "error" && <AlertCircle className="h-3 w-3 flex-shrink-0" />}
-              <span className="truncate">{af.name}</span>
-              {af.status === "ready" && af.path && isSpreadsheetFile(af.name) && (
-                <button
-                  type="button"
-                  className="shrink-0 rounded px-1 py-0.5 hover:bg-[var(--em-primary-alpha-20)]"
-                  aria-label={`打开 ${af.name}`}
-                  onClick={() => af.path && openWorkspaceFile(af.path)}
-                >
-                  打开
-                </button>
-              )}
-              <button
-                type="button"
-                aria-label={`移除 ${af.name}`}
-                className={`rounded-full p-0.5 transition-colors flex-shrink-0 ${
-                  af.status === "error"
-                    ? "hover:bg-destructive/20"
-                    : "hover:bg-[var(--em-primary-alpha-20)]"
-                }`}
-                onClick={() => removeComposerAttachment(af.id)}
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </span>
-          ),
-        )}
-        {hiddenCount > 0 && (
-          <button
-            type="button"
-            onClick={() => setExpanded(true)}
-            className="inline-flex items-center gap-0.5 rounded-full text-[11px] font-medium px-2.5 py-1 bg-muted text-muted-foreground hover:bg-muted/80 transition-colors"
-          >
-            +{hiddenCount} 个文件
-            <ChevronDown className="h-3 w-3" />
-          </button>
-        )}
+            )}
+          </div>
+        ))}
       </div>
-      {failed.length > 0 && (
-        <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-destructive">
-          {failed.map((af) => (
-            <span key={af.id}>
-              {af.name}: {af.error ?? "上传失败"}（请移除后重新添加）
-            </span>
-          ))}
+      {detail && (
+        <div className="em-attachment-details">
+          <div className="flex items-start gap-2">
+            <span className="min-w-0 flex-1 break-all">{detail.path ?? detail.name}</span>
+            <button type="button" aria-label="关闭附件详情" onClick={() => setDetailId(null)}>
+              <X size={14} />
+            </button>
+          </div>
+          {detail.status === "error" && <p>{detail.error ?? "上传失败"}</p>}
+          {detail.status === "error" &&
+            (detail.canRetry ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => void retryComposerAttachment(detail.id)}
+              >
+                重试上传
+              </Button>
+            ) : (
+              <span>请重新选择文件</span>
+            ))}
+          {detail.status === "ready" && detail.path && isSpreadsheetFile(detail.name) && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => detail.path && openWorkspaceFile(detail.path)}
+            >
+              打开表格
+            </Button>
+          )}
         </div>
       )}
+      {failed.some((file) => file.canRetry) && (
+        <button
+          type="button"
+          className="em-attachment-retry"
+          onClick={() => {
+            for (const file of failed) if (file.canRetry) void retryComposerAttachment(file.id);
+          }}
+        >
+          重试失败的附件
+        </button>
+      )}
+      <Dialog
+        open={!!preview}
+        onOpenChange={(open) => {
+          if (!open) setPreviewId(null);
+        }}
+      >
+        <DialogContent className="max-w-3xl">
+          <DialogTitle className="break-all pr-6">{preview?.name ?? "图片预览"}</DialogTitle>
+          <DialogDescription>
+            {preview ? sizeLabel(preview.size) : ""} · 本次消息附件
+          </DialogDescription>
+          {preview?.previewUrl && (
+            <img
+              src={preview.previewUrl}
+              alt={preview.name}
+              className="max-h-[65dvh] w-full object-contain"
+            />
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

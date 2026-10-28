@@ -44,7 +44,7 @@ function saveWidth(w: number) {
   }
 }
 
-export function useResizablePanel(enabled: boolean): ResizablePanelState {
+export function useResizablePanel(enabled: boolean, visible = true): ResizablePanelState {
   const [panelWidth, setPanelWidth] = useState(loadWidth);
   const [isDragging, setIsDragging] = useState(false);
   const [viewportWidth, setViewportWidth] = useState(() =>
@@ -56,7 +56,9 @@ export function useResizablePanel(enabled: boolean): ResizablePanelState {
   // 视口宽度变化时确保不越界 + 更新 viewportWidth
   useEffect(() => {
     if (!enabled) return;
-    const onResize = () => {
+    let frame: number | undefined;
+    const update = () => {
+      frame = undefined;
       const vw = window.innerWidth;
       setViewportWidth(vw);
       const maxW = vw * MAX_WIDTH_RATIO;
@@ -65,61 +67,76 @@ export function useResizablePanel(enabled: boolean): ResizablePanelState {
         return prev;
       });
     };
+    const onResize = () => {
+      if (frame === undefined) frame = requestAnimationFrame(update);
+    };
     window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      if (frame !== undefined) cancelAnimationFrame(frame);
+    };
   }, [enabled]);
 
   const onMouseDown = useCallback(
     (e: React.MouseEvent) => {
-      if (!enabled) return;
+      if (!enabled || !visible) return;
       e.preventDefault();
       e.stopPropagation();
       startXRef.current = e.clientX;
       startWidthRef.current = panelWidth;
       setIsDragging(true);
     },
-    [enabled, panelWidth],
+    [enabled, visible, panelWidth],
   );
 
   // 全局 mousemove / mouseup
   useEffect(() => {
+    if (!enabled || !visible) {
+      if (isDragging) setIsDragging(false);
+      return;
+    }
     if (!isDragging) return;
-
+    let frame: number | undefined;
+    let latestWidth = startWidthRef.current;
+    const clamp = (width: number) =>
+      Math.min(window.innerWidth * MAX_WIDTH_RATIO, Math.max(MIN_WIDTH, width));
     const onMouseMove = (e: MouseEvent) => {
-      const maxW = window.innerWidth * MAX_WIDTH_RATIO;
-      // 面板在右侧，鼠标左移 → 宽度增加
-      const delta = startXRef.current - e.clientX;
-      const newW = Math.min(maxW, Math.max(MIN_WIDTH, startWidthRef.current + delta));
-      setPanelWidth(newW);
+      // 面板在右侧，鼠标左移 → 宽度增加。只在下一帧提交最新位置。
+      latestWidth = clamp(startWidthRef.current + startXRef.current - e.clientX);
+      if (frame === undefined)
+        frame = requestAnimationFrame(() => {
+          frame = undefined;
+          setPanelWidth(latestWidth);
+        });
     };
-
     const onMouseUp = () => {
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      frame = undefined;
+      latestWidth = clamp(latestWidth);
+      setPanelWidth(latestWidth);
+      saveWidth(latestWidth);
       setIsDragging(false);
-      // 保存最终宽度
-      setPanelWidth((w) => {
-        saveWidth(w);
-        return w;
-      });
     };
-
     window.addEventListener("mousemove", onMouseMove);
     window.addEventListener("mouseup", onMouseUp);
     return () => {
+      if (frame !== undefined) cancelAnimationFrame(frame);
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
     };
-  }, [isDragging]);
+  }, [isDragging, enabled, visible]);
 
-  // 拖拽中禁用文本选择
+  // 拖拽中禁用文本选择；关闭或卸载时也恢复原样。
   useEffect(() => {
-    if (isDragging) {
-      document.body.style.cursor = "col-resize";
-      document.body.style.userSelect = "none";
-    } else {
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    }
-  }, [isDragging]);
+    if (!isDragging || !enabled || !visible) return;
+    const { cursor, userSelect } = document.body.style;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    return () => {
+      document.body.style.cursor = cursor;
+      document.body.style.userSelect = userSelect;
+    };
+  }, [isDragging, enabled, visible]);
 
   const resetWidth = useCallback(() => {
     setPanelWidth(DEFAULT_WIDTH);

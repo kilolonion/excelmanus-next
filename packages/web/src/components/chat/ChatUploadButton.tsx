@@ -1,7 +1,9 @@
-import { Plus } from "lucide-react";
+import { FolderOpen, Paperclip, Plus } from "lucide-react";
 import { type ReactNode, useCallback, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { OverlayCard, OverlayCardHeader } from "@/components/ui/overlay-card";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { useIsMobile } from "@/hooks/use-mobile";
 import {
   hasOsFileDrag,
   isWorkspaceFileDrag,
@@ -157,9 +159,13 @@ export function ChatDropzone({
 
 interface ChatUploadButtonProps {
   onPick: (files: File[]) => void;
+  onWorkspacePick?: () => void;
 }
 
-export function ChatUploadButton({ onPick }: ChatUploadButtonProps) {
+export function ChatUploadButton({ onPick, onWorkspacePick }: ChatUploadButtonProps) {
+  const isMobile = useIsMobile();
+  const [open, setOpen] = useState(false);
+  const handingOff = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   return (
@@ -173,7 +179,12 @@ export function ChatUploadButton({ onPick }: ChatUploadButtonProps) {
               size="icon"
               className="touch-compact h-9 w-9 sm:h-8 sm:w-8 rounded-full flex-shrink-0 text-muted-foreground hover:text-foreground"
               aria-label="添加文件"
-              onClick={() => fileInputRef.current?.click()}
+              onClick={() => {
+                if (isMobile && onWorkspacePick) {
+                  handingOff.current = false;
+                  setOpen(true);
+                } else fileInputRef.current?.click();
+              }}
             >
               <Plus className="h-4 w-4" />
             </Button>
@@ -183,6 +194,45 @@ export function ChatUploadButton({ onPick }: ChatUploadButtonProps) {
           </TooltipContent>
         </Tooltip>
       </TooltipProvider>
+      {isMobile && (
+        <OverlayCard
+          open={open}
+          onOpenChange={setOpen}
+          className="em-mobile-actions-sheet"
+          aria-describedby={undefined}
+          onCloseAutoFocus={(e) => {
+            if (handingOff.current) e.preventDefault();
+          }}
+        >
+          <OverlayCardHeader title="添加到这条消息" onClose={() => setOpen(false)} />
+          <div className="grid gap-2 p-4">
+            <Button
+              variant="outline"
+              className="h-14 justify-start gap-3"
+              onClick={() => {
+                handingOff.current = true;
+                setOpen(false);
+                fileInputRef.current?.click();
+              }}
+            >
+              <Paperclip className="size-5" />
+              手机文件或照片
+            </Button>
+            <Button
+              variant="outline"
+              className="h-14 justify-start gap-3"
+              onClick={() => {
+                handingOff.current = true;
+                setOpen(false);
+                onWorkspacePick?.();
+              }}
+            >
+              <FolderOpen className="size-5" />
+              引用工作区文件
+            </Button>
+          </div>
+        </OverlayCard>
+      )}
       <input
         ref={fileInputRef}
         type="file"

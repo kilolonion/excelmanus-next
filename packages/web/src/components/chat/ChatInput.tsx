@@ -1,3 +1,6 @@
+import { useIsMobile } from "@/hooks/use-mobile";
+import { persistentDraftStorage } from "@/lib/draft-storage";
+import { MobileComposerTools } from "./MobileComposerTools";
 // 对话输入框：@ 提及工作区文件、/ 命令与技能、附件、区域上下文（workbook-store.composerContext）。
 // 发送一律经 chat-store.sendMessage；没有会话时先 ensureActiveSession。
 
@@ -9,11 +12,14 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useCurrentProfileId, usePickerModels } from "@/hooks/use-model-selection";
 import { errorMessage } from "@/lib/backend/api";
+import { appendDraft, clearDraftIfUnchanged, readDraft, saveDraft } from "@/lib/composer-drafts";
 import { agentBusy, visibleTimeline } from "@/lib/session/reducer";
 import type { TurnSegment, UserItem } from "@/lib/session/types";
+import { useComposerLayout } from "@/lib/use-composer-layout";
 import { COMPOSER_SELECTOR } from "@/lib/workbook/ask";
 import { useAppStore } from "@/stores/app-store";
 import {
+  effectiveChatMode,
   restartFrom,
   resumeAgent,
   sendMessage,
@@ -24,7 +30,12 @@ import {
 } from "@/stores/chat-store";
 import { ensureActiveSession } from "@/stores/session-store";
 import { useUIStore } from "@/stores/ui-store";
-import { composerContext, dismissContext, useWorkbookStore } from "@/stores/workbook-store";
+import {
+  composerMessageContext,
+  dismissContext,
+  resetComposerContext,
+  useWorkbookStore,
+} from "@/stores/workbook-store";
 import {
   applyMentionSelection,
   buildMentionPopoverItems,
@@ -40,19 +51,31 @@ import { ComposerRecoveryBar } from "./ComposerRecoveryBar";
 import { ContextUsageButton } from "./ContextUsageButton";
 import { shouldCancelComposerNativeDrop } from "./chat-drop";
 import { IMMEDIATE_COMMANDS, type PopoverMode, SLASH_COMMANDS } from "./chat-input-constants";
-import { applyDisplayReplacements } from "./chat-input-insert";
+import {
+  applyDisplayReplacements,
+  mentionOccurrences,
+  reconcileMentionTokens,
+  restoreMentionDraft,
+} from "./chat-input-insert";
 import { registerChatFileUpload } from "./chat-upload-bridge";
 import { FileAttachmentChips } from "./FileAttachmentChips";
 import { ModeBadges } from "./ModeBadges";
+import {
+  type ChangedFile,
+  filesChangedAfter,
+  RollbackConfirmDialog,
+} from "./RollbackConfirmDialog";
 import { ThinkingLevelSelector } from "./ThinkingLevelSelector";
 import { useChatUpload } from "./use-chat-upload";
+import { WorkspaceAttachmentPicker } from "./WorkspaceAttachmentPicker";
 
 const COMPOSER_ATTR = COMPOSER_SELECTOR.replace(/^\[|\]$/g, "");
 
 interface ChatInputProps {
-  /** 外部填入的草稿（欢迎页建议等）：seq 变化时替换输入框内容。 */
+  /** 外部填入的草稿（欢迎页建议等）：seq 变化时追加到原有草稿。 */
   draft?: { seq: number; text: string } | null;
   disabled?: boolean;
+  onDraftApplied?: () => void;
 }
 
 /** 当前代理最近一轮以失败/中断结束、且之后没有新消息时，给出继续 / 换模型重试。 */
@@ -77,7 +100,20 @@ function lastFailedTurn(
   return null;
 }
 
-export function ChatInput({ draft, disabled }: ChatInputProps) {
+export function ChatInput(props: ChatInputProps) {
+  const scope = useChatStore(
+    (s) => `${s.sessionId ?? `new:${s.workspaceId ?? "default"}`}/${s.viewAgentId}`,
+  );
+  return <ScopedChatInput key={scope} {...props} scope={scope} />;
+}
+
+function ScopedChatInput({
+  draft,
+  disabled,
+  scope,
+  onDraftApplied,
+}: ChatInputProps & { scope: string }) {
+  const isMobile = useIsMobile();
   const sessionId = useChatStore((s) => s.sessionId);
   const isStreaming = useChatStore((s) => agentBusy(s.session, s.viewAgentId));
   const viewAgentName = useChatStore((s) =>
@@ -91,35 +127,71 @@ export function ChatInput({ draft, disabled }: ChatInputProps) {
     agentBusy(s.session, s.viewAgentId) ? null : visibleTimeline(s.session, s.viewAgentId),
   );
   const notice = useChatStore((s) => s.notice);
-  const chatMode = useChatStore((s) => s.chatMode);
+  const chatMode = useChatStore((s) => effectiveChatMode(s, s.viewAgentId));
   const composerInsert = useChatStore((s) => s.composerInsert);
   const hasModelProfile = useAppStore((s) => s.hasModelProfile);
+  const modelsUnresolved = useAppStore((s) => s.profilesLoaded === false);
+  const modelsError = useAppStore((s) => s.profilesError);
   const openSettings = useUIStore((s) => s.openSettings);
   const models = usePickerModels();
   const currentProfileId = useCurrentProfileId();
   const visionCapable = models.find((m) => m.id === currentProfileId)?.vision ?? null;
 
   const sendPendingRef = useRef(false);
-  const [text, setText] = useState("");
+  const [initialDraft] = useState(() => {
+    try {
+      return restoreMentionDraft(readDraft(persistentDraftStorage(), scope));
+    } catch {
+      return restoreMentionDraft("");
+    }
+  });
+  const [text, setText] = useState(initialDraft.text);
+  const initialPlainDraft = useMemo(
+    () => applyDisplayReplacements(initialDraft.text, initialDraft.map),
+    [initialDraft],
+  );
+  const savedTextRef = useRef(initialPlainDraft);
   const [inputHint, setInputHint] = useState<string | null>(null);
+  const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
   const [popover, setPopover] = useState<PopoverMode>(null);
   const [popoverFilter, setPopoverFilter] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [confirmedTokens, setConfirmedTokens] = useState<Set<string>>(new Set());
+  const [confirmedTokens, setConfirmedTokens] = useState<Set<string>>(initialDraft.tokens);
   const [isSending, setIsSending] = useState(false);
   const [draftHighlight, setDraftHighlight] = useState(false);
+  const [retryConfirm, setRetryConfirm] = useState<{
+    origin: UserItem;
+    modelProfileId: string;
+    files: ChangedFile[];
+  } | null>(null);
 
-  const tokenMapRef = useRef<Map<string, string>>(new Map());
+  const tokenMapRef = useRef<Map<string, string>>(initialDraft.map);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const backdropRef = useRef<HTMLDivElement>(null);
   const inputHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isComposingRef = useRef(false);
 
-  const failure = useMemo(() => (timeline ? lastFailedTurn(timeline) : null), [timeline]);
-  const configBlocked = !hasModelProfile;
+  useEffect(() => {
+    try {
+      const plain = applyDisplayReplacements(text, tokenMapRef.current);
+      if (plain) saveDraft(persistentDraftStorage(), scope, plain);
+      else clearDraftIfUnchanged(persistentDraftStorage(), scope, savedTextRef.current);
+      savedTextRef.current = plain;
+    } catch {
+      /* private browsing */
+    }
+  }, [scope, text, confirmedTokens]);
 
-  const { mentionData, fetchMentionData } = useChatMentions();
+  const failure = useMemo(() => (timeline ? lastFailedTurn(timeline) : null), [timeline]);
+  const configBlocked = modelsUnresolved || !hasModelProfile;
+  const configHint = modelsUnresolved
+    ? modelsError
+      ? "模型读取失败，请打开模型设置重试"
+      : "正在读取模型，请稍候再发送"
+    : "模型未配置，请先完成配置后再发送";
+
+  const { mentionData, fetchMentionData, cancelMentionRead } = useChatMentions();
   const {
     attachments,
     addFiles,
@@ -165,18 +237,19 @@ export function ChatInput({ draft, disabled }: ChatInputProps) {
   const renderHighlightedText = useCallback(
     (raw: string): React.ReactNode => {
       if (!raw) return "​";
-      const escaped: string[] = [];
-      for (const t of confirmedTokens) escaped.push(t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-      for (const c of slashCommandNames) escaped.push(c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-      if (escaped.length === 0) return `${raw}\n`;
-      escaped.sort((a, b) => b.length - a.length);
-      const pattern = new RegExp(`(${escaped.join("|")})`, "g");
-      const parts = raw.split(pattern);
-      const allTokens = new Set([...confirmedTokens, ...slashCommandNames]);
+      const spans = mentionOccurrences(raw, [...confirmedTokens, ...slashCommandNames]);
+      const parts: { text: string; token: boolean }[] = [];
+      let cursor = 0;
+      for (const span of spans) {
+        parts.push({ text: raw.slice(cursor, span.start), token: false });
+        parts.push({ text: span.token, token: true });
+        cursor = span.end;
+      }
+      parts.push({ text: raw.slice(cursor), token: false });
       return (
         <>
           {parts.map((part, i) =>
-            allTokens.has(part) ? (
+            part.token ? (
               <span
                 key={i}
                 style={{
@@ -195,10 +268,10 @@ export function ChatInput({ draft, disabled }: ChatInputProps) {
                   WebkitBoxDecorationBreak: "clone",
                 }}
               >
-                {part}
+                {part.text}
               </span>
             ) : (
-              <span key={i}>{part}</span>
+              <span key={i}>{part.text}</span>
             ),
           )}
           {"\n"}
@@ -208,44 +281,31 @@ export function ChatInput({ draft, disabled }: ChatInputProps) {
     [confirmedTokens, slashCommandNames],
   );
 
-  const syncScroll = useCallback(() => {
-    if (textareaRef.current && backdropRef.current) {
-      backdropRef.current.scrollTop = textareaRef.current.scrollTop;
-      backdropRef.current.scrollLeft = textareaRef.current.scrollLeft;
-    }
-  }, []);
+  const highlightedText = useMemo(() => renderHighlightedText(text), [renderHighlightedText, text]);
 
-  const autoResize = useCallback(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    const next = Math.min(el.scrollHeight, 180);
-    el.style.height = `${next}px`;
-    el.style.overflow = next >= 180 ? "auto" : "hidden";
-    syncScroll();
-  }, [syncScroll]);
+  const syncScroll = useComposerLayout(text, textareaRef, backdropRef);
 
   const resetTokens = useCallback(() => {
     setConfirmedTokens(new Set());
     tokenMapRef.current.clear();
   }, []);
 
-  /** 用外部文本替换输入框内容并高亮提示。 */
+  /** 快捷操作保留未发送的原稿，追加建议后由用户确认发送。 */
   const applyDraft = useCallback(
     (value: string) => {
+      const replacements = new Map(tokenMapRef.current);
       resetTokens();
-      setText(value);
+      setText((current) => appendDraft(applyDisplayReplacements(current, replacements), value));
       setDraftHighlight(true);
       window.setTimeout(() => setDraftHighlight(false), 900);
       requestAnimationFrame(() => {
-        autoResize();
         const el = textareaRef.current;
         el?.focus();
-        el?.setSelectionRange(value.length, value.length);
+        if (el) el.setSelectionRange(el.value.length, el.value.length);
         el?.scrollIntoView({ behavior: "smooth", block: "nearest" });
       });
     },
-    [autoResize, resetTokens],
+    [resetTokens],
   );
 
   const draftSeq = draft?.seq;
@@ -253,13 +313,15 @@ export function ChatInput({ draft, disabled }: ChatInputProps) {
   useEffect(() => {
     if (draftSeq === undefined || draftText === undefined) return;
     applyDraft(draftText);
-  }, [draftSeq, draftText, applyDraft]);
+    onDraftApplied?.();
+  }, [draftSeq, draftText, applyDraft, onDraftApplied]);
 
   // chat-store.insertIntoComposer：重新编辑、撤回排队消息、表格「问代理」等
   const insertNonce = composerInsert?.nonce;
   useEffect(() => {
     const insert = useChatStore.getState().composerInsert;
     if (!insert || insertNonce === undefined) return;
+    useChatStore.setState({ composerInsert: null });
     if (insert.replace) {
       applyDraft(insert.text);
       return;
@@ -272,10 +334,9 @@ export function ChatInput({ draft, disabled }: ChatInputProps) {
       return `${before}${sep}${insert.text}${current.slice(pos)}`;
     });
     requestAnimationFrame(() => {
-      autoResize();
       textareaRef.current?.focus();
     });
-  }, [insertNonce, applyDraft, autoResize]);
+  }, [insertNonce, applyDraft]);
 
   const isSlashPopover =
     popover === "slash" || popover === "slash-skills" || popover === "slash-model";
@@ -326,28 +387,17 @@ export function ChatInput({ draft, disabled }: ChatInputProps) {
   }, [popoverItems.length]);
 
   const closePopover = () => {
+    cancelMentionRead();
     setPopover(null);
     setPopoverFilter("");
   };
 
   const handleTextChange = (value: string) => {
     setText(value);
-    setConfirmedTokens((prev) => {
-      if (prev.size === 0) return prev;
-      let changed = false;
-      const next = new Set<string>();
-      prev.forEach((token) => {
-        if (value.includes(token)) next.add(token);
-        else {
-          changed = true;
-          tokenMapRef.current.delete(token);
-        }
-      });
-      return changed ? next : prev;
-    });
-    requestAnimationFrame(autoResize);
+    setConfirmedTokens((prev) => reconcileMentionTokens(value, prev, tokenMapRef.current));
 
     if (value === "/") {
+      cancelMentionRead();
       setPopover("slash");
       setPopoverFilter("");
       return;
@@ -414,6 +464,7 @@ export function ChatInput({ draft, disabled }: ChatInputProps) {
         return;
       }
       if (item.command === "/model") {
+        cancelMentionRead();
         setPopover("slash-model");
         setPopoverFilter("");
         setText("");
@@ -447,7 +498,7 @@ export function ChatInput({ draft, disabled }: ChatInputProps) {
       return;
     }
     if (configBlocked) {
-      nudgeInput("模型未配置，请先完成配置后再发送");
+      nudgeInput(configHint);
       return;
     }
     if (hasUploadingFiles) {
@@ -455,7 +506,7 @@ export function ChatInput({ draft, disabled }: ChatInputProps) {
       return;
     }
     if (hasFailedFiles) {
-      nudgeInput("有文件上传失败，请移除后再发送");
+      nudgeInput("有附件未就绪，请重试或移除后再发送");
       return;
     }
     const trimmed = text.trim();
@@ -465,23 +516,32 @@ export function ChatInput({ draft, disabled }: ChatInputProps) {
 
     const draftText = text;
     const finalText = applyDisplayReplacements(trimmed, tokenMapRef.current);
-    const context = composerContext();
+    const context = composerMessageContext();
+    const sentReferenceState = useWorkbookStore.getState();
     sendPendingRef.current = true;
     setIsSending(true);
     try {
       if (!useChatStore.getState().sessionId) await ensureActiveSession();
       const sent = await sendMessage({
         text: finalText,
-        ...(context && !finalText.startsWith("/")
-          ? { context: [{ docId: context.docId, rev: context.rev, range: context.range }] }
-          : {}),
+        ...(context.length > 0 && !finalText.startsWith("/") ? { context } : {}),
       });
       if (!sent) return;
-      setText((current) => (current === draftText ? "" : current));
-      resetTokens();
+      try {
+        if (
+          readDraft(persistentDraftStorage(), scope) ===
+          applyDisplayReplacements(draftText, tokenMapRef.current)
+        )
+          saveDraft(persistentDraftStorage(), scope, "");
+      } catch {
+        /* private browsing */
+      }
+      if (textareaRef.current?.value === draftText) {
+        setText("");
+        resetTokens();
+      }
       // 钉住的区域只随这一条消息发送
-      if (useWorkbookStore.getState().pinnedSelection) dismissContext();
-      requestAnimationFrame(autoResize);
+      resetComposerContext(sentReferenceState);
     } catch (err) {
       nudgeInput(errorMessage(err, "暂时无法发送，请重试"));
     } finally {
@@ -501,16 +561,19 @@ export function ChatInput({ draft, disabled }: ChatInputProps) {
       return;
     }
     if (configBlocked) {
-      nudgeInput("模型未配置，请先完成配置后再发送");
+      nudgeInput(configHint);
       return;
     }
     void resumeAgent().catch((err) => nudgeInput(`继续失败：${errorMessage(err, "未知错误")}`));
-  }, [disabled, configBlocked, nudgeInput]);
+  }, [disabled, configBlocked, configHint, nudgeInput]);
 
   const origin = failure?.origin ?? null;
   const handleRetryWithModel = useCallback(
     (profileId: string) => {
-      if (origin) void restartFrom(origin, { modelProfileId: profileId });
+      if (!origin) return;
+      const files = filesChangedAfter(origin.seq, origin.agentId);
+      if (files.length > 0) setRetryConfirm({ origin, modelProfileId: profileId, files });
+      else void restartFrom(origin, { modelProfileId: profileId });
     },
     [origin],
   );
@@ -548,10 +611,10 @@ export function ChatInput({ draft, disabled }: ChatInputProps) {
       const { selectionStart, selectionEnd } = textarea;
       if (selectionStart !== selectionEnd) return;
       const cursor = selectionStart;
-      for (const token of confirmedTokens) {
-        const idx = text.indexOf(token);
-        if (idx < 0) continue;
-        const tokenEnd = idx + token.length;
+      for (const { token, start: idx, end: tokenEnd } of mentionOccurrences(
+        text,
+        confirmedTokens,
+      )) {
         const hit =
           e.key === "Backspace"
             ? cursor > idx && cursor <= tokenEnd
@@ -559,17 +622,19 @@ export function ChatInput({ draft, disabled }: ChatInputProps) {
         if (hit) {
           e.preventDefault();
           const trailSpace = text[tokenEnd] === " " ? 1 : 0;
-          setText(text.slice(0, idx) + text.slice(tokenEnd + trailSpace));
+          const nextText = text.slice(0, idx) + text.slice(tokenEnd + trailSpace);
+          const tokenRemains = mentionOccurrences(nextText, [token]).length > 0;
+          setText(nextText);
           setConfirmedTokens((prev) => {
+            if (tokenRemains) return prev;
             const next = new Set(prev);
             next.delete(token);
             return next;
           });
-          tokenMapRef.current.delete(token);
+          if (!tokenRemains) tokenMapRef.current.delete(token);
           requestAnimationFrame(() => {
             textarea.focus();
             textarea.setSelectionRange(idx, idx);
-            autoResize();
           });
           return;
         }
@@ -600,14 +665,23 @@ export function ChatInput({ draft, disabled }: ChatInputProps) {
           {...(origin ? { onRetryWithModel: handleRetryWithModel } : {})}
         />
       )}
-      <div className="em-composer-tabs" aria-label="当前引用">
-        <WorkbookContextChip />
-      </div>
+      {workspacePickerOpen && (
+        <WorkspaceAttachmentPicker
+          onClose={() => setWorkspacePickerOpen(false)}
+          onPick={(path) =>
+            attachWorkspaceFiles([{ path, filename: path.split("/").pop() ?? path }])
+          }
+        />
+      )}
       <ChatDropzone
         onNativeFiles={addFiles}
         onExcelFiles={attachWorkspaceFiles}
         highlighted={draftHighlight}
       >
+        <div className="em-composer-tabs" role="toolbar" aria-label="当前引用">
+          <WorkbookContextChip />
+        </div>
+
         <ChatMentionList
           popover={popover}
           popoverItems={popoverItems}
@@ -628,6 +702,7 @@ export function ChatInput({ draft, disabled }: ChatInputProps) {
             activeSlashCmd={null}
             atCategory={null}
             onBackToSlash={() => {
+              cancelMentionRead();
               setPopover("slash");
               setPopoverFilter("");
               setText("/");
@@ -650,9 +725,17 @@ export function ChatInput({ draft, disabled }: ChatInputProps) {
                   <Settings className="h-4 w-4" />
                 </span>
                 <div className="min-w-0 flex-1">
-                  <p className="em-nomodel-title">还没有可用的模型</p>
+                  <p className="em-nomodel-title">
+                    {modelsUnresolved
+                      ? modelsError
+                        ? "模型列表读取失败"
+                        : "正在读取模型…"
+                      : "还没有可用的模型"}
+                  </p>
                   <p className="em-nomodel-desc">
-                    添加一个模型档案后就能开始任务；文件和表格现在就可以浏览。
+                    {modelsUnresolved
+                      ? "文件和表格可以先浏览，模型就绪后再发送任务。"
+                      : "添加一个模型档案后就能开始任务；文件和表格现在就可以浏览。"}
                   </p>
                 </div>
                 <button
@@ -660,20 +743,26 @@ export function ChatInput({ draft, disabled }: ChatInputProps) {
                   onClick={() => openSettings("model")}
                   className="em-nomodel-action"
                 >
-                  去设置模型
+                  {modelsUnresolved ? "查看模型状态" : "去设置模型"}
                 </button>
               </div>
             </motion.div>
           )}
         </AnimatePresence>
 
-        <div className="flex flex-wrap items-center justify-between gap-y-1 px-1 pt-1">
-          <div className="flex items-center gap-0.5 pr-3 pt-1 pb-0">
-            <ChatModeTabs />
-            <span className="mx-1 h-3.5 w-px bg-[var(--em-line)]" aria-hidden="true" />
-            <ModeBadges />
-            <ThinkingLevelSelector />
-            <ContextUsageButton />
+        <div className="em-composer-modebar flex flex-wrap items-center justify-between gap-y-1 px-1 pt-1">
+          <div className="flex min-w-0 w-full items-center gap-0.5 pr-1 sm:pr-3 pt-1 pb-0">
+            {isMobile ? (
+              <MobileComposerTools />
+            ) : (
+              <>
+                <ChatModeTabs />
+                <span className="mx-1 h-3.5 w-px bg-[var(--em-line)]" aria-hidden="true" />
+                <ModeBadges />
+                <ThinkingLevelSelector />
+                <ContextUsageButton />
+              </>
+            )}
             {viewAgentName && (
               <span className="ml-1 truncate rounded-md bg-muted/60 px-1.5 py-0.5 text-[11px] text-muted-foreground">
                 发给 {viewAgentName}
@@ -711,7 +800,10 @@ export function ChatInput({ draft, disabled }: ChatInputProps) {
         </AnimatePresence>
 
         <div className="em-input-toolbar flex items-end gap-1 px-1.5 py-1.5">
-          <ChatUploadButton onPick={addFiles} />
+          <ChatUploadButton
+            onPick={addFiles}
+            onWorkspacePick={() => setWorkspacePickerOpen(true)}
+          />
 
           <div className="relative min-w-0 flex-1">
             <div
@@ -728,7 +820,7 @@ export function ChatInput({ draft, disabled }: ChatInputProps) {
                 WebkitTextSizeAdjust: "100%",
               }}
             >
-              {renderHighlightedText(text)}
+              {highlightedText}
             </div>
             <Textarea
               ref={textareaRef}
@@ -772,6 +864,7 @@ export function ChatInput({ draft, disabled }: ChatInputProps) {
                 WebkitTextSizeAdjust: "100%",
                 color: "transparent",
                 caretColor: "var(--foreground)",
+                scrollbarGutter: "stable",
               }}
               rows={1}
             />
@@ -843,6 +936,16 @@ export function ChatInput({ draft, disabled }: ChatInputProps) {
           </div>
         </div>
       </ChatDropzone>
+      <RollbackConfirmDialog
+        open={retryConfirm !== null}
+        files={retryConfirm?.files ?? []}
+        onCancel={() => setRetryConfirm(null)}
+        onConfirm={() => {
+          const pending = retryConfirm;
+          setRetryConfirm(null);
+          if (pending) void restartFrom(pending.origin, { modelProfileId: pending.modelProfileId });
+        }}
+      />
     </>
   );
 }

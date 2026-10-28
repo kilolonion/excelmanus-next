@@ -6,6 +6,7 @@ import { createApiClient, type LogRecord } from "@excelmanus/protocol";
 import { MockLanguageModelV4 } from "ai/test";
 import { afterAll, describe, expect, test } from "vitest";
 import { type RunningServer, startServer } from "../src/index.ts";
+import { createTestProfile } from "./fixtures/create-model.ts";
 
 const servers: RunningServer[] = [];
 const dirs: string[] = [];
@@ -91,7 +92,7 @@ describe("审批持久化闭环", () => {
     });
     servers.push(server);
     const api = createApiClient(server.url, server.token);
-    await api.createModelProfile({
+    await createTestProfile(api, {
       name: "approval",
       provider: "custom-openai-compatible",
       model: "mock-approval",

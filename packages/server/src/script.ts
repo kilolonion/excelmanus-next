@@ -18,14 +18,29 @@ import type { DatabaseSync } from "node:sqlite";
 import { TextDecoder } from "node:util";
 import {
   atomicWrite,
+  assertToolWriteAccess,
+  type ContractAccessRequest,
+  type EffectPermit,
+  effectPathExists,
+  normalizeAccessPath,
+  prepareEffectPlan,
+  recheckEffectPlan,
+  runWithEffectPlan,
+  classifyWorkbookEffect,
+  literalReplacementRanges,
+  canonicalWorkspaceRoot,
   createReadTable,
+  currentToolAccess,
   FileOperationError,
   internalPath,
   PathSafetyError,
   resolveWorkspacePath,
+  runWithToolAccess,
   sha256,
   type ToolContext,
   type ToolDefinition,
+  TurnAccessError,
+  withFileAccessSync,
 } from "@excelmanus/kernel";
 import { type ToolResult, toToolErrorCode } from "@excelmanus/protocol";
 import {
@@ -41,8 +56,10 @@ import {
   WORKBOOK_ANALYZE_SQL_SHEET_PLACEHOLDER,
   WORKBOOK_ANALYZE_SQL_TABLE,
   WorkbookEditInput,
+  workbookEditOps,
 } from "@excelmanus/workbook";
 import { z } from "zod";
+import { captureNumericRead } from "./numeric-finalizer.ts";
 
 const MAX_SDK_BYTES = 32 * 1024 * 1024;
 const TEXT_BINARY_EXTS = new Set([
@@ -96,6 +113,7 @@ type PendingDoc = PendingWorkbook | PendingCreate;
 interface StagedText {
   rel: string;
   stagedFile: string;
+  content: string;
   /** 脚本首次写入时目标尚不存在 */
   created: boolean;
 }
@@ -178,10 +196,12 @@ export function runScriptTool(deps: {
   return {
     name: "run_script",
     title: "运行脚本",
-    description: `在 QuickJS 沙箱中运行 TypeScript/JavaScript 脚本，批量读写工作簿与文本文件。
+    description: `在 QuickJS 沙箱中运行 TypeScript/JavaScript 脚本，适合自定义计算、条件逻辑和批量读写。简单观察、编辑或统计也可直接选对应工作簿工具，无需为了使用脚本而拆成额外步骤。
 可用 SDK：wb.read({path或docId, mode:"overview"|"range"|"search", ...})、wb.analyze({path或docId, mode:"sql"|"profile", sheet?, range?, sql?})、
 wb.analyze 的 sql 会把选定区域注册为 ${WORKBOOK_ANALYZE_SQL_TABLE} 表，也兼容 ${WORKBOOK_ANALYZE_SQL_SHEET_PLACEHOLDER} 作为 ${WORKBOOK_ANALYZE_SQL_TABLE} 的占位符；
 wb.edit({path|docId, ops} 或 {path, create:true, ops})；新建默认含空白 Sheet1，ops:[] 创建空工作簿，默认表改名用 sheet.rename，sheet.add 只新增其他工作表。files.find({glob})、files.readText({path})、files.writeText({path, content})、console.log。
+所有读取返回 ToolResult 包装：先检查 status，再从 result.data 取内容；例如 const result = await wb.read({path, mode:"range", sheet:"数据", range:"A1:C20"}); const rows = result.data.values。不要直接用 result.values。files.readText 的文本在 result.data.content。
+多表写入的 range 必须带表名，如 "'核对'!A1:B5"；sheet.add 不会把后续操作切换到新表。
 脚本可顶层 await 与 return 一个 JSON 可序列化的值。
 写语义：所有修改先暂存，脚本成功结束后先向你展示待发布清单（工作簿区域预览/文本前几行），批准后才逐一发布；
 脚本抛错、超时、被拒绝或被取消时全部丢弃。
@@ -199,17 +219,20 @@ console.log 可输出行数、合计等摘要；逐格 SDK 调用会增加往返
     roles: ["main", "lead", "worker", "reader"],
     async execute(args, ctx): Promise<ToolResult> {
       const a = Input.parse(args);
+      const access = currentToolAccess();
+      let sdkCallIndex = 0;
       const toolCallId = ctx.toolCallId;
       const timeoutMs = (a.timeoutSeconds ?? 30) * 1000;
 
       // 暂存目录：.excelmanus/tmp/script-<toolCallId>/（内部 API，不经路径校验对外暴露）
       const stagingDirRel = `tmp/script-${toolCallId}`;
       let stagedSeq = 0;
-      const stagedFile = () => internalPath(ctx.workspaceRoot, `${stagingDirRel}/s${stagedSeq++}`);
+      // Keep authored buffers in memory until the complete publication plan is authorized.
+      const stagedFile = () => join(stagingDirAbs(), `s${stagedSeq++}`);
       // 清理路径不带副作用（internalPath 会顺带建目录）
       const stagingDirAbs = () =>
         join(
-          resolveWorkspacePath(ctx.workspaceRoot, ".").abs,
+          canonicalWorkspaceRoot(ctx.workspaceRoot),
           ".excelmanus",
           "tmp",
           `script-${toolCallId}`,
@@ -222,6 +245,19 @@ console.log 可输出行数、合计等摘要；逐格 SDK 调用会增加往返
       /** rel → 脚本首次看到时的内容哈希（null = 当时不存在） */
       const firstSight = new Map<string, string | null>();
       const scriptReads = createReadTable();
+      const actualReads: Record<string, unknown>[] = [];
+      const readDocRevs: Record<string, number> = {};
+      const recordRead = (toolName: string, result: ToolResult): unknown => {
+        const unwrapped = unwrap(result);
+        const read = captureNumericRead(toolName, result);
+        if (read) {
+          actualReads.push(read);
+          for (const [docId, rev] of Object.entries(read.docRevs as Record<string, number>))
+            readDocRevs[docId] ??= rev;
+        }
+        return unwrapped;
+      };
+      const provenance = () => ({ code: a.code, reads: actualReads });
 
       /** expectedVersions 的路径键先做规范化（非法路径在进沙箱前拒绝）。 */
       const expectedByRel = new Map<string, string>();
@@ -234,7 +270,19 @@ console.log 可输出行数、合计等摘要；逐格 SDK 调用会增加往返
 
       const sight = (abs: string, rel: string) => {
         if (!firstSight.has(rel)) {
-          firstSight.set(rel, existsSync(abs) ? sha256(readFileSync(abs)) : null);
+          firstSight.set(
+            rel,
+            withFileAccessSync({ kind: "file-metadata", path: abs, purpose: "script-sight" }, () =>
+              existsSync(abs),
+            )
+              ? sha256(
+                  withFileAccessSync(
+                    { kind: "file-bytes", path: abs, purpose: "script-sight" },
+                    () => readFileSync(abs),
+                  ),
+                )
+              : null,
+          );
         }
       };
 
@@ -256,22 +304,33 @@ console.log 可输出行数、合计等摘要；逐格 SDK 调用会增加往返
         } catch (e) {
           throw new SdkCallError("INVALID_ARGUMENT", e instanceof Error ? e.message : String(e));
         }
+        if (parsed.path !== undefined) assertToolWriteAccess(parsed.path, ctx.workspaceRoot, parsed.create ? "create" : "mutate");
+        if (parsed.docId !== undefined) {
+          const meta = svc.meta(parsed.docId);
+          if (meta) assertToolWriteAccess(meta.path, ctx.workspaceRoot);
+        }
         if (parsed.create) {
           if (parsed.docId !== undefined || parsed.path === undefined) {
             throw new SdkCallError("INVALID_ARGUMENT", "create 需要 path 且不接受 docId");
           }
-          const { rel } = resolveWorkspacePath(ctx.workspaceRoot, parsed.path);
+          const rel = normalizeAccessPath(parsed.path);
+          if (!rel) throw new SdkCallError("INVALID_ARGUMENT", "新建路径不合法");
           if (extname(rel).toLowerCase() !== ".xlsx") {
             throw new SdkCallError("INVALID_ARGUMENT", "新建工作簿必须使用 .xlsx");
           }
           const key = `create:${rel}`;
           let pd = docByKey.get(key);
+          if (pd && parsed.sheetNames)
+            throw new SdkCallError(
+              "INVALID_ARGUMENT",
+              "同一脚本中新建同一路径时，sheetNames 只能在首次 wb.edit 提供",
+            );
           if (!pd) {
             pd = { kind: "create", path: rel, ops: [] };
             docByKey.set(key, pd);
             docOrder.push(pd);
           }
-          (pd as PendingCreate).ops.push(...parsed.ops);
+          (pd as PendingCreate).ops.push(...workbookEditOps(parsed));
           return {
             status: "ok",
             data: { buffered: true, path: rel, opsCount: (pd as PendingCreate).ops.length },
@@ -326,19 +385,33 @@ console.log 可输出行数、合计等摘要；逐格 SDK 调用会增加往返
         );
         const staged = texts.get(rel);
         if (staged) {
+          const bytes = Buffer.from(staged.content, "utf8");
+          actualReads.push({ toolName: "files.readText", path: rel, sha256: sha256(bytes), staged: true, scope: { kind: "file_bytes" } });
           return {
             status: "ok",
-            data: { path: rel, content: readFileSync(staged.stagedFile, "utf8"), staged: true },
+            data: { path: rel, content: new TextDecoder("utf-8", { fatal: true }).decode(bytes), staged: true },
           };
         }
         sight(abs, rel);
-        if (!existsSync(abs) || !statSync(abs).isFile()) {
+        if (
+          !withFileAccessSync(
+            { kind: "file-metadata", path: abs, purpose: "script-read-text" },
+            () => existsSync(abs) && statSync(abs).isFile(),
+          )
+        ) {
           throw new SdkCallError("NOT_FOUND", `路径不存在：${rel}`);
         }
-        if (statSync(abs).size > MAX_SDK_BYTES) {
+        if (
+          withFileAccessSync(
+            { kind: "file-metadata", path: abs, purpose: "script-read-text" },
+            () => statSync(abs),
+          ).size > MAX_SDK_BYTES
+        ) {
           throw new SdkCallError("LIMIT_EXCEEDED", "文件超过 32MB");
         }
-        const text = new TextDecoder("utf-8", { fatal: true }).decode(readFileSync(abs));
+        const bytes = withFileAccessSync({ kind: "file-bytes", path: abs, purpose: "script-read-text" }, () => readFileSync(abs));
+        const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+        actualReads.push({ toolName: "files.readText", path: rel, sha256: sha256(bytes), scope: { kind: "file_bytes" } });
         return { status: "ok", data: { path: rel, content: text } };
       };
 
@@ -349,6 +422,17 @@ console.log 可输出行数、合计等摘要；逐格 SDK 调用会增加往返
         const a2 = Array.isArray(rawArgs)
           ? { path: rawArgs[0], content: rawArgs[1] }
           : (rawArgs as { path?: unknown; content?: unknown } | null);
+        const requestedPath = typeof a2?.path === "string" ? normalizeAccessPath(a2.path) : undefined;
+        if (!requestedPath) throw new SdkCallError("INVALID_ARGUMENT", "缺少合法path");
+        const prior = texts.get(requestedPath);
+        const mutation = prior ? !prior.created : expectedByRel.has(requestedPath) || firstSight.get(requestedPath) != null;
+        const operation = mutation ? "mutate" : "create";
+        const permit = prepareEffectPlan({ workspaceRoot: ctx.workspaceRoot, atomicScope: "single-resource", signal: ctx.signal,
+          effects: [{ operation, path: requestedPath }, ...(mutation ? [
+            { operation: "read-metadata" as const, path: requestedPath }, { operation: "read-content" as const, path: requestedPath },
+          ] : [])],
+        });
+        return runWithEffectPlan(permit, () => {
         const { abs, rel } = resolveWorkspacePath(
           ctx.workspaceRoot,
           typeof a2?.path === "string" ? a2.path : "",
@@ -368,20 +452,25 @@ console.log 可输出行数、合计等摘要；逐格 SDK 调用会增加往返
         if (Buffer.byteLength(a2.content, "utf8") > MAX_SDK_BYTES) {
           throw new SdkCallError("LIMIT_EXCEEDED", "content 超过 32MB");
         }
-        sight(abs, rel);
+        if (mutation) sight(abs, rel);
+        else {
+          if (effectPathExists(rel, ctx.workspaceRoot)) throw new SdkCallError("VERSION_CONFLICT", "未给已有目标的可信版本，本次不覆盖");
+          firstSight.set(rel, null);
+        }
         let st = texts.get(rel);
         if (!st) {
           st = {
             rel,
             stagedFile: stagedFile(),
-            created: !existsSync(abs),
+            content: a2.content,
+            created: !mutation,
           };
           texts.set(rel, st);
           textOrder.push(rel);
         }
-        mkdirSync(dirname(st.stagedFile), { recursive: true });
-        writeFileSync(st.stagedFile, a2.content, "utf8");
+        st.content = a2.content;
         return { status: "ok", data: { path: rel, staged: true } };
+        });
       };
 
       /** 写后读拦截：目标工作簿在本脚本里已有缓冲的 wb.edit → 明确报错（读不到未发布修改）。 */
@@ -407,47 +496,58 @@ console.log 可输出行数、合计等摘要；逐格 SDK 调用会增加往返
 
       const host: SandboxHost = {
         async call(ns, method, callArgs, signal) {
-          // 子工具拿脚本级读集与中止信号；工作区/会话/租约沿用外 ctx
-          const scriptCtx: ToolContext = { ...ctx, signal, reads: scriptReads };
-          try {
-            switch (`${ns}.${method}`) {
-              case "wb.read": {
-                const t = deps.tools.get("workbook_read");
-                if (!t) throw new SdkCallError("UNSUPPORTED_FEATURE", "workbook 模块未装配");
-                assertNoBufferedEdit(callArgs);
-                return unwrap(await t.execute(callArgs, scriptCtx));
-              }
-              case "wb.analyze": {
-                const a2 = callArgs as { saveTo?: unknown } | null;
-                if (a2 && typeof a2 === "object" && a2.saveTo !== undefined) {
-                  throw new SdkCallError("INVALID_ARGUMENT", "脚本中请用 wb.edit 写入");
+          const invoke = async () => {
+            // 子工具拿脚本级读集与中止信号；工作区/会话/租约沿用外 ctx
+            const scriptCtx: ToolContext = { ...ctx, signal, reads: scriptReads };
+            try {
+              switch (`${ns}.${method}`) {
+                case "wb.read": {
+                  const t = deps.tools.get("workbook_read");
+                  if (!t) throw new SdkCallError("UNSUPPORTED_FEATURE", "workbook 模块未装配");
+                  assertNoBufferedEdit(callArgs);
+                  return recordRead("workbook_read", await t.execute(callArgs, scriptCtx));
                 }
-                const t = deps.tools.get("workbook_analyze");
-                if (!t) throw new SdkCallError("UNSUPPORTED_FEATURE", "workbook 模块未装配");
-                assertNoBufferedEdit(callArgs);
-                return unwrap(await t.execute(callArgs, scriptCtx));
+                case "wb.analyze": {
+                  const a2 = callArgs as { saveTo?: unknown } | null;
+                  if (a2 && typeof a2 === "object" && a2.saveTo !== undefined) {
+                    throw new SdkCallError("INVALID_ARGUMENT", "脚本中请用 wb.edit 写入");
+                  }
+                  const t = deps.tools.get("workbook_analyze");
+                  if (!t) throw new SdkCallError("UNSUPPORTED_FEATURE", "workbook 模块未装配");
+                  assertNoBufferedEdit(callArgs);
+                  return recordRead("workbook_analyze", await t.execute(callArgs, scriptCtx));
+                }
+                case "wb.edit":
+                  return await wbEdit(callArgs);
+                case "files.find": {
+                  const t = deps.tools.get("find");
+                  if (!t) throw new SdkCallError("UNSUPPORTED_FEATURE", "files 模块未装配");
+                  return unwrap(await t.execute(callArgs, scriptCtx));
+                }
+                case "files.readText":
+                  return filesReadText(callArgs);
+                case "files.writeText":
+                  return filesWriteText(callArgs);
+                default:
+                  throw new SdkCallError("INVALID_ARGUMENT", `未知 SDK 方法 ${ns}.${method}`);
               }
-              case "wb.edit":
-                return await wbEdit(callArgs);
-              case "files.find": {
-                const t = deps.tools.get("find");
-                if (!t) throw new SdkCallError("UNSUPPORTED_FEATURE", "files 模块未装配");
-                return unwrap(await t.execute(callArgs, scriptCtx));
-              }
-              case "files.readText":
-                return filesReadText(callArgs);
-              case "files.writeText":
-                return filesWriteText(callArgs);
-              default:
-                throw new SdkCallError("INVALID_ARGUMENT", `未知 SDK 方法 ${ns}.${method}`);
+            } catch (e) {
+              if (e instanceof SdkCallError) throw e;
+              if (e instanceof PathSafetyError || e instanceof TurnAccessError)
+                throw new SdkCallError(e.code, e.message);
+              if (e instanceof FileOperationError) throw new SdkCallError(e.code, e.message);
+              if (e instanceof DocNotFoundError) throw new SdkCallError("NOT_FOUND", e.message);
+              if (e instanceof z.ZodError) throw new SdkCallError("INVALID_ARGUMENT", e.message);
+              throw e;
             }
-          } catch (e) {
-            if (e instanceof SdkCallError) throw e;
-            if (e instanceof PathSafetyError) throw new SdkCallError(e.code, e.message);
-            if (e instanceof FileOperationError) throw new SdkCallError(e.code, e.message);
-            if (e instanceof DocNotFoundError) throw new SdkCallError("NOT_FOUND", e.message);
-            if (e instanceof z.ZodError) throw new SdkCallError("INVALID_ARGUMENT", e.message);
-            throw e;
+          };
+          // IPC callbacks run on the pool listener context, not necessarily this invocation.
+          if (!access) return invoke();
+          const sdkAccess = { ...access, sdkCallIndex: ++sdkCallIndex };
+          try {
+            return await runWithToolAccess(sdkAccess, invoke);
+          } finally {
+            access.auditFailed ||= sdkAccess.auditFailed;
           }
         },
       };
@@ -458,14 +558,40 @@ console.log 可输出行数、合计等摘要；逐格 SDK 调用会增加往返
       );
 
       try {
-        if (outcome.kind !== "ok") return mapOutcome(outcome);
+        if (outcome.kind !== "ok") {
+          // Host phase fact only: staging/reads may have occurred, but buildPlan/publish have not.
+          const failure = mapOutcome(outcome);
+          return { ...failure, data: {
+            ...((failure.data ?? {}) as Record<string, unknown>),
+            publicationPhase: "not_started", published: [], committedRevs: [],
+          } };
+        }
         // 发布时审批（08 §6、02 §1 先看见再同意）：先 dryRun 预演构建待发布清单，
         // 再请求审批，批准后走原有发布管线；预演失败按现有错误返回、什么都不发布。
         let planned: { items: Record<string, unknown>[]; hashMaterial: Record<string, unknown>[] };
+        let permit: EffectPermit;
         try {
-          planned = await buildPlan();
+          const effects: ContractAccessRequest[] = [];
+          for (const pd of docOrder) {
+            if (pd.kind === "create") effects.push({ operation: "create", path: pd.path });
+            else effects.push({ operation: "mutate", path: pd.path }, { operation: "read-content", path: pd.path }, { operation: "read-metadata", path: pd.path });
+            for (const op of pd.ops) if (op.op === "image.add") effects.push({ operation: "read-content", path: op.path }, { operation: "read-metadata", path: op.path });
+          }
+          for (const rel of textOrder) {
+            const t = texts.get(rel)!;
+            effects.push({ operation: t.created ? "create" : "mutate", path: rel });
+            if (!t.created) effects.push({ operation: "read-content", path: rel }, { operation: "read-metadata", path: rel });
+          }
+          permit = prepareEffectPlan({ workspaceRoot: ctx.workspaceRoot, effects,
+            atomicScope: docOrder.length + textOrder.length === 1 ? "single-resource" : "none", signal: ctx.signal });
+          planned = await runWithEffectPlan(permit, buildPlan);
         } catch (e) {
-          const code = e instanceof PublishError ? e.code : "INTERNAL";
+          const code =
+            e instanceof PublishError ||
+            e instanceof TurnAccessError ||
+            e instanceof PathSafetyError
+              ? e.code
+              : "INTERNAL";
           return err(code, e instanceof Error ? e.message : String(e), {
             data: { rolledBack: [] },
           });
@@ -474,8 +600,13 @@ console.log 可输出行数、合计等摘要；逐格 SDK 调用会增加往返
           // 脚本没有写入：不审批不发布
           return {
             status: "ok",
-            data: { value: outcome.value, stdout: outcome.stdout, published: [] },
-            docRevs: {},
+            data: {
+              value: outcome.value,
+              stdout: outcome.stdout,
+              published: [],
+              provenance: provenance(),
+            },
+            docRevs: readDocRevs,
           };
         }
         const planHash = sha256(
@@ -516,7 +647,7 @@ console.log 可输出行数、合计等摘要；逐格 SDK 调用会增加往返
             );
           }
         }
-        return await publish(outcome);
+        return await runWithEffectPlan(permit, () => publish(outcome, permit));
       } finally {
         // 无论成败都清暂存目录
         try {
@@ -539,6 +670,7 @@ console.log 可输出行数、合计等摘要；逐格 SDK 调用会增加往返
         const root = ctx.workspaceRoot;
         const source = { kind: "script" as const, id: `${ctx.sessionId}/${ctx.agentId}` };
         for (const pd of docOrder) {
+          resolveWorkspacePath(ctx.workspaceRoot, pd.path);
           if (pd.kind === "create") {
             svc!.validateCreatePath(root, pd.path);
             const res = await svc!.previewCreate(pd.ops, root);
@@ -591,8 +723,15 @@ console.log 可输出行数、合计等摘要；逐格 SDK 调用会增加往返
         for (const rel of textOrder) {
           const t = texts.get(rel)!;
           const { abs } = resolveWorkspacePath(root, rel);
-          const content = readFileSync(t.stagedFile, "utf8");
-          const original = existsSync(abs) ? readFileSync(abs, "utf8") : null;
+          const content = t.content;
+          const original = !t.created && withFileAccessSync(
+            { kind: "file-metadata", path: abs, purpose: "script-preview" },
+            () => existsSync(abs),
+          )
+            ? withFileAccessSync({ kind: "file-bytes", path: abs, purpose: "script-preview" }, () =>
+                readFileSync(abs, "utf8"),
+              )
+            : null;
           items.push({
             path: rel,
             kind: "text",
@@ -610,7 +749,8 @@ console.log 可输出行数、合计等摘要；逐格 SDK 调用会增加往返
       }
 
       /** 成功后的发布：租约 → 工作簿逐个提交 → 文本原子替换；失败按逆序回滚。 */
-      async function publish(ok: Extract<RunOutcome, { kind: "ok" }>): Promise<ToolResult> {
+      async function publish(ok: Extract<RunOutcome, { kind: "ok" }>, permit: EffectPermit): Promise<ToolResult> {
+        recheckEffectPlan(permit);
         const source = { kind: "script" as const, id: `${ctx.sessionId}/${ctx.agentId}` };
         const targets = [...docOrder.map((d) => d.path), ...textOrder];
         try {
@@ -632,47 +772,27 @@ console.log 可输出行数、合计等摘要；逐格 SDK 调用会增加往返
         const manifestFile = () => internalPath(root, `${stagingDirRel}/${TEXT_MANIFEST}`);
         const createdTexts: string[] = [];
         const docRevs: Record<string, number> = {};
+        const assetInputs: Array<{ path: string; sha256: string }> = [];
         const root = ctx.workspaceRoot;
 
         try {
           for (const pd of docOrder) {
+            recheckEffectPlan(permit);
+            resolveWorkspacePath(ctx.workspaceRoot, pd.path);
+            for (const op of pd.ops) if (op.op === "image.add") {
+              const asset = resolveWorkspacePath(ctx.workspaceRoot, op.path);
+              const hash = sha256(withFileAccessSync({ kind: "file-bytes", path: asset.abs, purpose: "harness-script-image-input" }, () => readFileSync(asset.abs)));
+              if (!assetInputs.some(input => input.path === asset.rel && input.sha256 === hash)) assetInputs.push({ path: asset.rel, sha256: hash });
+            }
             if (pd.kind === "create") {
-              const created = await svc!.create(
-                ctx.workspaceId,
-                root,
-                pd.path,
-                ctx.sessionId,
-                ctx.agentId,
-              );
-              const docId = created.meta.id;
-              try {
-                const res = await svc!.submit(docId, root, {
-                  baseRev: 0,
-                  readSet: [],
-                  source,
-                  sessionId: ctx.sessionId,
-                  toolCallId,
-                  ops: pd.ops,
-                  created: true,
-                });
-                if (!res.ok) throw new PublishError(res.code, res.message);
-                committedRevs.push({ docId, rev: res.rev, path: pd.path });
-                docRevs[docId] = res.rev;
-                await svc!.checkpoint(docId, root);
-                createdDocs.push({ docId, path: pd.path });
-                published.push({
-                  path: pd.path,
-                  kind: "workbook",
-                  docId,
-                  rev: docRevs[docId] ?? 0,
-                  created: true,
-                  sheets: res.sheets,
-                  changes: res.changes,
-                });
-              } catch (e) {
-                await svc!.discardCreated(docId, root, ctx.sessionId).catch(() => {});
-                throw e;
-              }
+              const result = await svc!.createWithOps(ctx, pd.path, pd.ops, false, "script");
+              if (result.status !== "ok") throw new PublishError(result.error?.code ?? "INTERNAL", result.error?.message ?? "新建未完成");
+              const data = result.data as { docId: string; rev: number; sheets: unknown; changes: unknown };
+              const docId = data.docId;
+              committedRevs.push({ docId, rev: data.rev, path: pd.path });
+              docRevs[docId] = data.rev;
+              createdDocs.push({ docId, path: pd.path });
+              published.push({ path: pd.path, kind: "workbook", docId, rev: data.rev, created: true, sheets: data.sheets, changes: data.changes });
             } else {
               const baseRev = scriptReads.get(pd.docId)?.minRev ?? pd.firstRev;
               const res = await svc!.submit(pd.docId, root, {
@@ -697,18 +817,34 @@ console.log 可输出行数、合计等摘要；逐格 SDK 调用会增加往返
             }
           }
           for (const rel of textOrder) {
+            recheckEffectPlan(permit);
             const t = texts.get(rel)!;
             const { abs } = resolveWorkspacePath(root, rel);
             const expected = expectedByRel.get(rel) ?? firstSight.get(rel) ?? null;
-            const current = existsSync(abs) ? sha256(readFileSync(abs)) : null;
+            const current = !t.created && withFileAccessSync(
+              { kind: "file-metadata", path: abs, purpose: "script-publish" },
+              () => existsSync(abs),
+            )
+              ? sha256(
+                  withFileAccessSync(
+                    { kind: "file-bytes", path: abs, purpose: "script-publish-hash" },
+                    () => readFileSync(abs),
+                  ),
+                )
+              : null;
             if (current !== expected) {
               throw new PublishError("VERSION_CONFLICT", `文件已被外部修改：${rel}`);
             }
-            const bytes = readFileSync(t.stagedFile);
+            const bytes = Buffer.from(t.content, "utf8");
+            recheckEffectPlan(permit);
+            mkdirSync(dirname(t.stagedFile), { recursive: true });
             const rollbackFile = current !== null ? `${t.stagedFile}.orig` : null;
             if (current !== null && rollbackFile !== null) {
               ctx.backups.ensureBackup(rel);
-              copyFileSync(abs, rollbackFile);
+              withFileAccessSync(
+                { kind: "file-bytes", path: abs, purpose: "script-rollback-copy" },
+                () => copyFileSync(abs, rollbackFile),
+              );
               replacedTexts.push({ rel, rollbackFile });
             }
             // 04 §8.2：发布前落一份清单（目标前后哈希 + 回滚副本），崩溃恢复据此判定文本是否已改
@@ -717,7 +853,7 @@ console.log 可输出行数、合计等摘要；逐格 SDK 调用会增加往返
             writeFileSync(`${manifestFile()}.tmp`, JSON.stringify(textManifest), "utf8");
             renameSync(`${manifestFile()}.tmp`, manifestFile());
             atomicWrite(root, rel, bytes, current);
-            if (t.created) ctx.backups.markCreated(rel);
+            if (t.created) ctx.backups.markCreated(rel, { sha256: sha256(bytes), size: bytes.length });
             createdTexts.push(...(t.created ? [rel] : []));
             published.push({ path: rel, kind: "text", created: t.created });
           }
@@ -727,6 +863,7 @@ console.log 可输出行数、合计等摘要；逐格 SDK 调用会增加往返
           const unrecovered: string[] = [];
           for (const c of [...committedRevs].reverse()) {
             try {
+              resolveWorkspacePath(root, c.path);
               const rr = await svc!.revert(c.docId, root, c.rev, source, ctx.sessionId, toolCallId);
               if (rr.ok) rolledBack.push(c.path);
               else unrecovered.push(c.path);
@@ -736,6 +873,7 @@ console.log 可输出行数、合计等摘要；逐格 SDK 调用会增加往返
           }
           for (const c of [...createdDocs].reverse()) {
             try {
+              resolveWorkspacePath(root, c.path);
               await svc!.discardCreated(c.docId, root, ctx.sessionId);
               rolledBack.push(c.path);
             } catch {
@@ -744,7 +882,13 @@ console.log 可输出行数、合计等摘要；逐格 SDK 调用会增加往返
           }
           for (const t of [...replacedTexts].reverse()) {
             try {
-              const publishedSha = sha256(readFileSync(resolveWorkspacePath(root, t.rel).abs));
+              const abs = resolveWorkspacePath(root, t.rel).abs;
+              const publishedSha = sha256(
+                withFileAccessSync(
+                  { kind: "file-bytes", path: abs, purpose: "script-rollback-hash" },
+                  () => readFileSync(abs),
+                ),
+              );
               atomicWrite(root, t.rel, readFileSync(t.rollbackFile), publishedSha);
               rolledBack.push(t.rel);
             } catch {
@@ -753,14 +897,29 @@ console.log 可输出行数、合计等摘要；逐格 SDK 调用会增加往返
           }
           for (const rel of [...createdTexts].reverse()) {
             try {
-              rmSync(resolveWorkspacePath(root, rel).abs, { force: true });
+              const abs = resolveWorkspacePath(root, rel).abs;
+              withFileAccessSync(
+                { kind: "file-write", path: abs, purpose: "script-rollback" },
+                () => rmSync(abs, { force: true }),
+              );
               rolledBack.push(rel);
             } catch {
               unrecovered.push(rel);
             }
           }
-          const code = e instanceof PublishError ? e.code : "INTERNAL";
+          const code =
+            e instanceof PublishError ||
+            e instanceof TurnAccessError ||
+            e instanceof PathSafetyError
+              ? e.code
+              : "INTERNAL";
           const message = e instanceof Error ? e.message : String(e);
+          const reported = [...published];
+          for (const committed of committedRevs) if (!reported.some(entry => entry.path === committed.path)) reported.push({ ...committed, kind: "workbook" });
+          for (const entry of reported) {
+            const path = String(entry.path);
+            await ctx.reportArtifactEffect?.({ path, docId: typeof entry.docId === "string" ? entry.docId : undefined, revision: typeof entry.rev === "number" ? entry.rev : undefined, effect: entry.kind === "text" ? "text" : "data", execution: unrecovered.includes(path) ? "uncertain" : "failed", persistence: unrecovered.includes(path) ? "unknown" : "not_written", footprint: ["*"], assetInputs, readDependencies: actualReads });
+          }
           if (unrecovered.length > 0) {
             return {
               status: "uncertain",
@@ -769,18 +928,26 @@ console.log 可输出行数、合计等摘要；逐格 SDK 调用会增加往返
                 message: `发布失败且回滚不完整：${message}`,
                 retryable: false,
               },
-              data: { rolledBack, unrecovered },
+              data: { committedRevs, published, rolledBack, unrecovered, provenance: provenance() },
             };
           }
-          return err(code, message, { data: { rolledBack } });
+          return err(code, message, { data: { committedRevs, published, rolledBack, provenance: provenance() } });
         }
 
+        // Reporting only collects actual effects. Semantic checks run outside this publication/rollback scope.
+        for (const entry of published) {
+          const pd = docOrder.find(doc => doc.path === entry.path);
+          const metadataOnly = !!pd && classifyWorkbookEffect(pd.ops) === "format";
+          const changes = entry.changes as { ranges?: string[] } | undefined;
+          await ctx.reportArtifactEffect?.({ path: String(entry.path), docId: typeof entry.docId === "string" ? entry.docId : undefined, revision: typeof entry.rev === "number" ? entry.rev : undefined, effect: entry.kind === "text" ? "text" : metadataOnly ? "format" : "data", execution: "succeeded", footprint: changes?.ranges?.length ? changes.ranges : ["*"], replacesDataRanges:pd?literalReplacementRanges(pd.ops,changes?.ranges??[]):[], assetInputs, readDependencies: actualReads });
+        }
         return {
           status: "ok",
           data: {
             value: ok.value,
             stdout: ok.stdout,
             published,
+            provenance: provenance(),
           },
           docRevs,
         };
@@ -791,13 +958,14 @@ console.log 可输出行数、合计等摘要；逐格 SDK 调用会增加往返
           const where = o.line !== undefined ? `脚本第 ${o.line} 行出错：` : "脚本出错：";
           return err("SANDBOX_ERROR", `${where}${o.message}`, {
             data: {
+              provenance: provenance(),
               line: o.line ?? null,
               stack: o.stack?.slice(0, 2000) ?? null,
               stdout: o.stdout,
             },
           });
         }
-        const data = { stdout: o.stdout, detail: o.detail ?? null };
+        const data = { stdout: o.stdout, detail: o.detail ?? null, provenance: provenance() };
         switch (o.reason) {
           case "timeout":
             return err("TIMEOUT", `脚本执行超过 ${timeoutMs / 1000} 秒`, { data });
@@ -844,7 +1012,17 @@ console.log 可输出行数、合计等摘要；逐格 SDK 调用会增加往返
           let current: string | null | false;
           try {
             const { abs } = resolveWorkspacePath(row.path, entry.rel);
-            current = existsSync(abs) ? sha256(readFileSync(abs)) : null;
+            current = withFileAccessSync(
+              { kind: "file-metadata", path: abs, purpose: "script-recovery" },
+              () => existsSync(abs),
+            )
+              ? sha256(
+                  withFileAccessSync(
+                    { kind: "file-bytes", path: abs, purpose: "script-recovery-hash" },
+                    () => readFileSync(abs),
+                  ),
+                )
+              : null;
           } catch {
             current = false;
           }

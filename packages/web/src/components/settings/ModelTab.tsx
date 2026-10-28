@@ -1,5 +1,7 @@
 import { Crown, Database, Settings2 } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { RegionStatus } from "@/components/ui/LazyRegion";
+import { refreshProfiles, useAppStore } from "@/stores/app-store";
 import {
   type ModelSubTab,
   subscribeModelSubTab,
@@ -47,6 +49,8 @@ function normalize(tab: ModelSubTab): VisibleSubTab {
 }
 
 export function ModelTab() {
+  const loaded = useAppStore((s) => s.profilesLoaded);
+  const error = useAppStore((s) => s.profilesError);
   const [subTab, setSubTab] = useState<VisibleSubTab>(() =>
     normalize(takePendingModelSubTab() ?? "providers"),
   );
@@ -64,8 +68,20 @@ export function ModelTab() {
         onChange={(key) => navigate(key as ModelSubTab)}
       />
       <main className="em-model-content" aria-live="polite">
-        {subTab === "providers" && <ProfileSection />}
-        {subTab === "roles" && <RoleModelSection />}
+        {subTab !== "subscription" && !loaded ? (
+          <RegionStatus
+            label="模型配置"
+            failed={Boolean(error)}
+            onRetry={() => {
+              void refreshProfiles().catch(() => undefined);
+            }}
+          />
+        ) : (
+          <>
+            {subTab === "providers" && <ProfileSection />}
+            {subTab === "roles" && <RoleModelSection />}
+          </>
+        )}
         {subTab === "subscription" && <SubscriptionPanel />}
       </main>
     </SettingsPageLayout>

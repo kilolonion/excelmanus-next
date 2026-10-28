@@ -5,8 +5,8 @@ const links = [
   {
     title: "GitHub",
     description: "查看源码、发行版本与问题反馈",
-    url: "https://github.com/kilolonion/excelmanus",
-    domain: "kilolonion/excelmanus",
+    url: "https://github.com/kilolonion/excelmanus-next",
+    domain: "kilolonion/excelmanus-next",
     icon: Github,
   },
   {
@@ -18,8 +18,8 @@ const links = [
   },
   {
     title: "发行版本",
-    description: "下载桌面版安装包，查看更新说明",
-    url: "https://github.com/kilolonion/excelmanus/releases",
+    description: "查看 Next 的发行版本与更新说明",
+    url: "https://github.com/kilolonion/excelmanus-next/releases",
     domain: "GitHub Releases",
     icon: Package,
   },

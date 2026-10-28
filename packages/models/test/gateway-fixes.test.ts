@@ -210,11 +210,114 @@ describe("消息转换", () => {
     { kind: "user", text: "说说看" },
   ];
 
-  test("openai-compatible：tool 消息不含 base64，图片放在随后的 user 消息；空 assistant 被跳过", async () => {
+  test("unknown vision does not transmit tool image bytes and gives a configuration hint", async () => {
     const cap = capture(okChat);
     await drain(
       createGateway().step({
         model: model({ fetch: cap.fetch }),
+        history,
+        signal: new AbortController().signal,
+      }),
+    );
+    expect(JSON.stringify(cap.bodies)).not.toContain(png);
+    expect(JSON.stringify(cap.bodies)).toContain("视觉能力尚未确认");
+  });
+
+  test.each([undefined, false, true])(
+    "error receipt never sends image as JSON or pixels (vision=%s)",
+    async (vision) => {
+      const cap = capture(okChat);
+      const error: ContextItem = {
+        kind: "toolResult",
+        toolCallId: "t1",
+        toolName: "workbook_render",
+        isError: true,
+        output: {
+          status: "error",
+          data: { ordinaryText: "keep this" },
+          error: { code: "TIMEOUT", message: "failed", retryable: true },
+          images: [{ mediaType: "image/png", data: png }],
+        },
+      };
+      await drain(
+        createGateway().step({
+          model: model({ fetch: cap.fetch, vision }),
+          history: [history[0]!, history[1]!, error],
+          signal: new AbortController().signal,
+        }),
+      );
+      expect(JSON.stringify(cap.bodies)).not.toContain(png);
+      expect(JSON.stringify(cap.bodies)).toContain("keep this");
+      expect(JSON.stringify(cap.bodies)).toContain("TIMEOUT");
+    },
+  );
+
+  test.each(["custom-openai-compatible", "anthropic", "openai"])(
+    "%s serializes real PNG bytes as a multimodal block, never tool JSON",
+    async (provider) => {
+      const bytes = Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+        "base64",
+      );
+      const cap = capture(
+        () =>
+          new Response(JSON.stringify({ error: { message: "fixture stop" } }), {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          }),
+      );
+      await drain(
+        createGateway().step({
+          model: model({ provider, vision: true, fetch: cap.fetch }),
+          history: [
+            history[0]!,
+            history[1]!,
+            {
+              ...history[2]!,
+              output: {
+                status: "ok",
+                images: [{ mediaType: "image/png", data: bytes.toString("base64") }],
+              },
+            } as ContextItem,
+          ],
+          signal: new AbortController().signal,
+        }),
+      );
+      const body = cap.bodies[0]!;
+      const serialized = JSON.stringify(body);
+      expect(serialized).toContain(
+        provider === "anthropic"
+          ? '"type":"image"'
+          : provider === "openai"
+            ? '"type":"input_image"'
+            : '"type":"image_url"',
+      );
+      const candidates: string[] = [];
+      const visit = (value: unknown): void => {
+        if (Array.isArray(value)) {
+          value.forEach(visit);
+          return;
+        }
+        if (!value || typeof value !== "object") return;
+        const obj = value as Record<string, unknown>;
+        if (obj.type === "image" && obj.source && typeof obj.source === "object")
+          candidates.push(String((obj.source as Record<string, unknown>).data));
+        if (obj.type === "image_url")
+          candidates.push(String((obj.image_url as { url: string }).url).split(",")[1]!);
+        if (obj.type === "input_image") candidates.push(String(obj.image_url).split(",")[1]!);
+        Object.values(obj).forEach(visit);
+      };
+      visit(body);
+      expect(candidates).toHaveLength(1);
+      expect(Buffer.from(candidates[0]!, "base64")).toEqual(bytes);
+    },
+  );
+
+  test("openai-compatible：tool 消息不含 base64，图片放在随后的 user 消息；空 assistant 被跳过", async () => {
+    const cap = capture(okChat);
+    await drain(
+      createGateway().step({
+        model: model({ fetch: cap.fetch, vision: true }),
         history,
         signal: new AbortController().signal,
       }),
@@ -253,6 +356,18 @@ describe("消息转换", () => {
 });
 
 describe("能力探测（09 §1）", () => {
+  test("an explicit synthetic vision probe opts in only its image request", async () => {
+    const flags: (boolean | undefined)[] = [];
+    const gw = {
+      async *step(req: { model: ResolvedModel; history: ContextItem[] }) {
+        if (req.history.some((item) => item.kind === "user" && item.images?.length))
+          flags.push(req.model.vision);
+        yield { kind: "text.delta" as const, text: "OK" };
+      },
+    };
+    await probeModel(gw, model({}), "openai-compatible", 1000, 1);
+    expect(flags).toEqual([true]);
+  });
   test("工具/视觉探测遇到限流记为未知（null），不是不支持", async () => {
     let n = 0;
     const gw = {
@@ -329,3 +444,120 @@ test("取消不合作且尚未返回流的模型，不等待提供商放行", as
     expect.objectContaining({ kind: "error", error: expect.objectContaining({ kind: "aborted" }) }),
   );
 }, 3000);
+
+test("模型无输出超时会结束等待，不留下无限调用", async () => {
+  let transportSignal: AbortSignal | undefined;
+  const gateway = createGateway({
+    idleTimeoutMs: 30,
+    resolveLanguageModel: () =>
+      new MockLanguageModelV4({
+        doStream: async ({ abortSignal }) => {
+          transportSignal = abortSignal;
+          return new Promise<never>(() => {});
+        },
+      }),
+  });
+  const events = await drain(
+    gateway.step({
+      model: model({}),
+      history: [{ kind: "user", text: "hi" }],
+      signal: new AbortController().signal,
+    }),
+  );
+  expect(events).toContainEqual(
+    expect.objectContaining({
+      kind: "error",
+      error: expect.objectContaining({
+        kind: "network",
+        retryable: false,
+        message: expect.stringContaining("未返回"),
+      }),
+    }),
+  );
+  expect(transportSignal?.aborted).toBe(true);
+}, 1000);
+
+test("连续有输出时重置空闲计时，不按总耗时打断", async () => {
+  const gateway = createGateway({
+    idleTimeoutMs: 100,
+    resolveLanguageModel: () =>
+      new MockLanguageModelV4({
+        doStream: async () => ({
+          stream: new ReadableStream({
+            async start(controller) {
+              controller.enqueue({ type: "text-start", id: "t" });
+              for (let i = 0; i < 5; i++) {
+                await new Promise((resolve) => setTimeout(resolve, 30));
+                controller.enqueue({ type: "text-delta", id: "t", delta: "x" });
+              }
+              controller.enqueue({ type: "text-end", id: "t" });
+              controller.enqueue({
+                type: "finish",
+                finishReason: { unified: "stop", raw: "stop" },
+                usage: {
+                  inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                  outputTokens: { total: 5, text: 5, reasoning: 0 },
+                },
+              });
+              controller.close();
+            },
+          }),
+        }),
+      }),
+  });
+  const events = await drain(
+    gateway.step({
+      model: model({}),
+      history: [{ kind: "user", text: "hi" }],
+      signal: new AbortController().signal,
+    }),
+  );
+  expect(events.filter((e) => (e as { kind: string }).kind === "text.delta")).toHaveLength(5);
+  expect(events).not.toContainEqual(expect.objectContaining({ kind: "error" }));
+});
+
+test("configured maximum output reaches the actual compatible SDK request", async () => {
+  const cap = capture(okChat);
+  await drain(
+    createGateway().step({
+      model: model({
+        provider: "custom-openai-compatible",
+        maxOutputTokens: 2048,
+        fetch: cap.fetch,
+      }),
+      history: [{ kind: "user", text: "hi" }],
+      tools: [],
+      signal: new AbortController().signal,
+    }),
+  );
+  expect(cap.bodies[0]?.max_tokens).toBe(2048);
+});
+
+test("tool image bytes are bounded before provider serialization and malformed image fields never become text", async () => {
+  const { toModelMessages } = await import("../src/gateway/convert.ts");
+  const item = (data: unknown): ContextItem => ({
+    kind: "toolResult",
+    toolCallId: "r",
+    toolName: "workbook_render",
+    output: { status: "ok", images: [{ mediaType: "image/png", data }] },
+  });
+  expect(() => toModelMessages([item("A".repeat(12 * 1024 * 1024))], { vision: true })).toThrow(
+    /8MiB/,
+  );
+  expect(() =>
+    toModelMessages(
+      [
+        item("A".repeat(8 * 1024 * 1024)),
+        item("A".repeat(8 * 1024 * 1024)),
+        item("A".repeat(8 * 1024 * 1024)),
+      ],
+      { vision: true },
+    ),
+  ).toThrow(/16MiB/);
+  expect(() => toModelMessages([item({ secret: "not-an-image" })], { vision: true })).toThrow(
+    /图片字段/,
+  );
+  expect(
+    JSON.stringify(toModelMessages([item("A".repeat(12 * 1024 * 1024))], { vision: false })),
+  ).not.toContain("AAAA");
+});

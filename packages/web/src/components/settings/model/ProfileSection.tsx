@@ -1,6 +1,6 @@
 // 模型连接：按提供商分组列出模型档案，可新增、编辑、测试、设为默认与删除。
 
-import type { ModelProfile } from "@excelmanus/protocol";
+import type { ModelProfile, ProviderConnection } from "@excelmanus/protocol";
 import {
   AlertTriangle,
   Database,
@@ -18,19 +18,39 @@ import { Button } from "@/components/ui/button";
 import { confirmAction } from "@/components/ui/confirm-dialog";
 import { toast } from "@/components/ui/toaster";
 import { api, errorMessage } from "@/lib/backend/api";
+import { getProviderColor, presetBrand } from "@/lib/provider-brand";
 import { refreshProfiles, useAppStore } from "@/stores/app-store";
+import { ConnectionEditor } from "./ConnectionEditor";
 import { CapabilityBadges } from "./capability-widgets";
-import { formatTokens, groupProfilesByProvider } from "./helpers";
+import { formatTokens } from "./helpers";
 import { takePendingModelProfile } from "./model-subtab";
 import { ProfileEditor } from "./ProfileEditor";
 import { ProviderAvatar } from "./ProviderLogo";
 
-type EditorState = { mode: "create" } | { mode: "edit"; profile: ModelProfile } | null;
+type EditorState =
+  | { mode: "create"; connection: ProviderConnection }
+  | { mode: "edit"; profile: ModelProfile }
+  | null;
 
 export function ProfileSection() {
   const profiles = useAppStore((s) => s.profiles);
   const providers = useAppStore((s) => s.providers);
-  const groups = useMemo(() => groupProfilesByProvider(profiles, providers), [profiles, providers]);
+  const connections = useAppStore((s) => s.connections);
+  const groups = useMemo(
+    () =>
+      connections.map((c) => ({
+        id: c.id,
+        label: c.name,
+        logoId: presetBrand(c.provider),
+        color: getProviderColor(presetBrand(c.provider)),
+        connection: c,
+        profiles: profiles.filter((p) => p.connectionId === c.id),
+      })),
+    [connections, profiles],
+  );
+  const [connectionEditor, setConnectionEditor] = useState<ProviderConnection | "create" | null>(
+    null,
+  );
   const [editor, setEditor] = useState<EditorState>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [tests, setTests] = useState<Record<string, { ok: boolean; text: string }>>({});
@@ -142,7 +162,7 @@ export function ProfileSection() {
               <h4 className="text-sm font-medium">模型连接</h4>
               <p className="mt-0.5 text-[10px] leading-relaxed text-muted-foreground">
                 {profiles.length
-                  ? `已添加 ${profiles.length} 个模型，来自 ${groups.length} 个提供商`
+                  ? `已添加 ${profiles.length} 个模型，来自 ${groups.length} 个供应商连接`
                   : "添加一个模型后即可开始任务"}
               </p>
             </div>
@@ -167,24 +187,33 @@ export function ProfileSection() {
               size="sm"
               variant="outline"
               className="h-8 gap-1 text-xs"
-              onClick={() => setEditor({ mode: "create" })}
+              onClick={() => {
+                setEditor(null);
+                setConnectionEditor("create");
+              }}
               data-coach-id="coach-settings-add-model"
             >
               <Plus className="h-3 w-3" />
-              添加模型
+              添加供应商
             </Button>
           </div>
         </div>
       </section>
 
-      {editor?.mode === "create" && <ProfileEditor onClose={() => setEditor(null)} />}
+      {connectionEditor && (
+        <ConnectionEditor
+          key={connectionEditor === "create" ? "new" : connectionEditor.id}
+          connection={connectionEditor === "create" ? undefined : connectionEditor}
+          onClose={() => setConnectionEditor(null)}
+        />
+      )}
 
-      {profiles.length === 0 && !editor && (
+      {connections.length === 0 && !connectionEditor && (
         <div className="rounded-xl border border-dashed px-4 py-10 text-center">
           <Database className="mx-auto h-7 w-7 text-muted-foreground/30" />
-          <p className="mt-2 text-xs font-medium text-muted-foreground">还没有模型</p>
+          <p className="mt-2 text-xs font-medium text-muted-foreground">还没有供应商连接</p>
           <p className="mt-1 text-[10px] text-muted-foreground/70">
-            填写 API Key 添加模型，或在「订阅账号」中登录 ChatGPT
+            先添加供应商连接，再选择模型；订阅用户可在「订阅账号」中登录 ChatGPT
           </p>
         </div>
       )}
@@ -194,7 +223,7 @@ export function ProfileSection() {
           key={group.id}
           className="em-settings-section overflow-hidden rounded-xl border border-border"
         >
-          <header className="flex items-center gap-2.5 border-b border-border/60 px-3 py-2.5">
+          <header className="flex flex-wrap items-center gap-2.5 border-b border-border/60 px-3 py-2.5">
             <ProviderAvatar
               id={group.logoId}
               label={group.label}
@@ -203,15 +232,118 @@ export function ProfileSection() {
             />
             <div className="min-w-0 flex-1">
               <p className="truncate text-[13px] font-semibold">{group.label}</p>
-              <p className="text-[10px] text-muted-foreground">{group.profiles.length} 个模型</p>
+              <p className="text-[10px] text-muted-foreground break-all">
+                {providers.find((p) => p.id === group.connection.provider)?.displayName} ·{" "}
+                {group.profiles.length} 个模型
+              </p>
+              {group.connection.baseUrl && (
+                <p className="text-[10px] text-muted-foreground break-all">
+                  {group.connection.baseUrl}
+                </p>
+              )}
+              <p className="text-[10px] text-muted-foreground">
+                {group.connection.modelsUpdatedAt
+                  ? `目录更新于 ${new Date(group.connection.modelsUpdatedAt).toLocaleString("zh-CN")}`
+                  : "尚未拉取模型列表"}
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-1">
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setEditor(null);
+                  setConnectionEditor(group.connection);
+                }}
+              >
+                编辑连接
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={busy === group.id}
+                onClick={() =>
+                  void run(
+                    group.id,
+                    async () => {
+                      const r = await api().refreshConnectionModels(group.id);
+                      await refreshProfiles();
+                      toast({ title: `已获取 ${r.items.length} 个模型`, tone: "success" });
+                    },
+                    "刷新模型列表失败，保留上次目录",
+                  )
+                }
+              >
+                刷新列表
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setConnectionEditor(null);
+                  setEditor({ mode: "create", connection: group.connection });
+                }}
+              >
+                <Plus className="h-3 w-3" />
+                添加模型
+              </Button>
+              <Button
+                size="icon"
+                variant="ghost"
+                aria-label={`删除供应商 ${group.label}`}
+                disabled={group.profiles.length > 0 || busy === group.id}
+                title={group.profiles.length ? "先移走或删除该组模型" : "删除空供应商连接"}
+                onClick={() =>
+                  void (async () => {
+                    if (
+                      await confirmAction({
+                        title: `删除供应商「${group.label}」`,
+                        description: "该连接当前没有模型。",
+                        confirmLabel: "删除",
+                        tone: "danger",
+                      })
+                    )
+                      await run(
+                        group.id,
+                        async () => {
+                          await api().deleteProviderConnection(group.id);
+                          await refreshProfiles();
+                        },
+                        "删除连接失败",
+                      );
+                  })()
+                }
+              >
+                <Trash2 className="h-3 w-3" />
+              </Button>
             </div>
           </header>
+          {editor?.mode === "create" && editor.connection.id === group.id && (
+            <div className="p-2">
+              <ProfileEditor
+                key={`new-${group.id}`}
+                connection={group.connection}
+                onClose={() => setEditor(null)}
+              />
+            </div>
+          )}
+          {!group.profiles.length &&
+            !(editor?.mode === "create" && editor.connection.id === group.id) && (
+              <p className="px-4 py-5 text-xs text-muted-foreground">
+                连接已就绪，点击“添加模型”选择要使用的模型。
+              </p>
+            )}
           <div className="divide-y divide-border/50">
             {group.profiles.map((profile) => {
               if (editor?.mode === "edit" && editor.profile.id === profile.id) {
                 return (
                   <div key={profile.id} className="p-2">
-                    <ProfileEditor profile={profile} onClose={() => setEditor(null)} />
+                    <ProfileEditor
+                      key={profile.id}
+                      profile={profile}
+                      connection={group.connection}
+                      onClose={() => setEditor(null)}
+                    />
                   </div>
                 );
               }
@@ -226,7 +358,7 @@ export function ProfileSection() {
                   <div className="flex items-start gap-2">
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="text-[13px] font-medium break-words">{profile.name}</span>
+                        <span className="text-[13px] font-medium break-words">{profile.model}</span>
                         {profile.isDefault && (
                           <Badge className="border-0 bg-[var(--em-primary-alpha-12)] px-1.5 py-0 text-[9px] text-[var(--em-primary)]">
                             默认
@@ -235,14 +367,9 @@ export function ProfileSection() {
                         <CapabilityBadges caps={profile.capabilities} />
                       </div>
                       <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[10px] text-muted-foreground">
-                        <code className="font-mono">{profile.model}</code>
+                        {profile.name !== profile.model && <span>{profile.name}</span>}
                         {profile.contextWindow ? (
                           <span>{formatTokens(profile.contextWindow)} 上下文</span>
-                        ) : null}
-                        {profile.baseUrl ? (
-                          <span className="truncate font-mono" title={profile.baseUrl}>
-                            {profile.baseUrl}
-                          </span>
                         ) : null}
                       </p>
                       {missingKey && (

@@ -10,11 +10,36 @@ import {
   OverlayCardInset,
 } from "@/components/ui/overlay-card";
 import { fileName } from "@/lib/paths";
+import { useChatStore } from "@/stores/chat-store";
 
 export interface ChangedFile {
   path: string;
   kind: "workbook" | "text";
   detail?: string;
+}
+
+/** 这条用户消息之后改过的文件（用于重新开始前的确认）。 */
+export function filesChangedAfter(seq: number, agentId: string): ChangedFile[] {
+  const { session } = useChatStore.getState();
+  const out = new Map<string, ChangedFile>();
+  for (const change of session.changes) {
+    if (change.seq <= seq || change.agentId !== agentId) continue;
+    const prev = out.get(change.path);
+    const cells = (prev?.detail ? Number.parseInt(prev.detail, 10) : 0) + change.cells;
+    out.set(change.path, {
+      path: change.path,
+      kind: "workbook",
+      detail: cells > 0 ? `${cells} 格` : "结构修改",
+    });
+  }
+  for (const tool of Object.values(session.tools)) {
+    if (tool.seq <= seq || tool.agentId !== agentId || tool.status !== "ok") continue;
+    if (tool.name !== "write" && tool.name !== "edit") continue;
+    const path = (tool.args as { path?: unknown })?.path;
+    if (typeof path === "string" && !out.has(path))
+      out.set(path, { path, kind: "text", detail: tool.name === "write" ? "写入" : "替换" });
+  }
+  return [...out.values()];
 }
 
 export function RollbackConfirmDialog({
@@ -64,7 +89,7 @@ export function RollbackConfirmDialog({
         <OverlayCardAction action="ghost" onClick={onCancel}>
           取消
         </OverlayCardAction>
-        <OverlayCardAction action="primary" onClick={onConfirm} autoFocus>
+        <OverlayCardAction action="primary" onClick={onConfirm}>
           仍然重新开始
         </OverlayCardAction>
       </OverlayCardFooter>

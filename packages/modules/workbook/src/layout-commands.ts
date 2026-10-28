@@ -6,6 +6,7 @@ export const LINK_COMMAND = "excelmanus.command.hyperlink";
 export const FILL_COMMAND = "excelmanus.command.fill";
 export const AXIS_SIZE_COMMAND = "excelmanus.command.axis-size";
 export const COPY_SHEET_COMMAND = "excelmanus.command.copy-sheet";
+export const RENAME_SHEET_COMMAND = "excelmanus.command.rename-sheet";
 const Size = z.object({
   unitId: z.string(),
   subUnitId: z.string(),
@@ -29,6 +30,46 @@ export function layoutCommands(
 ) {
   return [
     {
+      id: RENAME_SHEET_COMMAND,
+      type: CommandType.COMMAND,
+      handler: async (_a: unknown, input: unknown) => {
+        const p = input as { unitId: string; subUnitId: string; name: string };
+        const book = bookOf(p.unitId),
+          source = book?.getSheetBySheetId(p.subUnitId);
+        if (!book || !source) return false;
+        const oldName = source.getName();
+        if (!(await commands.executeCommand("sheet.command.set-worksheet-name", p))) return false;
+        for (const sheet of book.getSheets()) {
+          const cellValue: Record<number, Record<number, ICellData>> = {};
+          sheet.getCellMatrix().forValue((row, col, cell) => {
+            const link = cell?.custom?.excelmanusHyperlink as { url?: unknown } | undefined;
+            if (typeof link?.url !== "string") return;
+            const match = /^#(?:'((?:[^']|'')+)'|([^!]+))!(.+)$/.exec(link.url);
+            if (
+              !match ||
+              (match[1]?.replaceAll("''", "'") ?? match[2])?.toLowerCase() !== oldName.toLowerCase()
+            )
+              return;
+            const url = `#'${p.name.replaceAll("'", "''")}'!${match[3]}`;
+            (cellValue[row] ??= {})[col] = {
+              ...structuredClone(cell),
+              custom: { ...cell?.custom, excelmanusHyperlink: { ...link, url } },
+            };
+          });
+          if (
+            Object.keys(cellValue).length &&
+            !(await commands.executeCommand("sheet.mutation.set-range-values", {
+              unitId: p.unitId,
+              subUnitId: sheet.getSheetId(),
+              cellValue,
+            }))
+          )
+            return false;
+        }
+        return true;
+      },
+    },
+    {
       id: FILTER_COMMAND,
       type: CommandType.COMMAND,
       handler: async (_a: unknown, input: unknown) => {
@@ -37,7 +78,12 @@ export function layoutCommands(
           subUnitId: string;
           clear?: boolean;
           range: unknown;
-          columns: { column: number; values: (string | number | boolean)[]; blank?: boolean }[];
+          columns: {
+            column: number;
+            values?: (string | number | boolean)[];
+            blank?: boolean;
+            condition?: { operator: string; value: number };
+          }[];
         };
         const book = bookOf(p.unitId);
         if (!book) return false;
@@ -63,7 +109,20 @@ export function layoutCommands(
               col: col.column - 1,
               criteria: {
                 colId: col.column - 1,
-                filters: { filters: col.values.map(String), ...(col.blank ? { blank: true } : {}) },
+                ...(col.condition
+                  ? {
+                      customFilters: {
+                        customFilters: [
+                          { operator: col.condition.operator, val: col.condition.value },
+                        ],
+                      },
+                    }
+                  : {
+                      filters: {
+                        filters: (col.values ?? []).map(String),
+                        ...(col.blank ? { blank: true } : {}),
+                      },
+                    }),
               },
               reCalc: true,
             }))

@@ -280,9 +280,12 @@ function RangeAnswer({
       {question.type === "range_confirm" && suggested && (
         <button
           type="button"
-          disabled={busy || !sameDoc}
-          title={sameDoc ? undefined : "先打开对应的表格"}
-          onClick={() => doc && onSubmit({ docId: doc.docId, range: suggested }, doc.rev)}
+          disabled={busy}
+          title={sameDoc ? undefined : "先打开对应的表格，核对建议区域后再确认"}
+          onClick={() => {
+            if (sameDoc && doc) onSubmit({ docId: doc.docId, range: suggested }, doc.rev);
+            else open();
+          }}
           className="inline-flex h-7 items-center gap-1 rounded-md bg-[var(--em-primary)] px-3 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-40"
         >
           {busy ? (
@@ -290,7 +293,7 @@ function RangeAnswer({
           ) : (
             <Check className="h-3.5 w-3.5" />
           )}
-          确认 {suggested}
+          {sameDoc ? `确认 ${suggested}` : "打开表格后确认"}
         </button>
       )}
     </div>
@@ -355,6 +358,8 @@ export function QuestionInline({ question }: { question: QuestionState }) {
     }
   };
   if (question.status === "answered") {
+    // 停止、超时也用 null 收口问题；这不是用户提交的回答。
+    if (question.answer == null) return null;
     return (
       <div className="flex items-start gap-2 px-3 pb-2.5 pt-0.5">
         <User className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
@@ -405,7 +410,7 @@ export const AskUserCard = React.memo(function AskUserCard({
     ? spec.options.map(optionOf).filter((o): o is ChoiceOption => o !== null)
     : [];
   const pending = question?.status === "pending";
-  const answered = question?.status === "answered";
+  const answered = question?.status === "answered" && question.answer != null;
   const failed = tool.phase === "done" && tool.status !== "ok" && !answered;
   return (
     <div

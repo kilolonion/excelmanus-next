@@ -1,7 +1,12 @@
 // 后端连接：契约客户端（前端只经它发 REST）、桌面预加载桥、浏览器会话鉴权与同步通道地址。
 // 本机 Web 通过同源 HttpOnly Cookie 建立会话；桌面由预加载脚本注入后端地址与令牌（来源 app://excelmanus）。
 
-import { type ApiClient, ApiError, createApiClient } from "@excelmanus/protocol";
+import {
+  type ApiClient,
+  ApiError,
+  type ApiReadOptions,
+  createApiClient,
+} from "@excelmanus/protocol";
 
 const AUTH_PAUSED_KEY = "excelmanus.auth-paused";
 
@@ -65,7 +70,7 @@ export function browserSessionPaused(): boolean {
  * 建立后端会话。桌面带令牌直连；浏览器用同源 POST 换 HttpOnly Cookie（令牌不进 URL 与本地存储）。
  * 用户主动退出后不自动登录，返回 "signed-out"。
  */
-export async function connectBackend(): Promise<"ok" | "signed-out"> {
+export async function connectBackend(options?: ApiReadOptions): Promise<"ok" | "signed-out"> {
   const bridge = desktop();
   if (bridge) {
     client = createApiClient(bridge.backendUrl, bridge.token);
@@ -73,7 +78,7 @@ export async function connectBackend(): Promise<"ok" | "signed-out"> {
   }
   if (browserSessionPaused()) return "signed-out";
   client = createApiClient(backendBase(), null);
-  await client.createBrowserSession();
+  await client.createBrowserSession(options);
   return "ok";
 }
 

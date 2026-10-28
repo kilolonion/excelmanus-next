@@ -5,6 +5,7 @@ import { createApiClient } from "@excelmanus/protocol";
 import { MockLanguageModelV4 } from "ai/test";
 import { expect, test } from "vitest";
 import { startServer } from "../src/index.ts";
+import { createTestProfile } from "./fixtures/create-model.ts";
 
 test("超长脚本结果可用同一工具 cursor 续取，续取不重新执行脚本", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "excelmanus-pages-"));
@@ -75,7 +76,7 @@ test("超长脚本结果可用同一工具 cursor 续取，续取不重新执行
   const server = await startServer({ dataDir, resolveLanguageModel: () => model, log: () => {} });
   try {
     const api = createApiClient(server.url, server.token);
-    await api.createModelProfile({
+    await createTestProfile(api, {
       name: "test",
       provider: "custom-openai-compatible",
       model: "test",

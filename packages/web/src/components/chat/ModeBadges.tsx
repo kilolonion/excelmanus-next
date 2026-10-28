@@ -27,14 +27,14 @@ function isPermissionMode(value: unknown): value is PermissionMode {
 export function ModeBadges() {
   const sessionId = useChatStore((s) => s.sessionId);
   const sessionMode = useChatStore((s) => s.session.permissionMode);
-  const defaultMode = useAppStore((s) => s.settings?.defaultPermissionMode ?? "standard");
+  const defaultMode = useAppStore((s) => s.settings?.defaultPermissionMode ?? null);
   const [toggling, setToggling] = useState(false);
-  const active: PermissionMode = isPermissionMode(sessionMode) ? sessionMode : defaultMode;
-  const current = POLICIES.find((p) => p.key === active) ?? POLICIES[1];
+  const active: PermissionMode | null = isPermissionMode(sessionMode) ? sessionMode : defaultMode;
+  const current = POLICIES.find((p) => p.key === active);
 
   const handleSelect = useCallback(
     async (key: PermissionMode) => {
-      if (!sessionId || toggling || key === active) return;
+      if (!sessionId || !active || toggling || key === active) return;
       setToggling(true);
       try {
         await setPermissionMode(key);
@@ -55,7 +55,7 @@ export function ModeBadges() {
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
-                disabled={!sessionId || toggling}
+                disabled={!sessionId || !active || toggling}
                 data-coach-id="coach-mode-badges"
                 className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-colors outline-none disabled:cursor-default disabled:opacity-50 ${
                   active !== "confirm"
@@ -75,12 +75,12 @@ export function ModeBadges() {
                 ) : (
                   <Shield className="h-3 w-3" />
                 )}
-                <span className="hidden sm:inline">{current.label}</span>
+                <span className="hidden sm:inline">{current?.label ?? "权限待确认"}</span>
               </button>
             </DropdownMenuTrigger>
           </TooltipTrigger>
           <TooltipContent side="top" className="text-xs">
-            权限模式: {current.label}
+            权限模式: {current?.label ?? "权限待确认"}
           </TooltipContent>
         </Tooltip>
       </TooltipProvider>

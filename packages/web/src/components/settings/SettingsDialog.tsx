@@ -1,6 +1,8 @@
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  ArrowLeft,
   Brain,
+  ChevronRight,
   Folder,
   Info,
   Package,
@@ -12,7 +14,7 @@ import {
   SlidersHorizontal,
   X,
 } from "lucide-react";
-import { lazy, type ReactNode, Suspense } from "react";
+import { type ComponentType, type ReactNode, Suspense, useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { Button } from "@/components/ui/button";
 import {
@@ -22,20 +24,44 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { LazyRegion } from "@/components/ui/LazyRegion";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { type SettingsTab, useUIStore } from "@/stores/ui-store";
 
-const ModelTab = lazy(() => import("./ModelTab").then((m) => ({ default: m.ModelTab })));
-const GeneralTab = lazy(() => import("./GeneralTab").then((m) => ({ default: m.GeneralTab })));
-const RulesTab = lazy(() => import("./RulesTab").then((m) => ({ default: m.RulesTab })));
-const MemoryTab = lazy(() => import("./MemoryTab").then((m) => ({ default: m.MemoryTab })));
-const SkillsTab = lazy(() => import("./SkillsTab").then((m) => ({ default: m.SkillsTab })));
-const MCPTab = lazy(() => import("./McpTab").then((m) => ({ default: m.MCPTab })));
-const WorkspaceTab = lazy(() =>
+function localSettingsTab(label: string, load: () => Promise<{ default: ComponentType }>) {
+  return function SettingsTabRegion() {
+    return <LazyRegion load={load} componentProps={{}} label={label} />;
+  };
+}
+
+const ModelTab = localSettingsTab("模型与连接", () =>
+  import("./ModelTab").then((m) => ({ default: m.ModelTab })),
+);
+const GeneralTab = localSettingsTab("偏好与运行", () =>
+  import("./GeneralTab").then((m) => ({ default: m.GeneralTab })),
+);
+const RulesTab = localSettingsTab("规则", () =>
+  import("./RulesTab").then((m) => ({ default: m.RulesTab })),
+);
+const MemoryTab = localSettingsTab("记忆", () =>
+  import("./MemoryTab").then((m) => ({ default: m.MemoryTab })),
+);
+const SkillsTab = localSettingsTab("技能", () =>
+  import("./SkillsTab").then((m) => ({ default: m.SkillsTab })),
+);
+const MCPTab = localSettingsTab("MCP 服务", () =>
+  import("./McpTab").then((m) => ({ default: m.MCPTab })),
+);
+const WorkspaceTab = localSettingsTab("工作区与备份", () =>
   import("./WorkspaceTab").then((m) => ({ default: m.WorkspaceTab })),
 );
-const AccessTab = lazy(() => import("./AccessTab").then((m) => ({ default: m.AccessTab })));
-const AboutTab = lazy(() => import("./AboutTab").then((m) => ({ default: m.AboutTab })));
+const AccessTab = localSettingsTab("访问与安全", () =>
+  import("./AccessTab").then((m) => ({ default: m.AccessTab })),
+);
+const AboutTab = localSettingsTab("关于与更新", () =>
+  import("./AboutTab").then((m) => ({ default: m.AboutTab })),
+);
 
 function TabSpinner() {
   return (
@@ -140,15 +166,30 @@ const TAB_META: TabMeta[] = [
 const GROUPS = [...new Set(TAB_META.map((t) => t.group))];
 
 export function SettingsDialog() {
-  const { settingsOpen, settingsTab, openSettings, closeSettings } = useUIStore(
+  const isMobile = useIsMobile();
+  const {
+    settingsOpen,
+    settingsTab,
+    settingsOverview,
+    showSettingsOverview,
+    openSettings,
+    closeSettings,
+  } = useUIStore(
     useShallow((s) => ({
       settingsOpen: s.settingsOpen,
       settingsTab: s.settingsTab,
+      settingsOverview: s.settingsOverview,
+      showSettingsOverview: s.showSettingsOverview,
       openSettings: s.openSettings,
       closeSettings: s.closeSettings,
     })),
   );
 
+  const [detailVisited, setDetailVisited] = useState(!settingsOverview);
+  useEffect(() => {
+    if (!isMobile || !settingsOverview) setDetailVisited(true);
+  }, [isMobile, settingsOverview]);
+  const showIndex = isMobile && settingsOverview;
   const active = TAB_META.find((t) => t.value === settingsTab) ?? TAB_META[0];
 
   return (
@@ -159,7 +200,7 @@ export function SettingsDialog() {
       <DialogContent
         aria-describedby={undefined}
         showCloseButton={false}
-        className="em-settings-dialog !grid-none !flex !flex-col max-w-none max-h-none h-auto sm:max-w-5xl sm:h-auto min-h-0 p-0 gap-0 overflow-hidden rounded-none sm:rounded-2xl top-0 left-0 right-0 bottom-0 sm:top-[50%] sm:left-[50%] sm:right-auto sm:bottom-auto translate-x-0 translate-y-0 sm:translate-x-[-50%] sm:translate-y-[-50%] w-full"
+        className={`em-settings-dialog ${isMobile ? "em-settings-phone" : ""} !grid-none !flex !flex-col max-w-none max-h-none h-auto sm:max-w-5xl sm:h-auto min-h-0 p-0 gap-0 overflow-hidden rounded-none sm:rounded-2xl top-0 left-0 right-0 bottom-0 sm:top-[50%] sm:left-[50%] sm:right-auto sm:bottom-auto translate-x-0 translate-y-0 sm:translate-x-[-50%] sm:translate-y-[-50%] w-full`}
       >
         <DialogTitle className="sr-only">设置</DialogTitle>
         <DialogClose asChild>
@@ -178,108 +219,133 @@ export function SettingsDialog() {
           className="flex flex-col overflow-hidden min-h-0 flex-1"
         >
           <div className="em-settings-body min-h-0 flex-1">
-            <aside
-              className="em-settings-sidebar hidden sm:flex"
-              aria-label="设置分类"
-              data-coach-id="coach-settings-tabs"
-            >
-              <DialogHeader className="em-settings-sidebar-header flex-shrink-0 flex-row items-start">
-                <h2 className="flex items-center gap-2 flex-1 min-w-0">
-                  <span className="em-settings-title-icon">
-                    <Settings className="h-4 w-4" />
-                  </span>
-                  <span className="min-w-0">
-                    <span className="block text-sm font-semibold tracking-tight">设置</span>
-                    <span className="mt-0.5 block text-[10px] font-normal leading-snug text-muted-foreground">
-                      连接模型，调整工作方式
-                    </span>
-                  </span>
-                </h2>
-              </DialogHeader>
-              {GROUPS.map((group) => (
-                <div key={group} className="contents">
-                  <p className="em-settings-sidebar-label">{group}</p>
-                  {TAB_META.filter((tab) => tab.group === group).map((tab) => {
-                    const isActive = active.value === tab.value;
-                    return (
-                      <button
-                        key={tab.value}
-                        type="button"
-                        role="tab"
-                        aria-selected={isActive}
-                        data-coach-id={`coach-settings-tab-${tab.value}`}
-                        onClick={() => openSettings(tab.value)}
-                        className={`em-settings-sidebar-item ${isActive ? "is-active" : ""}`}
-                      >
-                        <span className="em-settings-sidebar-item-icon">{tab.icon}</span>
-                        <span className="flex-1 text-left">{tab.label}</span>
-                        {isActive && <span className="em-settings-sidebar-dot" />}
-                      </button>
-                    );
-                  })}
-                </div>
-              ))}
-              <div className="em-settings-sidebar-foot">
-                <span className="em-settings-sidebar-foot-dot" />
-                <span>各项设置的保存方式见页面说明</span>
-              </div>
-            </aside>
-            <div className="em-settings-mobile-head sm:hidden">
-              <nav
-                className="em-settings-mobile-tabs"
-                role="tablist"
+            {!isMobile && (
+              <aside
+                className="em-settings-sidebar hidden sm:flex"
+                aria-label="设置分类"
                 data-coach-id="coach-settings-tabs"
               >
-                {TAB_META.map((tab) => {
-                  const isActive = active.value === tab.value;
-                  return (
-                    <button
-                      key={tab.value}
-                      type="button"
-                      role="tab"
-                      aria-selected={isActive}
-                      data-coach-id={`coach-settings-tab-${tab.value}`}
-                      onClick={() => openSettings(tab.value)}
-                      className={`em-settings-mobile-tab ${isActive ? "is-active" : ""}`}
+                <DialogHeader className="em-settings-sidebar-header flex-shrink-0 flex-row items-start">
+                  <h2 className="flex items-center gap-2 flex-1 min-w-0">
+                    <span className="em-settings-title-icon">
+                      <Settings className="h-4 w-4" />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block text-sm font-semibold tracking-tight">设置</span>
+                      <span className="mt-0.5 block text-[10px] font-normal leading-snug text-muted-foreground">
+                        连接模型，调整工作方式
+                      </span>
+                    </span>
+                  </h2>
+                </DialogHeader>
+                {GROUPS.map((group) => (
+                  <div key={group} className="contents">
+                    <p className="em-settings-sidebar-label">{group}</p>
+                    {TAB_META.filter((tab) => tab.group === group).map((tab) => {
+                      const isActive = active.value === tab.value;
+                      return (
+                        <button
+                          key={tab.value}
+                          type="button"
+                          role="tab"
+                          aria-selected={isActive}
+                          data-coach-id={`coach-settings-tab-${tab.value}`}
+                          onClick={() => openSettings(tab.value)}
+                          className={`em-settings-sidebar-item ${isActive ? "is-active" : ""}`}
+                        >
+                          <span className="em-settings-sidebar-item-icon">{tab.icon}</span>
+                          <span className="flex-1 text-left">{tab.label}</span>
+                          {isActive && <span className="em-settings-sidebar-dot" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ))}
+                <div className="em-settings-sidebar-foot">
+                  <span className="em-settings-sidebar-foot-dot" />
+                  <span>各项设置的保存方式见页面说明</span>
+                </div>
+              </aside>
+            )}
+            {isMobile && (
+              <>
+                <div className="em-settings-phone-heading">
+                  {!showIndex && (
+                    <Button
+                      variant="ghost"
+                      onClick={showSettingsOverview}
+                      aria-label="返回设置分类"
                     >
-                      {tab.icon}
-                      {tab.label}
-                    </button>
-                  );
-                })}
-              </nav>
-            </div>
-            <AnimatePresence mode="wait">
-              <motion.div
-                key={active.value}
-                initial={{ opacity: 0, x: 8 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -8 }}
-                transition={{ duration: 0.15 }}
-                className="em-settings-scroll overflow-y-auto min-h-0 h-full px-4 sm:px-7 flex flex-col pb-[max(1rem,env(safe-area-inset-bottom))] sm:pb-7"
+                      <ArrowLeft className="size-4" />
+                      设置
+                    </Button>
+                  )}
+                  <h2>{showIndex ? "设置" : active.label}</h2>
+                </div>
+                {showIndex && (
+                  <nav className="em-settings-index" aria-label="设置分类">
+                    {GROUPS.map((group) => (
+                      <section key={group}>
+                        <h3>{group}</h3>
+                        {TAB_META.filter((tab) => tab.group === group).map((tab) => (
+                          <button
+                            type="button"
+                            key={tab.value}
+                            onClick={() => openSettings(tab.value)}
+                          >
+                            {tab.icon}
+                            <span>
+                              <strong>{tab.label}</strong>
+                              <small>{tab.description}</small>
+                            </span>
+                            <ChevronRight className="size-4 shrink-0" />
+                          </button>
+                        ))}
+                      </section>
+                    ))}
+                  </nav>
+                )}
+              </>
+            )}
+            {(!isMobile || !showIndex || detailVisited) && (
+              <div
+                className="em-settings-detail-host"
+                hidden={showIndex}
+                inert={showIndex ? true : undefined}
               >
-                <Suspense fallback={<TabSpinner />}>
-                  <TabsContent
-                    value={active.value}
-                    forceMount
-                    className="mt-0 grow shrink-0 flex flex-col"
-                    data-coach-id={`coach-settings-content-${active.value}`}
+                <AnimatePresence mode="wait">
+                  <motion.div
+                    key={active.value}
+                    initial={{ opacity: 0, x: 8 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -8 }}
+                    transition={{ duration: 0.15 }}
+                    className="em-settings-scroll overflow-y-auto min-h-0 h-full px-4 sm:px-7 flex flex-col pb-[max(1rem,env(safe-area-inset-bottom))] sm:pb-7"
                   >
-                    <header className="em-settings-page-header">
-                      <div className="em-settings-page-heading">
-                        <span className="em-settings-page-icon">{active.icon}</span>
-                        <div>
-                          <p className="em-settings-page-eyebrow">{active.group}</p>
-                          <h3 className="em-settings-page-title">{active.label}</h3>
-                          <p className="em-settings-page-description">{active.description}</p>
-                        </div>
-                      </div>
-                    </header>
-                    <div className="em-settings-page">{active.render()}</div>
-                  </TabsContent>
-                </Suspense>
-              </motion.div>
-            </AnimatePresence>
+                    <Suspense fallback={<TabSpinner />}>
+                      <TabsContent
+                        value={active.value}
+                        forceMount
+                        className="mt-0 grow shrink-0 flex flex-col"
+                        data-coach-id={`coach-settings-content-${active.value}`}
+                      >
+                        <header className="em-settings-page-header">
+                          <div className="em-settings-page-heading">
+                            <span className="em-settings-page-icon">{active.icon}</span>
+                            <div>
+                              <p className="em-settings-page-eyebrow">{active.group}</p>
+                              <h3 className="em-settings-page-title">{active.label}</h3>
+                              <p className="em-settings-page-description">{active.description}</p>
+                            </div>
+                          </div>
+                        </header>
+                        <div className="em-settings-page">{active.render()}</div>
+                      </TabsContent>
+                    </Suspense>
+                  </motion.div>
+                </AnimatePresence>
+              </div>
+            )}
           </div>
         </Tabs>
       </DialogContent>

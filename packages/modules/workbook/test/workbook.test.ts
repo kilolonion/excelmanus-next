@@ -1,21 +1,34 @@
 // 只读活文档真实边界测试（07 §3、06 §4.1–4.2）：
 // 真实 samples/sales.xlsx 与 GBK CSV 落盘工作区，经 DocumentService + 工具实参直跑。
 
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ToolContext } from "@excelmanus/kernel";
 import { BACKUPS_MIGRATION, BackupService, createReadTable, openDb } from "@excelmanus/kernel";
 import { afterAll, describe, expect, test } from "vitest";
+import { capToolOutput } from "../../../kernel/src/projections.ts";
+import { workbookEditTool } from "../src/edit.ts";
+import { WorkbookEditInput } from "../src/edit-input.ts";
 import {
   CHECKPOINT_MIGRATION,
+  DOC_MOVES_MIGRATION,
   DOC_OPS_MIGRATION,
   DOC_OPS_REVERTS_MIGRATION,
   DOCUMENTS_MIGRATION,
   DocumentService,
 } from "../src/service.ts";
 import { workbookTools } from "../src/tools.ts";
+import { importXlsx } from "../src/xlsx.ts";
 
 const dirs: string[] = [];
 function setup() {
@@ -31,6 +44,7 @@ function setup() {
     DOC_OPS_MIGRATION,
     BACKUPS_MIGRATION,
     CHECKPOINT_MIGRATION,
+    DOC_MOVES_MIGRATION,
     DOC_OPS_REVERTS_MIGRATION,
   ]);
   const service = new DocumentService(db);
@@ -63,7 +77,185 @@ afterAll(() => {
 
 type Ok = { status: "ok"; data: Record<string, unknown> };
 
+test("range reads distinguish absent values from empty strings for lossless copying", async () => {
+  const { service, ctx, read } = setup();
+  try {
+    expect((await workbookEditTool(service).execute({ path: "blank-qa.xlsx", create: true, sheetNames: ["数据"], ops: [
+      { op: "cells.set", range: "数据!A1:C3", values: [["ID", "地区", "金额"], ["001", null, 0], ["002", "", 2]] },
+    ] }, ctx)).status).toBe("ok");
+    const result = await read.execute({ path: "blank-qa.xlsx", mode: "range", range: "A1:C3", facets: ["values"] }, ctx);
+    expect((result.data as any).blankCells).toEqual(["B2"]);
+    expect((result.data as any).values).toEqual([["ID", "地区", "金额"], ["001", "", 0], ["002", "", 2]]);
+  } finally { await service.close(); }
+});
+
+test("split export ignores trailing formatting-only rows", async () => {
+  const { service, ctx } = setup();
+  try {
+    expect((await workbookEditTool(service).execute({ path: "split-qa.xlsx", create: true, sheetNames: ["数据"], ops: [
+      { op: "cells.set", range: "数据!A1:B3", values: [["ID", "金额"], ["001", 0], ["002", 2]] },
+      { op: "style.set", range: "数据!A20", bold: true },
+    ] }, ctx)).status).toBe("ok");
+    const tool = workbookTools(service).find((t) => t.name === "workbook_export")!;
+    const result = await tool.execute({ path: "split-qa.xlsx", to: "split-qa-out", mode: "split", rowsPerFile: 2, format: "csv", sheet: "数据" }, ctx);
+    expect(result.status).toBe("ok");
+    expect((result.data as any).files).toEqual(["split-qa-out/part-001.csv"]);
+  } finally { await service.close(); }
+});
+
+test("sheet rename follows internal hyperlinks created earlier in the same batch", async () => {
+  const { service, ctx, read } = setup();
+  try {
+    const result = await workbookEditTool(service).execute({ path: "sales.xlsx", ops: [
+      { op: "sheet.add", name: "导航" },
+      { op: "hyperlink.set", range: "导航!A1", url: "#销售!B2", label: "导航入口" },
+      { op: "hyperlink.set", range: "销售!A2", url: "#销售!$B$2", label: "查看金额" },
+      { op: "hyperlink.set", range: "销售!A3", url: "#'销售'!B3", label: "第二条" },
+      { op: "hyperlink.set", range: "销售!A4", url: "https://example.com/#销售!B2", label: "外部" },
+      { op: "sheet.rename", sheet: "销售", name: "历史 O'Brien" },
+    ] }, ctx);
+    expect(result.status).toBe("ok");
+    const range = await read.execute({ path: "sales.xlsx", mode: "range", sheet: "历史 O'Brien", range: "A2:A4", facets: ["values", "layout"] }, ctx);
+    expect((range.data as any).hyperlinks.map((x: any) => x.link.url)).toEqual([
+      "#'历史 O''Brien'!$B$2", "#'历史 O''Brien'!B3", "https://example.com/#销售!B2",
+    ]);
+    expect((range.data as any).values).toEqual([["查看金额"], ["第二条"], ["外部"]]);
+    await service.flushAll();
+    const saved = importXlsx(readFileSync(join(ctx.workspaceRoot, "sales.xlsx")), "sales.xlsx").snapshot;
+    const navigation = Object.values(saved.sheets).find((s) => s.name === "导航");
+    expect(navigation?.cellData?.[0]?.[0]?.custom?.excelmanusHyperlink).toEqual({ url: "#'历史 O''Brien'!B2" });
+    expect(navigation?.cellData?.[0]?.[0]?.v).toBe("导航入口");
+  } finally { await service.close(); }
+});
+
+test("objects expose current notes before checkpoint without losing hyperlinks", async () => {
+  const { service, ctx, read } = setup();
+  try {
+    const edited = await workbookEditTool(service).execute({ path: "sales.xlsx", ops: [
+      { op: "note.set", sheet: "销售", ref: "B2", author: "QA", text: "金额待复核\n保留原始凭据" },
+      { op: "hyperlink.set", range: "销售!A2", url: "#销售!B2", label: "查看金额" },
+    ] }, ctx);
+    expect(edited.status).toBe("ok");
+    const result = await read.execute({ path: "sales.xlsx", mode: "objects" }, ctx);
+    expect((result.data as any).objects.find((s: any) => s.sheet === "销售").notes).toEqual([
+      { ref: "B2", author: "QA", text: "金额待复核\n保留原始凭据" },
+    ]);
+    const range = await read.execute({ path: "sales.xlsx", mode: "range", sheet: "销售", range: "A2:B2", facets: ["values", "layout"] }, ctx);
+    expect((range.data as any).hyperlinks).toEqual([{ cell: "A2", link: { url: "#销售!B2" } }]);
+  } finally { await service.close(); }
+});
+
+test.each(["utf-8", "utf-8-bom"] as const)(
+  "CSV export reports byte-level %s encoding evidence",
+  async (encoding) => {
+    const { service, ctx } = setup();
+    try {
+      const tool = workbookTools(service).find((t) => t.name === "workbook_export")!;
+      const result = await tool.execute(
+        { path: "sales.xlsx", to: "encoding.csv", format: "csv", encoding, sheet: "销售" },
+        ctx,
+      );
+      expect(result.status).toBe("ok");
+      const bytes = readFileSync(join(ctx.workspaceRoot, "encoding.csv"));
+      expect(result.data).toMatchObject({
+        exports: [
+          {
+            path: "encoding.csv",
+            format: "csv",
+            encoding,
+            bom: encoding === "utf-8-bom",
+            sizeBytes: bytes.length,
+          },
+        ],
+      });
+      expect(bytes.subarray(0, 3).equals(Buffer.from([239, 187, 191]))).toBe(
+        encoding === "utf-8-bom",
+      );
+    } finally {
+      await service.close();
+    }
+  },
+);
+
+test("chart cache reads identify their saved revision before and after checkpoint", async () => {
+  const { read, service, ctx } = setup();
+  try {
+    const made = await workbookEditTool(service).execute(
+      {
+        path: "cache-qa.xlsx",
+        create: true,
+        ops: [
+          {
+            op: "cells.set",
+            range: "A1:B3",
+            values: [
+              ["项目", "金额"],
+              ["甲", 10],
+              ["乙", 20],
+            ],
+          },
+          { op: "chart.add", sheet: "Sheet1", type: "column", title: "金额", range: "A1:B3" },
+        ],
+      },
+      ctx,
+    );
+    expect(made.status).toBe("ok");
+    const docId = (made.data as { docId: string }).docId;
+    const initial = await read.execute({ docId, mode: "objects" }, ctx);
+    expect(initial.data).toMatchObject({
+      checkpointCharts: { source: "last_checkpoint", rev: 1, currentRev: 1, isCurrent: true },
+    });
+    const entry = await service.entry(docId, ctx.workspaceRoot);
+    expect(
+      await service.submit(docId, ctx.workspaceRoot, {
+        baseRev: 1,
+        source: { kind: "agent", id: "main" },
+        sessionId: ctx.sessionId,
+        ops: [{ op: "cells.set", range: "B2", values: [[30]] }],
+      }),
+    ).toMatchObject({ ok: true });
+    clearTimeout(entry.timer);
+    const pending = await read.execute({ docId, mode: "objects" }, ctx);
+    expect(pending.data).toMatchObject({
+      checkpointCharts: { rev: 1, currentRev: 2, isCurrent: false },
+    });
+    await service.checkpoint(docId, ctx.workspaceRoot);
+    const saved = await read.execute({ docId, mode: "objects" }, ctx);
+    expect(saved.data).toMatchObject({
+      checkpointCharts: {
+        rev: 2,
+        currentRev: 2,
+        isCurrent: true,
+        charts: [
+          {
+            series: [
+              {
+                values: {
+                  points: [
+                    { index: 0, value: "30" },
+                    { index: 1, value: "20" },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      },
+    });
+  } finally {
+    await service.close();
+  }
+});
+
 describe("workbook 工具", () => {
+  test("unknown sheet returns NOT_FOUND with actual names instead of an internal error", async () => {
+    const {read, ctx}=setup();
+    const result=await read.execute({path:"sales.xlsx",mode:"range",sheet:"Sheet1",range:"A1:B2"},ctx);
+    expect(result.error?.code).toBe("NOT_FOUND");
+    expect(result.error?.message).toContain("销售");
+    expect(result.error?.message).toContain("参数");
+    expect(result.error?.message).toContain("Sheet1");
+  });
   test("overview：表名/行列数/隐藏表/公式计数", async () => {
     const { read, ctx } = setup();
     const r = (await read.execute({ path: "sales.xlsx", mode: "overview" }, ctx)) as Ok;
@@ -161,6 +353,30 @@ describe("workbook 工具", () => {
     expect(r.status).toBe("ok");
     expect(r.data.columns).toEqual(["地区", "订单数", "总金额"]);
     expect((r.data.rows as unknown[][])[0]).toEqual(["华北", 12, 761009]);
+  });
+
+  test("sql：允许 REPLACE 字符串清洗函数，仍拒绝替换写入语句", async () => {
+    const { analyze, ctx } = setup();
+    const r = (await analyze.execute(
+      {
+        path: "sales.xlsx",
+        mode: "sql",
+        range: "销售!A2:F52",
+        sql: "WITH t AS (SELECT CAST(REPLACE ('12月','月','') AS INTEGER) AS month FROM data LIMIT 1) SELECT month FROM t",
+      },
+      ctx,
+    )) as Ok;
+    expect(r.status).toBe("ok");
+    expect(r.data.rows).toEqual([[12]]);
+    const write = await analyze.execute(
+      {
+        path: "sales.xlsx",
+        mode: "sql",
+        sql: "REPLACE INTO data VALUES (1)",
+      },
+      ctx,
+    );
+    expect(write.status).toBe("error");
   });
 
   test("sql：拒绝写操作", async () => {
@@ -264,6 +480,29 @@ test("真实工作簿工具：结构化行、公式依赖、跨文件差异和�
       ctx,
     );
     expect(graph.status, JSON.stringify(graph)).toBe("ok");
+    expect(graph.data).toMatchObject({
+      valueCoverage: { source: "current_snapshot", truncated: false },
+      precedents: {
+        items: [
+          expect.objectContaining({
+            cell: "'销售'!F3",
+            formula: "=D3*E3",
+            value: 2739,
+            valueAvailable: true,
+            references: [
+              expect.objectContaining({
+                text: "D3",
+                cells: [expect.objectContaining({ cell: "'销售'!D3", value: 11 })],
+              }),
+              expect.objectContaining({
+                text: "E3",
+                cells: [expect.objectContaining({ cell: "'销售'!E3", value: 249 })],
+              }),
+            ],
+          }),
+        ],
+      },
+    });
     expect(
       (graph.data as { precedents: { items: { references: unknown[] }[] } }).precedents.items[0]
         ?.references,
@@ -327,6 +566,270 @@ test("图片对象通过实际工具新增、查询和视觉提取", async () =>
       ctx,
     );
     expect(Buffer.from(extracted.images![0]!.data, "base64")).toEqual(bytes);
+  } finally {
+    await service.close();
+  }
+});
+
+test("named creation and same-batch formula fill preserve relative and absolute references", async () => {
+  const { service, ctx } = setup();
+  const edit = workbookEditTool(service);
+  const result = await edit.execute(
+    {
+      create: true,
+      path: "named.xlsx",
+      sheetNames: ["订单", "产品目录"],
+      ops: [
+        {
+          op: "cells.set",
+          range: "产品目录!A1:C3",
+          values: [
+            ["编码", "名称", "单价"],
+            ["P1", "耳机", 299],
+            ["P2", "台灯", 158],
+          ],
+        },
+        {
+          op: "cells.set",
+          range: "订单!A1:D4",
+          values: [
+            ["编码", "数量", "单价", "金额"],
+            ["P1", 5],
+            ["P2", 8],
+            ["P1", 2],
+          ],
+        },
+        {
+          op: "cells.set",
+          range: "订单!C2:D2",
+          values: [["=VLOOKUP(A2,产品目录!$A$2:$C$3,3,0)", "=B2*C2"]],
+        },
+        { op: "cells.fill", source: "订单!C2:D2", range: "订单!C3:D4", mode: "copy" },
+      ],
+    },
+    ctx,
+  );
+  expect(result, JSON.stringify(result)).toMatchObject({ status: "ok" });
+  const opened = await service.open(ctx.workspaceId, ctx.workspaceRoot, "named.xlsx");
+  const { snapshot } = await service.snapshot(opened.meta.id, ctx.workspaceRoot);
+  expect(snapshot.sheetOrder.map((id) => snapshot.sheets[id]?.name)).toEqual(["订单", "产品目录"]);
+  const cells = snapshot.sheets[snapshot.sheetOrder[0]!]!.cellData!;
+  expect(cells[3]?.[2]?.f).toBe("=VLOOKUP(A4,产品目录!$A$2:$C$3,3,0)");
+  expect(cells[3]?.[3]?.f).toBe("=B4*C4");
+  expect(cells[1]?.[3]?.v).toBe(1495);
+  expect(cells[2]?.[3]?.v).toBe(1264);
+  expect(cells[3]?.[3]?.v).toBe(598);
+});
+
+test("initial sheet names cannot silently rename an existing workbook", () => {
+  expect(
+    WorkbookEditInput.safeParse({
+      path: "existing.xlsx",
+      sheetNames: ["新表"],
+      ops: [{ op: "recalculate" }],
+    }).success,
+  ).toBe(false);
+});
+
+test("named creation preview stays read-only and invalid names roll back", async () => {
+  const { service, ctx } = setup();
+  const edit = workbookEditTool(service);
+  const preview = await edit.execute(
+    { create: true, path: "preview.xlsx", sheetNames: ["收据", "核对"], ops: [], dryRun: true },
+    ctx,
+  );
+  expect(preview).toMatchObject({ status: "ok" });
+  expect(JSON.stringify(preview)).toContain("收据");
+  expect(existsSync(join(ctx.workspaceRoot, "preview.xlsx"))).toBe(false);
+  const rejected = await edit.execute(
+    { create: true, path: "duplicate.xlsx", sheetNames: ["同名", "同名"], ops: [] },
+    ctx,
+  );
+  expect(rejected.status).toBe("error");
+  expect(existsSync(join(ctx.workspaceRoot, "duplicate.xlsx"))).toBe(false);
+  const created = await edit.execute(
+    { create: true, path: "duplicate.xlsx", sheetNames: ["收据"], ops: [] },
+    ctx,
+  );
+  expect(created).toMatchObject({ status: "ok" });
+  expect(
+    (
+      await edit.execute(
+        { create: true, path: "duplicate.xlsx", sheetNames: ["替换"], ops: [] },
+        ctx,
+      )
+    ).status,
+  ).toBe("error");
+});
+
+test("range pagination coverage remains visible before verbose styles", async () => {
+  const { read, ctx, service } = setup();
+  try {
+    const edited = await workbookEditTool(service).execute(
+      {
+        path: "sales.xlsx",
+        ops: [
+          {
+            op: "style.set",
+            range: "销售!A2:F52",
+            bold: true,
+            fontSize: 14,
+            fontColor: "#123456",
+            fill: "#abcdef",
+            borders: {
+              top: { style: "thin", color: "#123456" },
+              bottom: { style: "thin", color: "#123456" },
+              left: { style: "thin", color: "#123456" },
+              right: { style: "thin", color: "#123456" },
+            },
+          },
+        ],
+      },
+      ctx,
+    );
+    expect(edited.status, JSON.stringify(edited)).toBe("ok");
+    const args = { path: "sales.xlsx", mode: "range", range: "销售!A2:F52" };
+    const first = await read.execute({ ...args, facets: ["values", "styles"] }, ctx);
+    expect(first.status).toBe("ok");
+    const data = first.data as Record<string, unknown>;
+    expect(data.truncated).toBe(true);
+    const rows = data.values as unknown[][];
+    expect(data.readWindow).toEqual({
+      requestedRange: "'销售'!A2:F52",
+      effectiveRange: "'销售'!A2:F52",
+      clipped: false,
+      offset: 0,
+      returnedRows: rows.length,
+      totalRows: 51,
+      complete: false,
+      returnedRange: `'销售'!A2:F${rows.length + 1}`,
+      remainingRange: `'销售'!A${rows.length + 2}:F52`,
+    });
+    expect(data.nextOffset).toBe(rows.length);
+    const capped = capToolOutput(first, 1);
+    const preview = (capped.data as { preview: string }).preview;
+    expect(preview).toContain('"readWindow":');
+    expect(preview).toContain('"remainingRange":');
+    expect(preview).toContain('"nextOffset":');
+    const rest = await read.execute({ ...args, facets: ["values"], offset: data.nextOffset }, ctx);
+    expect(rest.status).toBe("ok");
+    const tail = rest.data as Record<string, unknown>;
+    expect(tail.readWindow).toMatchObject({ complete: true, remainingRange: null });
+    const full = await read.execute({ ...args, facets: ["values"] }, ctx);
+    expect([...rows, ...(tail.values as unknown[][])]).toEqual(
+      (full.data as Record<string, unknown>).values,
+    );
+  } finally {
+    await service.close();
+  }
+});
+
+test("advertised row-expression check rejects a wrong payment component despite equal reported nets", async () => {
+  const { service, ctx, analyze } = setup();
+  try {
+    const schema = analyze.inputJsonSchema as any;
+    const args = JSON.parse(schema.properties.checks.description.split("完整调用示例：")[1]);
+    const edit = workbookEditTool(service);
+    const made = await edit.execute(
+      {
+        path: args.path,
+        create: true,
+        sheetNames: ["月表"],
+        ops: [
+          {
+            op: "cells.set",
+            range: "月表!A1:E3",
+            values: [
+              ["月份", "订单分", "退款分", "回款分", "净变动分"],
+              ["2026-07", 10000, 1000, 2000, 7000],
+              ["2026-08", 20000, 1200, 5000, 13600],
+            ],
+          },
+        ],
+      },
+      ctx,
+    );
+    expect(made.status).toBe("ok");
+    const bad = await analyze.execute(args, ctx);
+    expect(bad.status).toBe("ok");
+    expect(bad.data).toMatchObject({
+      passed: false,
+      rules: [{ kind: "row_expression", passed: false, failedCount: 1, failures: [{ row: 2 }] }],
+    });
+    expect(
+      (
+        await edit.execute(
+          {
+            path: args.path,
+            ops: [{ op: "cells.set", range: "月表!D3", values: [[5200]] }],
+          },
+          ctx,
+        )
+      ).status,
+    ).toBe("ok");
+    const good = await analyze.execute(args, ctx);
+    expect(good.data).toMatchObject({ passed: true, rules: [{ failedCount: 0 }] });
+    expect(good.data).not.toHaveProperty("wholeTaskVerified");
+  } finally {
+    await service.close();
+  }
+});
+
+test("advertised source-alignment example executes unchanged on saved source and target files", async () => {
+  const { service, ctx, analyze } = setup();
+  try {
+    const args = JSON.parse(
+      (analyze.inputJsonSchema as any).properties.alignment.description.split("完整调用示例：")[1],
+    );
+    const edit = workbookEditTool(service);
+    for (const [path, sheet, range, values] of [
+      [
+        args.sources[0].path,
+        "原表",
+        "原表!A1:B8",
+        [
+          ["地区", "客户ID"],
+          [null, null],
+          [null, null],
+          [null, null],
+          ["东区", "001"],
+          [null, "001"],
+          ["西区", "1"],
+          [null, "002"],
+        ],
+      ],
+      [
+        args.path,
+        "明细",
+        "明细!A1:C3",
+        [
+          ["客户ID", "客户来源", "源行"],
+          ["1", "原表!B7", 7],
+          ["002", "原表!B8", 8],
+        ],
+      ],
+    ] as const) {
+      expect(
+        (
+          await edit.execute(
+            {
+              path,
+              create: true,
+              sheetNames: [sheet],
+              ops: [{ op: "cells.set", range, values }],
+            },
+            ctx,
+          )
+        ).status,
+      ).toBe("ok");
+    }
+    const before = readFileSync(join(ctx.workspaceRoot, args.sources[0].path));
+    const result = await analyze.execute(args, ctx);
+    expect(result.status).toBe("ok");
+    expect(result.data).toMatchObject({
+      verification: { status: "verified", scope: "declared_fields_only", checkedCellCount: 2 },
+    });
+    expect(readFileSync(join(ctx.workspaceRoot, args.sources[0].path))).toEqual(before);
   } finally {
     await service.close();
   }

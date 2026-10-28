@@ -5,7 +5,7 @@ import { useCallback, useId, useMemo, useRef, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { glassMenuPanelClass } from "@/components/ui/menu-panel";
 import { cn } from "@/lib/utils";
-import { filterDetectedModels, remoteModelHint } from "./helpers";
+import { remoteModelHint } from "./helpers";
 
 export function ModelIdCombobox({
   value,
@@ -31,8 +31,27 @@ export function ModelIdCombobox({
   const anchorRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState("");
   const [activeId, setActiveId] = useState<string | null>(null);
-  const filtered = useMemo(() => filterDetectedModels(models, query), [models, query]);
   const expanded = open && models.length > 0 && !disabled;
+  const catalog = useMemo(() => {
+    let keys: string[] | undefined;
+    const hints = new Map<RemoteModel, string>();
+    return {
+      filter(query: string) {
+        const needle = query.trim().toLowerCase();
+        if (!needle) return models;
+        keys ??= models.map((model) => model.id.toLowerCase());
+        return models.filter((_, i) => keys![i].includes(needle));
+      },
+      hint(model: RemoteModel) {
+        if (!hints.has(model)) hints.set(model, remoteModelHint(model));
+        return hints.get(model)!;
+      },
+    };
+  }, [models]);
+  const filtered = useMemo(
+    () => (expanded ? catalog.filter(query) : []),
+    [catalog, expanded, query],
+  );
   const activeIndex = filtered.findIndex((model) => model.id === (activeId ?? value));
   const activeOptionId = expanded && activeIndex >= 0 ? `${id}-option-${activeIndex}` : undefined;
 
@@ -160,76 +179,81 @@ export function ModelIdCombobox({
           )}
         </div>
       </Popover.Anchor>
-      <Popover.Portal>
-        <Popover.Content
-          align="start"
-          sideOffset={6}
-          collisionPadding={12}
-          className={cn(
-            glassMenuPanelClass,
-            "z-[80] flex min-w-0 flex-col border w-[var(--radix-popover-trigger-width)] max-h-[var(--radix-popover-content-available-height)] outline-none",
-          )}
-          onOpenAutoFocus={(event) => event.preventDefault()}
-          onCloseAutoFocus={(event) => event.preventDefault()}
-          onInteractOutside={(event) => {
-            if (event.target instanceof Node && anchorRef.current?.contains(event.target))
-              event.preventDefault();
-          }}
-        >
-          <div className="flex shrink-0 items-center justify-between gap-2 px-2 py-1.5 text-[11px] text-muted-foreground">
-            <span role="status" aria-live="polite">
-              {query.trim()
-                ? `${filtered.length} / ${models.length} 个匹配`
-                : `检测到 ${models.length} 个模型`}
-            </span>
-            <span aria-hidden="true" className="hidden sm:inline text-[10px]">
-              ↑↓ 选择 · Enter 确认
-            </span>
-          </div>
-          <div
-            ref={scrollToActive}
-            id={`${id}-listbox`}
-            role="listbox"
-            aria-label="可用模型"
-            className="relative min-h-0 max-h-60 overflow-y-auto overscroll-contain"
-          >
-            {filtered.map((model, index) => (
-              <div
-                key={model.id}
-                id={`${id}-option-${index}`}
-                role="option"
-                aria-selected={value === model.id}
-                title={model.id}
-                className={cn(
-                  "flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-xs font-mono",
-                  value === model.id && "text-[var(--em-primary)]",
-                  activeIndex === index ? "bg-[var(--em-primary-alpha-10)]" : "hover:bg-muted/60",
-                )}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => select(model)}
-              >
-                <span className="min-w-0 truncate">{model.id}</span>
-                <span className="flex max-w-[45%] shrink-0 items-center gap-1.5 text-[10px] font-sans text-muted-foreground">
-                  {usedModelIds.has(model.id) && <span className="shrink-0">已添加</span>}
-                  {remoteModelHint(model) && (
-                    <span className="truncate">{remoteModelHint(model)}</span>
-                  )}
-                  <span className="w-3.5 shrink-0">
-                    {value === model.id && (
-                      <Check className="h-3.5 w-3.5 text-[var(--em-primary)]" />
-                    )}
-                  </span>
-                </span>
-              </div>
-            ))}
-            {filtered.length === 0 && (
-              <p className="px-2.5 py-3 text-[11px] text-muted-foreground">
-                无匹配模型，可保留手动输入的 Model ID。
-              </p>
+      {expanded && (
+        <Popover.Portal>
+          <Popover.Content
+            align="start"
+            sideOffset={6}
+            collisionPadding={12}
+            className={cn(
+              glassMenuPanelClass,
+              "z-[80] flex min-w-0 flex-col border w-[var(--radix-popover-trigger-width)] max-h-[var(--radix-popover-content-available-height)] outline-none",
             )}
-          </div>
-        </Popover.Content>
-      </Popover.Portal>
+            onOpenAutoFocus={(event) => event.preventDefault()}
+            onCloseAutoFocus={(event) => event.preventDefault()}
+            onInteractOutside={(event) => {
+              if (event.target instanceof Node && anchorRef.current?.contains(event.target))
+                event.preventDefault();
+            }}
+          >
+            <div className="flex shrink-0 items-center justify-between gap-2 px-2 py-1.5 text-[11px] text-muted-foreground">
+              <span role="status" aria-live="polite">
+                {query.trim()
+                  ? `${filtered.length} / ${models.length} 个匹配`
+                  : `检测到 ${models.length} 个模型`}
+              </span>
+              <span aria-hidden="true" className="hidden sm:inline text-[10px]">
+                ↑↓ 选择 · Enter 确认
+              </span>
+            </div>
+            <div
+              ref={scrollToActive}
+              id={`${id}-listbox`}
+              role="listbox"
+              aria-label="可用模型"
+              className="relative min-h-0 max-h-60 overflow-y-auto overscroll-contain"
+            >
+              {filtered.map((model, index) => {
+                const hint = catalog.hint(model);
+                return (
+                  <div
+                    key={model.id}
+                    id={`${id}-option-${index}`}
+                    role="option"
+                    aria-selected={value === model.id}
+                    title={model.id}
+                    className={cn(
+                      "flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-xs font-mono",
+                      value === model.id && "text-[var(--em-primary)]",
+                      activeIndex === index
+                        ? "bg-[var(--em-primary-alpha-10)]"
+                        : "hover:bg-muted/60",
+                    )}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => select(model)}
+                  >
+                    <span className="min-w-0 truncate">{model.id}</span>
+                    <span className="flex max-w-[45%] shrink-0 items-center gap-1.5 text-[10px] font-sans text-muted-foreground">
+                      {usedModelIds.has(model.id) && <span className="shrink-0">已添加</span>}
+                      {hint && <span className="truncate">{hint}</span>}
+                      <span className="w-3.5 shrink-0">
+                        {value === model.id && (
+                          <Check className="h-3.5 w-3.5 text-[var(--em-primary)]" />
+                        )}
+                      </span>
+                    </span>
+                  </div>
+                );
+              })}
+              {filtered.length === 0 && (
+                <p className="px-2.5 py-3 text-[11px] text-muted-foreground">
+                  无匹配模型，可保留手动输入的 Model ID。
+                </p>
+              )}
+            </div>
+          </Popover.Content>
+        </Popover.Portal>
+      )}
     </Popover.Root>
   );
 }

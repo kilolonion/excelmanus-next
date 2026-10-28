@@ -3,6 +3,7 @@ import { z } from "zod";
 import * as diagnostics from "./diagnostics.ts";
 import * as extensions from "./extensions.ts";
 import { ManageFilesBody, ManageFilesResponse } from "./files.ts";
+import { QaFirstScreenMetricsBody, QaFirstScreenMetricsResponse } from "./qa-first-screen.ts";
 import * as rest from "./rest.ts";
 
 export interface HttpContract {
@@ -14,6 +15,24 @@ export interface HttpContract {
   bodyMediaType?: string;
 }
 export const httpContracts: HttpContract[] = [
+  {
+    method: "post",
+    path: "/qa/first-screen-metrics",
+    body: QaFirstScreenMetricsBody,
+    response: QaFirstScreenMetricsResponse,
+  },
+  {
+    method: "get",
+    path: "/workspaces/{id}/docs/{docId}/images/{imageId}",
+    response: extensions.BinaryResponse,
+    responseMediaType: "application/octet-stream",
+  },
+  {
+    method: "post",
+    path: "/workspaces/{id}/files/import-legacy",
+    body: rest.ImportLegacyBody,
+    response: rest.ImportLegacyResponse,
+  },
   { method: "get", path: "/mcp-servers/{id}", response: extensions.McpServerResponse },
   { method: "get", path: "/model-profiles/{id}", response: rest.ProfileResponse },
   { method: "post", path: "/model-profiles/{id}/default", response: rest.ProfileResponse },
@@ -103,6 +122,12 @@ export const httpContracts: HttpContract[] = [
   },
   {
     method: "post",
+    path: "/workspaces/{id}/docs/merge",
+    body: rest.MergeDocsBody,
+    response: rest.MergeDocsResponse,
+  },
+  {
+    method: "post",
     path: "/workspaces/{id}/docs/compare",
     body: rest.CompareDocsBody,
     response: rest.CompareDocsResponse,
@@ -145,6 +170,11 @@ export const httpContracts: HttpContract[] = [
   },
   { method: "delete", path: "/sessions/{id}", response: rest.OkResponse },
   { method: "get", path: "/sessions/{id}/log", response: rest.SessionLogResponse },
+  {
+    method: "get",
+    path: "/sessions/{id}/history-window",
+    response: rest.SessionHistoryWindowResponse,
+  },
   {
     method: "post",
     path: "/sessions/{id}/agents/{agentId}/messages",
@@ -194,6 +224,31 @@ export const httpContracts: HttpContract[] = [
     response: rest.QuestionResponse,
   },
   { method: "get", path: "/providers", response: rest.ProviderListResponse },
+  { method: "get", path: "/provider-connections", response: rest.ConnectionListResponse },
+  { method: "get", path: "/provider-connections/{id}", response: rest.ConnectionResponse },
+  {
+    method: "post",
+    path: "/provider-connections",
+    body: rest.CreateProviderConnectionBody,
+    response: rest.ConnectionResponse,
+  },
+  {
+    method: "patch",
+    path: "/provider-connections/{id}",
+    body: rest.UpdateProviderConnectionBody,
+    response: rest.ConnectionResponse,
+  },
+  { method: "delete", path: "/provider-connections/{id}", response: rest.OkResponse },
+  {
+    method: "get",
+    path: "/provider-connections/{id}/models",
+    response: extensions.RemoteModelsResponse,
+  },
+  {
+    method: "post",
+    path: "/provider-connections/{id}/models",
+    response: extensions.RemoteModelsResponse,
+  },
   { method: "get", path: "/model-profiles", response: rest.ProfileListResponse },
   {
     method: "post",
@@ -275,6 +330,11 @@ export const httpContracts: HttpContract[] = [
   },
   ...(["backups", "trash"] as const).flatMap((kind): HttpContract[] => [
     { method: "get", path: `/workspaces/{id}/${kind}`, response: extensions.BackupListResponse },
+    {
+      method: "get",
+      path: `/workspaces/{id}/${kind}/{backupId}/preview`,
+      response: extensions.BackupPreviewResponse,
+    },
     {
       method: "post",
       path: `/workspaces/{id}/${kind}/{backupId}/restore`,
@@ -361,6 +421,8 @@ export function createOpenApiDocument(version: string) {
     ...extensions,
     ManageFilesBody,
     ManageFilesResponse,
+    QaFirstScreenMetricsBody,
+    QaFirstScreenMetricsResponse,
   })) {
     if (value instanceof z.ZodType) {
       names.set(value, name);

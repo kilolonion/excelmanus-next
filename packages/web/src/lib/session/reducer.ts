@@ -5,11 +5,13 @@
 import {
   type ErrorGuidance,
   type LogRecord,
+  type PendingInteraction,
   PresentPayload,
   type ServerMessage,
   ToolArgsDelta,
   type ToolResult,
   type ToolResultStatus,
+  Usage,
 } from "@excelmanus/protocol";
 import type {
   AgentEntry,
@@ -36,6 +38,7 @@ export const initialSessionState = (): SessionState => ({
   permissionMode: null,
   title: null,
   roster: {},
+  usageByTurn: {},
   timelines: {},
   dispatches: {},
   tools: {},
@@ -98,6 +101,12 @@ export function seedRoster(
   return { ...state, roster };
 }
 
+export interface RosterSnapshot {
+  headSeq: number;
+  agents: Parameters<typeof seedRoster>[1];
+  pendingInteractions?: PendingInteraction[];
+}
+
 // ---------- 结构化更新小工具 ----------
 
 function patchLive(s: SessionState, agentId: string, patch: Partial<LiveState>): SessionState {
@@ -117,13 +126,65 @@ function patchRoster(s: SessionState, agentId: string, patch: Partial<AgentEntry
     modelProfileId: null,
     seq: 0,
   };
-  return { ...s, roster: { ...s.roster, [agentId]: { ...cur, ...patch } } };
+  // Match the server projection: closed is final; paused resumes only through idle or closed.
+  const keepStatus =
+    cur.status === "closed" ||
+    (cur.status === "paused" && patch.status !== "idle" && patch.status !== "closed");
+  return {
+    ...s,
+    roster: {
+      ...s.roster,
+      [agentId]: {
+        ...cur,
+        ...patch,
+        ...(keepStatus ? { status: cur.status } : {}),
+      },
+    },
+  };
 }
 
-function patchTool(s: SessionState, id: string, patch: Partial<ToolState>): SessionState {
+function settleInteraction(
+  s: SessionState,
+  agentId: string,
+  kind: PendingInteraction["kind"],
+  id: string,
+  knownPending = false,
+): SessionState {
+  const matches = (item: PendingInteraction) =>
+    item.id === id && item.kind === kind && item.agentId === agentId;
+  const inSnapshot = s.pendingInteractions?.some(matches);
+  if (!knownPending && !inSnapshot) return s;
+  const next = inSnapshot
+    ? { ...s, pendingInteractions: s.pendingInteractions?.filter((item) => !matches(item)) }
+    : s;
+  const stillPending =
+    next.pendingInteractions?.some((item) => item.agentId === agentId) ||
+    Object.values(next.questions).some(
+      (item) => item.agentId === agentId && item.status === "pending",
+    ) ||
+    Object.values(next.approvals).some(
+      (item) => item.agentId === agentId && item.status === "pending",
+    );
+  return next.roster[agentId]?.status === "blocked" && !stillPending
+    ? patchRoster(next, agentId, { status: "running" })
+    : next;
+}
+
+function copyTools(tools: SessionState["tools"], owned?: SessionState["tools"]) {
+  return tools === owned ? tools : { ...tools };
+}
+
+function patchTool(
+  s: SessionState,
+  id: string,
+  patch: Partial<ToolState>,
+  owned?: SessionState["tools"],
+): SessionState {
   const cur = s.tools[id];
   if (!cur) return s;
-  return { ...s, tools: { ...s.tools, [id]: { ...cur, ...patch } } };
+  const tools = copyTools(s.tools, owned);
+  tools[id] = { ...cur, ...patch };
+  return { ...s, tools };
 }
 
 function pushItem(s: SessionState, agentId: string, item: TimelineItem): SessionState {
@@ -155,6 +216,16 @@ function mapSegment(
   segmentId: string,
   fn: (seg: TurnSegment) => TurnSegment,
 ): SessionState {
+  const items = s.timelines[agentId];
+  const last = items?.at(-1);
+  // Segment IDs are unique; current output normally belongs to the tail segment.
+  if (items && last?.kind === "turn" && last.id === segmentId) {
+    const updated = fn(last);
+    if (updated === last) return s;
+    const next = items.slice();
+    next[next.length - 1] = updated;
+    return { ...s, timelines: { ...s.timelines, [agentId]: next } };
+  }
   return mapItems(s, agentId, (item) =>
     item.kind === "turn" && item.id === segmentId ? fn(item) : item,
   );
@@ -230,6 +301,30 @@ function appendBlock(
   );
 }
 
+/** One model record publishes all its ordered blocks together. */
+function appendBlocks(
+  s: SessionState,
+  agentId: string,
+  seq: number,
+  at: string,
+  blocks: Block[],
+): SessionState {
+  if (blocks.length === 0) return s;
+  if (blocks.length === 1) return appendBlock(s, agentId, seq, at, blocks[0]);
+  const { state, segmentId } = ensureSegment(s, agentId, seq, at);
+  return mapSegment(state, agentId, segmentId, (seg) => {
+    const seen = new Set(seg.blocks.map((b) => `${b.type}:${b.key}`));
+    const added: Block[] = [];
+    for (const block of blocks) {
+      const key = `${block.type}:${block.key}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      added.push(block);
+    }
+    return added.length ? { ...seg, blocks: [...seg.blocks, ...added] } : seg;
+  });
+}
+
 /** 插入一条非轮次条目：运行中的轮次在此处断开，后续输出接在它后面。 */
 function pushNote(s: SessionState, agentId: string, item: TimelineItem): SessionState {
   const open = s.openSegments[agentId];
@@ -240,10 +335,13 @@ function pushNote(s: SessionState, agentId: string, item: TimelineItem): Session
 }
 
 function hasToolBlock(s: SessionState, agentId: string, toolCallId: string): boolean {
-  return (s.timelines[agentId] ?? []).some(
-    (item) =>
-      item.kind === "turn" && item.blocks.some((b) => b.type === "tool" && b.key === toolCallId),
-  );
+  const items = s.timelines[agentId] ?? [];
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    if (item.kind === "turn" && item.blocks.some((b) => b.type === "tool" && b.key === toolCallId))
+      return true;
+  }
+  return false;
 }
 
 function normalizeTodos(items: unknown[]): TodoItem[] {
@@ -328,6 +426,7 @@ function docChangesOf(raw: unknown): DocChange[] {
         structural: Array.isArray(x.structural) ? x.structural.map(String) : [],
         added: Array.isArray(x.added) ? x.added.map(String) : [],
         ...(typeof x.backupPath === "string" ? { backupPath: x.backupPath } : {}),
+        ...(typeof x.metadataLimited === "boolean" ? { metadataLimited: x.metadataLimited } : {}),
       },
     ];
   });
@@ -347,7 +446,18 @@ const ROSTER_AFTER_TURN: Record<TurnStatus, string> = {
 
 // ---------- 记录 ----------
 
-function applyRecord(s: SessionState, rec: LogRecord): SessionState {
+// Private replay bookkeeping is discarded before publishing the reconstructed view.
+interface ReplayWork {
+  planned: Map<string, Set<string>>;
+  retryAgents: Set<string>;
+}
+
+function applyRecord(
+  s: SessionState,
+  rec: LogRecord,
+  ownedTools?: SessionState["tools"],
+  replayWork?: ReplayWork,
+): SessionState {
   const d = rec.data;
   const seq = rec.seq;
   const at = rec.createdAt;
@@ -472,51 +582,50 @@ function applyRecord(s: SessionState, rec: LogRecord): SessionState {
     }
     case "model.output": {
       const stepId = str(d.stepId) ?? `step-${seq}`;
-      let next = s;
+      const blocks: Block[] = [];
       const reasoning = str(d.reasoning) ?? "";
       const text = str(d.text) ?? "";
       if (reasoning !== "")
-        next = appendBlock(next, agentId, seq, at, {
+        blocks.push({
           type: "thinking",
           key: `think:${stepId}`,
           seq,
           text: reasoning,
           ...(num(d.reasoningMs) !== undefined ? { ms: num(d.reasoningMs) } : {}),
         });
-      if (text !== "")
-        next = appendBlock(next, agentId, seq, at, {
-          type: "text",
-          key: `text:${stepId}`,
-          seq,
-          text,
-        });
+      if (text !== "") blocks.push({ type: "text", key: `text:${stepId}`, seq, text });
       const calls = Array.isArray(d.toolCalls)
         ? (d.toolCalls as { id?: unknown; name?: unknown; args?: unknown }[])
         : [];
+      let tools = s.tools;
       for (const call of calls) {
         const id = str(call.id);
         if (!id) continue;
-        if (!next.tools[id]) {
-          next = {
-            ...next,
-            tools: {
-              ...next.tools,
-              [id]: {
-                id,
-                name: str(call.name) ?? "?",
-                agentId,
-                seq,
-                stepId,
-                args: call.args ?? {},
-                targets: [],
-                phase: "planned",
-              },
-            },
+        if (!tools[id]) {
+          if (tools === s.tools) tools = copyTools(tools, ownedTools);
+          tools[id] = {
+            id,
+            name: str(call.name) ?? "?",
+            agentId,
+            seq,
+            stepId,
+            args: call.args ?? {},
+            targets: [],
+            phase: "planned",
           };
+          if (replayWork) {
+            let planned = replayWork.planned.get(agentId);
+            if (!planned) {
+              planned = new Set();
+              replayWork.planned.set(agentId, planned);
+            }
+            planned.add(id);
+          }
         }
-        next = appendBlock(next, agentId, seq, at, { type: "tool", key: id, seq });
+        blocks.push({ type: "tool", key: id, seq });
       }
-      next = resolveRetries(next, agentId);
+      let next = appendBlocks(tools === s.tools ? s : { ...s, tools }, agentId, seq, at, blocks);
+      if (!replayWork || replayWork.retryAgents.has(agentId)) next = resolveRetries(next, agentId);
       return patchLive(next, agentId, {
         text: "",
         reasoning: "",
@@ -547,7 +656,9 @@ function applyRecord(s: SessionState, rec: LogRecord): SessionState {
         phase: "running",
         ...newFilesOf(d.intentMeta),
       } as ToolState;
-      let next: SessionState = { ...s, tools: { ...s.tools, [id]: tool } };
+      const tools = copyTools(s.tools, ownedTools);
+      tools[id] = tool;
+      let next: SessionState = { ...s, tools };
       if (!hasToolBlock(next, agentId, id))
         next = appendBlock(next, agentId, seq, at, { type: "tool", key: id, seq });
       return patchRoster(next, agentId, { lastTool: name });
@@ -558,26 +669,15 @@ function applyRecord(s: SessionState, rec: LogRecord): SessionState {
       const result = d.result as ToolResult | undefined;
       const status = (str(d.status) ?? result?.status ?? "error") as ToolResultStatus;
       const existing = s.tools[id];
-      let next: SessionState = {
-        ...s,
-        tools: {
-          ...s.tools,
-          [id]: {
-            ...(existing ?? {
-              id,
-              name: str(d.toolName) ?? "?",
-              agentId,
-              seq,
-              args: {},
-              targets: [],
-            }),
-            phase: "done",
-            status,
-            ...(result ? { result } : {}),
-            ...(num(d.durationMs) !== undefined ? { durationMs: num(d.durationMs) } : {}),
-          } as ToolState,
-        },
-      };
+      const tools = copyTools(s.tools, ownedTools);
+      tools[id] = {
+        ...(existing ?? { id, name: str(d.toolName) ?? "?", agentId, seq, args: {}, targets: [] }),
+        phase: "done",
+        status,
+        ...(result ? { result } : {}),
+        ...(num(d.durationMs) !== undefined ? { durationMs: num(d.durationMs) } : {}),
+      } as ToolState;
+      let next: SessionState = { ...s, tools };
       if (!existing && !hasToolBlock(next, agentId, id))
         next = appendBlock(next, agentId, seq, at, { type: "tool", key: id, seq });
       const live = next.live[agentId];
@@ -615,7 +715,7 @@ function applyRecord(s: SessionState, rec: LogRecord): SessionState {
       };
       const next = { ...s, approvals: { ...s.approvals, [id]: approval } };
       return patchRoster(
-        patchTool(next, toolCallId, { phase: "approval", approvalId: id }),
+        patchTool(next, toolCallId, { phase: "approval", approvalId: id }, ownedTools),
         agentId,
         {
           status: "blocked",
@@ -625,7 +725,9 @@ function applyRecord(s: SessionState, rec: LogRecord): SessionState {
     case "approval.decided": {
       const id = str(d.approvalId) ?? "";
       const cur = s.approvals[id];
-      if (!cur || (d.decision !== "approved" && d.decision !== "denied")) return s;
+      if (!id || (d.decision !== "approved" && d.decision !== "denied")) return s;
+      if (!cur) return settleInteraction(s, agentId, "approval", id);
+      if (cur.agentId !== agentId) return s;
       const next: SessionState = {
         ...s,
         approvals: {
@@ -641,11 +743,9 @@ function applyRecord(s: SessionState, rec: LogRecord): SessionState {
       const tool = next.tools[cur.toolCallId];
       const withTool =
         tool && tool.phase === "approval"
-          ? patchTool(next, cur.toolCallId, { phase: "running" })
+          ? patchTool(next, cur.toolCallId, { phase: "running" }, ownedTools)
           : next;
-      return withTool.roster[agentId]?.status === "blocked"
-        ? patchRoster(withTool, agentId, { status: "running" })
-        : withTool;
+      return settleInteraction(withTool, agentId, "approval", id, cur.status === "pending");
     }
     case "question.asked": {
       const id = str(d.questionId) ?? "";
@@ -671,14 +771,16 @@ function applyRecord(s: SessionState, rec: LogRecord): SessionState {
       };
       const next = { ...s, questions: { ...s.questions, [id]: question } };
       const withTool = toolCallId
-        ? patchTool(next, toolCallId, { phase: "question", questionId: id })
+        ? patchTool(next, toolCallId, { phase: "question", questionId: id }, ownedTools)
         : next;
       return patchRoster(withTool, agentId, { status: "blocked" });
     }
     case "question.answered": {
       const id = str(d.questionId) ?? "";
       const cur = s.questions[id];
-      if (!cur) return s;
+      if (!id) return s;
+      if (!cur) return settleInteraction(s, agentId, "question", id);
+      if (cur.agentId !== agentId) return s;
       const next: SessionState = {
         ...s,
         questions: {
@@ -694,11 +796,9 @@ function applyRecord(s: SessionState, rec: LogRecord): SessionState {
       const tool = cur.toolCallId ? next.tools[cur.toolCallId] : undefined;
       const withTool =
         tool && tool.phase === "question" && cur.toolCallId
-          ? patchTool(next, cur.toolCallId, { phase: "running" })
+          ? patchTool(next, cur.toolCallId, { phase: "running" }, ownedTools)
           : next;
-      return withTool.roster[agentId]?.status === "blocked"
-        ? patchRoster(withTool, agentId, { status: "running" })
-        : withTool;
+      return settleInteraction(withTool, agentId, "question", id, cur.status === "pending");
     }
 
     case "todo.set": {
@@ -750,6 +850,7 @@ function applyRecord(s: SessionState, rec: LogRecord): SessionState {
       });
     }
     case "retry.scheduled":
+      replayWork?.retryAgents.add(agentId);
       return appendBlock(s, agentId, seq, at, {
         type: "retry",
         key: `retry:${seq}`,
@@ -912,10 +1013,35 @@ function applyRecord(s: SessionState, rec: LogRecord): SessionState {
 
     case "usage.updated": {
       const cumulative = d.cumulative as { totalTokens?: unknown } | undefined;
-      const next =
+      let next =
         typeof cumulative?.totalTokens === "number"
           ? patchRoster(s, agentId, { tokens: cumulative.totalTokens })
           : s;
+      const turnId = str(d.turnId);
+      const parsed = Usage.safeParse(d.usage);
+      if (turnId && parsed.success && Object.keys(parsed.data).length > 0) {
+        const prior = s.usageByTurn[agentId]?.[turnId];
+        const step = parsed.data;
+        const usage = {
+          inputTokens: (prior?.inputTokens ?? 0) + (step.inputTokens ?? 0),
+          outputTokens: (prior?.outputTokens ?? 0) + (step.outputTokens ?? 0),
+          reasoningTokens: (prior?.reasoningTokens ?? 0) + (step.reasoningTokens ?? 0),
+          totalTokens:
+            (prior?.totalTokens ?? 0) +
+            (step.totalTokens ?? (step.inputTokens ?? 0) + (step.outputTokens ?? 0)),
+        };
+        next = {
+          ...next,
+          usageByTurn: {
+            ...next.usageByTurn,
+            [agentId]: { ...next.usageByTurn[agentId], [turnId]: usage },
+          },
+        };
+        const last = next.timelines[agentId]?.findLast(
+          (item) => item.kind === "turn" && item.turnId === turnId,
+        );
+        if (last) next = mapSegment(next, agentId, last.id, (seg) => ({ ...seg, usage }));
+      }
       const ctx = d.context as
         | { tokens?: unknown; window?: unknown; estimated?: unknown }
         | undefined;
@@ -931,7 +1057,7 @@ function applyRecord(s: SessionState, rec: LogRecord): SessionState {
 
     default: {
       const end = TURN_END[rec.type];
-      if (end) return endTurn(s, agentId, str(d.turnId), end, d, at);
+      if (end) return endTurn(s, agentId, str(d.turnId), end, d, at, ownedTools, replayWork);
       return s;
     }
   }
@@ -959,6 +1085,8 @@ function endTurn(
   status: TurnStatus,
   d: Record<string, unknown>,
   at: string,
+  ownedTools?: SessionState["tools"],
+  replayWork?: ReplayWork,
 ): SessionState {
   const s = state.docNotices[agentId]
     ? { ...state, docNotices: omit(state.docNotices, agentId) }
@@ -976,10 +1104,13 @@ function endTurn(
           ...(item.id === last?.id
             ? {
                 endedAt: at,
-                ...(d.usage && typeof d.usage === "object"
-                  ? { usage: d.usage as TurnSegment["usage"] }
-                  : {}),
+                ...(id && s.usageByTurn[agentId]?.[id]
+                  ? { usage: s.usageByTurn[agentId][id] }
+                  : d.usage && typeof d.usage === "object"
+                    ? { usage: d.usage as TurnSegment["usage"] }
+                    : {}),
                 ...(str(d.reason) !== undefined ? { reason: str(d.reason) } : {}),
+                ...(d.cancellationCause === "user" ? { cancellationCause: "user" as const } : {}),
                 ...(d.error && typeof d.error === "object"
                   ? { failure: d.error as TurnSegment["failure"] }
                   : {}),
@@ -989,15 +1120,18 @@ function endTurn(
       : item,
   );
   // 模型给出但从未执行的调用：轮次结束即定案为未执行
-  const tools = { ...next.tools };
-  let touched = false;
-  for (const tool of Object.values(next.tools)) {
+  let tools: SessionState["tools"] | undefined;
+  const candidates = replayWork
+    ? [...(replayWork.planned.get(agentId) ?? [])].map((id) => next.tools[id])
+    : Object.values(next.tools);
+  for (const tool of candidates) {
     if (tool.agentId === agentId && tool.phase === "planned") {
+      tools ??= copyTools(next.tools, ownedTools);
       tools[tool.id] = { ...tool, phase: "done", status: "not_executed" };
-      touched = true;
     }
   }
-  if (touched) next = { ...next, tools };
+  replayWork?.planned.delete(agentId);
+  if (tools) next = { ...next, tools };
   const openSegments = { ...next.openSegments };
   delete openSegments[agentId];
   next = { ...next, openSegments };
@@ -1022,6 +1156,38 @@ function newFilesOf(meta: unknown): { newFiles?: string[] } {
     .filter(([, v]) => v === null)
     .map(([k]) => k);
   return created.length > 0 ? { newFiles: created } : {};
+}
+
+/** Private historical builder: its tool map is owned until the completed state is published. */
+export function createHistoryReplay(rosterSnapshot?: RosterSnapshot) {
+  let state = initialSessionState();
+  const ownedTools = state.tools;
+  const replayWork: ReplayWork = { planned: new Map(), retryAgents: new Set() };
+  let finished = false;
+  const seedSnapshot = () => {
+    if (!rosterSnapshot) return;
+    state = {
+      ...seedRoster(state, rosterSnapshot.agents),
+      pendingInteractions: rosterSnapshot.pendingInteractions,
+    };
+    rosterSnapshot = undefined;
+  };
+  return {
+    push(record: LogRecord) {
+      if (finished) throw new Error("History replay is already finished");
+      if (record.seq <= state.cursor) return;
+      // The REST roster is authoritative at its own head, not at the newer log cursor.
+      if (rosterSnapshot && record.seq > rosterSnapshot.headSeq) seedSnapshot();
+      state = { ...applyRecord(state, record, ownedTools, replayWork), cursor: record.seq };
+    },
+    finish(): SessionState {
+      finished = true;
+      seedSnapshot();
+      replayWork.planned.clear();
+      replayWork.retryAgents.clear();
+      return state;
+    },
+  };
 }
 
 export function reduceSession(state: SessionState, msg: ServerMessage): SessionState {
@@ -1101,23 +1267,47 @@ export function reduceSession(state: SessionState, msg: ServerMessage): SessionS
 
 // ---------- 选择器 ----------
 
-function hiddenBy(rewinds: { fromSeq: number; seq: number }[] | undefined, seq: number): boolean {
-  return !!rewinds?.some((r) => seq >= r.fromSeq && seq < r.seq);
+type Rewinds = { fromSeq: number; seq: number }[];
+const rewindIntervals = new WeakMap<Rewinds, [number, number][]>();
+
+function hiddenBy(rewinds: Rewinds | undefined, seq: number): boolean {
+  if (!rewinds?.length) return false;
+  let intervals = rewindIntervals.get(rewinds);
+  if (!intervals) {
+    const sorted = rewinds
+      .map(({ fromSeq, seq }) => [fromSeq, seq] as [number, number])
+      .filter(([start, end]) => start < end)
+      .sort((a, b) => a[0] - b[0]);
+    intervals = [];
+    for (const interval of sorted) {
+      const last = intervals.at(-1);
+      if (last && interval[0] <= last[1]) last[1] = Math.max(last[1], interval[1]);
+      else intervals.push(interval);
+    }
+    rewindIntervals.set(rewinds, intervals);
+  }
+  let low = 0,
+    high = intervals.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (intervals[mid][0] <= seq) low = mid + 1;
+    else high = mid;
+  }
+  return low > 0 && seq < intervals[low - 1][1];
 }
 
-const visibleCache = new WeakMap<SessionState, Map<string, TimelineItem[]>>();
+const emptyTimeline: TimelineItem[] = [];
+const visibleCache = new WeakMap<
+  readonly TimelineItem[],
+  { rewinds: Rewinds | undefined; items: TimelineItem[] }
+>();
 
 /** 某代理当前可见的时间线：回退区间里的对话不再显示。 */
 export function visibleTimeline(state: SessionState, agentId: string): TimelineItem[] {
-  let perState = visibleCache.get(state);
-  if (!perState) {
-    perState = new Map();
-    visibleCache.set(state, perState);
-  }
-  const cached = perState.get(agentId);
-  if (cached) return cached;
-  const items = state.timelines[agentId] ?? [];
+  const items = state.timelines[agentId] ?? emptyTimeline;
   const rewinds = state.rewinds[agentId];
+  const cached = visibleCache.get(items);
+  if (cached && cached.rewinds === rewinds) return cached.items;
   let out: TimelineItem[] = items;
   if (rewinds?.length) {
     out = [];
@@ -1136,27 +1326,54 @@ export function visibleTimeline(state: SessionState, agentId: string): TimelineI
       if (!hiddenBy(rewinds, item.seq)) out.push(item);
     }
   }
-  perState.set(agentId, out);
+  visibleCache.set(items, { rewinds, items: out });
   return out;
 }
 
+const dispatchCache = new WeakMap<SessionState["dispatches"], Map<string, UserItem[]>>();
+const emptyDispatches: UserItem[] = [];
+
 /** 已受理、尚未进入对话的用户消息（排队中）。 */
 export function pendingDispatches(state: SessionState, agentId: string): UserItem[] {
-  return Object.values(state.dispatches)
-    .filter((d) => d.agentId === agentId && (d.status === "accepted" || d.status === "queued"))
-    .sort((a, b) => a.seq - b.seq);
+  let agents = dispatchCache.get(state.dispatches);
+  if (!agents) {
+    agents = new Map();
+    for (const item of Object.values(state.dispatches)) {
+      if (item.status !== "accepted" && item.status !== "queued") continue;
+      const id = item.agentId;
+      let pending = agents.get(id);
+      if (!pending) {
+        pending = [];
+        agents.set(id, pending);
+      }
+      pending.push(item);
+    }
+    for (const pending of agents.values()) pending.sort((a, b) => a.seq - b.seq);
+    dispatchCache.set(state.dispatches, agents);
+  }
+  return agents.get(agentId) ?? emptyDispatches;
 }
 
+const approvalCache = new WeakMap<SessionState["approvals"], ApprovalState[]>();
 export function pendingApprovals(state: SessionState): ApprovalState[] {
-  return Object.values(state.approvals)
+  const cached = approvalCache.get(state.approvals);
+  if (cached) return cached;
+  const pending = Object.values(state.approvals)
     .filter((a) => a.status === "pending")
     .sort((a, b) => a.seq - b.seq);
+  approvalCache.set(state.approvals, pending);
+  return pending;
 }
 
+const questionCache = new WeakMap<SessionState["questions"], QuestionState[]>();
 export function pendingQuestions(state: SessionState): QuestionState[] {
-  return Object.values(state.questions)
+  const cached = questionCache.get(state.questions);
+  if (cached) return cached;
+  const pending = Object.values(state.questions)
     .filter((q) => q.status === "pending")
     .sort((a, b) => a.seq - b.seq);
+  questionCache.set(state.questions, pending);
+  return pending;
 }
 
 const BUSY = new Set(["running", "blocked", "waiting", "queued"]);
@@ -1170,7 +1387,7 @@ export function anyAgentBusy(state: SessionState): boolean {
 }
 
 /** 子代理（非主代理），按派生顺序。 */
-export function subAgents(state: SessionState): AgentEntry[] {
+export function subAgents(state: Pick<SessionState, "roster">): AgentEntry[] {
   return Object.values(state.roster)
     .filter((a) => a.id !== MAIN_AGENT)
     .sort((a, b) => a.seq - b.seq);
@@ -1181,22 +1398,82 @@ export function openSegmentId(state: SessionState, agentId: string): string | nu
   return state.openSegments[agentId]?.segmentId ?? null;
 }
 
+const rewindFloorCache = new WeakMap<readonly TimelineItem[], number>();
+
 /** 可以"从这里重新开始"的用户消息：已进入对话，且不早于最近一次压缩。 */
 export function rewindableFrom(state: SessionState, agentId: string): number {
-  const items = state.timelines[agentId] ?? [];
+  const items = state.timelines[agentId];
+  if (!items) return 0;
+  const cached = rewindFloorCache.get(items);
+  if (cached !== undefined) return cached;
   const compaction = items.findLast((item) => item.kind === "compaction");
-  return compaction ? compaction.seq : 0;
+  const floor = compaction ? compaction.seq : 0;
+  rewindFloorCache.set(items, floor);
+  return floor;
 }
 
-export function changeRanges(state: SessionState, docId: string, sinceSeq = 0) {
+const documentChangesCache = new WeakMap<readonly ChangeEntry[], Map<string, ChangeEntry[]>>();
+const noDocumentChanges: ChangeEntry[] = [];
+
+/** All document views share this lookup, keyed by the immutable change-list identity. */
+export function changesForDoc(state: Pick<SessionState, "changes">, docId: string): ChangeEntry[] {
+  let index = documentChangesCache.get(state.changes);
+  if (!index) {
+    index = new Map();
+    for (const entry of state.changes) {
+      const id = entry.docId;
+      const entries = index.get(id);
+      if (entries) entries.push(entry);
+      else index.set(id, [entry]);
+    }
+    documentChangesCache.set(state.changes, index);
+  }
+  return index.get(docId) ?? noDocumentChanges;
+}
+
+export function changeRanges(state: Pick<SessionState, "changes">, docId: string, sinceSeq = 0) {
   return state.changes
     .filter((c) => c.docId === docId && c.seq > sinceSeq)
     .flatMap((entry) => entry.ranges.map((range) => ({ range, entry })));
 }
 
+const lastUserSeqCache = new WeakMap<readonly TimelineItem[], number>();
 export function lastUserSeq(state: SessionState, agentId = MAIN_AGENT): number {
+  const timeline = state.timelines[agentId];
+  if (!timeline) return 0;
+  const cached = lastUserSeqCache.get(timeline);
+  if (cached !== undefined) return cached;
   let seq = 0;
-  for (const item of state.timelines[agentId] ?? [])
-    if (item.kind === "user" && item.seq > seq) seq = item.seq;
+  for (const item of timeline) if (item.kind === "user" && item.seq > seq) seq = item.seq;
+  lastUserSeqCache.set(timeline, seq);
   return seq;
+}
+
+const compactionCountCache = new WeakMap<readonly TimelineItem[], number>();
+export function compactionCount(state: Pick<SessionState, "timelines">, agentId: string): number {
+  const timeline = state.timelines[agentId];
+  if (!timeline) return 0;
+  const cached = compactionCountCache.get(timeline);
+  if (cached !== undefined) return cached;
+  let count = 0;
+  for (const item of timeline) if (item.kind === "compaction") count++;
+  compactionCountCache.set(timeline, count);
+  return count;
+}
+
+const toolChangeCache = new WeakMap<readonly ChangeEntry[], Map<string, ChangeEntry>>();
+export function changeForTool(
+  state: Pick<SessionState, "changes">,
+  toolId: string,
+): ChangeEntry | undefined {
+  let index = toolChangeCache.get(state.changes);
+  if (!index) {
+    index = new Map();
+    for (const change of state.changes) {
+      const id = change.toolCallId;
+      if (!index.has(id)) index.set(id, change);
+    }
+    toolChangeCache.set(state.changes, index);
+  }
+  return index.get(toolId);
 }

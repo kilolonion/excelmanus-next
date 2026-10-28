@@ -1,3 +1,4 @@
+import { createTestProfile } from "./fixtures/create-model.ts";
 // M2a 活文档同步 e2e：假模型走 workbook_read → workbook_edit（真实 HTTP/WS/SQLite），
 // 另一个 WS 客户端订阅 doc:<id> 收 doc.op、doc.submit 冲突与续传。
 
@@ -7,6 +8,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import type { LanguageModelV4StreamPart, LanguageModelV4Usage } from "@ai-sdk/provider";
+import { redactSecrets } from "@excelmanus/models";
 import { createApiClient, type RecMsg, type ServerMessage } from "@excelmanus/protocol";
 import { importXlsx } from "@excelmanus/workbook";
 import { MockLanguageModelV4 } from "ai/test";
@@ -102,7 +104,25 @@ class TestWs {
       if (m) return m;
       if (Date.now() - t0 > timeoutMs) {
         throw new Error(
-          `等待超时：${what}；已收到 ${JSON.stringify(this.msgs.map((x) => x.type))}`,
+          `等待超时：${what}；已收到 ${JSON.stringify(
+            this.msgs.map((x) => {
+              if (x.type !== "rec") return x.type;
+              const error = Reflect.get(x.record.data, "error");
+              return {
+                type: x.record.type,
+                ...(error && typeof error === "object"
+                  ? {
+                      errorCode: Reflect.get(error, "code"),
+                      errorKind: Reflect.get(error, "kind"),
+                      ...(x.record.type === "turn.failed" &&
+                      typeof Reflect.get(error, "message") === "string"
+                        ? { message: redactSecrets(Reflect.get(error, "message")).slice(0, 240) }
+                        : {}),
+                    }
+                  : {}),
+              };
+            }),
+          )}`,
         );
       }
       await sleep(10);
@@ -179,7 +199,10 @@ describe("e2e：活文档写入 + doc: 同步", () => {
               ],
             },
           },
-          { name: "workbook_render", args: { path, sheet: "销售报表", range: "A1:I19" } },
+          {
+            name: "workbook_render",
+            args: { path, sheet: "销售报表", range: "A1:I19", mode: "reconstructed" },
+          },
           { name: "workbook_edit", args: { path, ops: fix } },
           {
             name: "workbook_read",
@@ -192,7 +215,10 @@ describe("e2e：活文档写入 + doc: 同步", () => {
             },
           },
           { name: "workbook_edit", args: { path, baseRev: userRev, ops: fix } },
-          { name: "workbook_render", args: { path, sheet: "销售报表", range: "A16:I17" } },
+          {
+            name: "workbook_render",
+            args: { path, sheet: "销售报表", range: "A16:I17", mode: "reconstructed" },
+          },
         ];
         const call = calls[step - 1];
         return {
@@ -213,7 +239,7 @@ describe("e2e：活文档写入 + doc: 同步", () => {
     const srv = await startServer({ dataDir, resolveLanguageModel: () => model, log: () => {} });
     servers.push(srv);
     const api = createApiClient(srv.url, srv.token);
-    await api.createModelProfile({
+    await createTestProfile(api, {
       name: "mock",
       provider: "custom-openai-compatible",
       model: "mock-observation",
@@ -464,7 +490,7 @@ describe("e2e：活文档写入 + doc: 同步", () => {
     const srv = await startServer({ dataDir, resolveLanguageModel: () => model, log: () => {} });
     servers.push(srv);
     const api = createApiClient(srv.url, srv.token);
-    await api.createModelProfile({
+    await createTestProfile(api, {
       name: "mock",
       provider: "custom-openai-compatible",
       model: "mock-empty",
@@ -595,7 +621,7 @@ describe("e2e：活文档写入 + doc: 同步", () => {
     copyFileSync(SAMPLE_XLSX, join(srv.workspaceRoot, "sales.xlsx"));
 
     const api = createApiClient(srv.url, srv.token);
-    await api.createModelProfile({
+    await createTestProfile(api, {
       name: "mock",
       provider: "custom-openai-compatible",
       model: "mock-doc",

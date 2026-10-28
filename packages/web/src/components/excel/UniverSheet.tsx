@@ -1,61 +1,128 @@
+import {
+  ARRAY_CACHE_RESOURCE,
+  arrayStateMutation,
+  type WorkbookCapturePacket,
+} from "@excelmanus/protocol";
+import { IResourceManagerService, UniverInstanceType } from "@univerjs/core";
+import { FormulaDataModel, LexerTreeBuilder } from "@univerjs/preset-sheets-core";
+import { TableManager, UniverSheetsTablePlugin } from "@univerjs/sheets-table";
+import { UniverSheetsTableUIPlugin } from "@univerjs/sheets-table-ui";
+import tableZhCN from "@univerjs/sheets-table-ui/locale/zh-CN";
+import { normalizeEditorTableValues } from "@/lib/workbook/table-values";
+import { assertCaptureCommand } from "./WorkbookCaptureView";
+import "@univerjs/sheets-table-ui/lib/index.css";
+import { CellNoteDialog, type NoteContext } from "./CellNoteDialog";
+import { WorkbookObjectsLayer } from "./WorkbookObjectsLayer";
+import { WorkbookZoom } from "./WorkbookZoom";
 // 表格画布：Univer 1.0.2 实例由活文档快照创建。本端编辑产生的 mutation 经 doc.submit 提交
 // （baseRev = 编辑开始时看到的修订），远端修订逐条回放；叠加层显示代理读写、待审批区域与刚提交的改动。
 
 import "@univerjs/preset-sheets-core/lib/index.css";
-import { formatRange, isDerivedWorkbookMutation, parseRange } from "@excelmanus/core";
-import { axisGroupMutation, sheetObjectsMutation, WorkbookObjects } from "@excelmanus/protocol";
+import "@univerjs/preset-sheets-find-replace/lib/index.css";
+import "@univerjs/sheets-conditional-formatting-ui/lib/index.css";
+import {
+  formatRange,
+  formulaAwareReorderMutation,
+  isDerivedWorkbookMutation,
+  parseRange,
+  safeSortRangeCommand,
+} from "@excelmanus/core";
+import {
+  axisGroupMutation,
+  OBJECT_LAYER_MUTATION,
+  sheetObjectsMutation,
+  sheetPrintMutation,
+  sheetTablesMutation,
+  WorkbookObjects,
+} from "@excelmanus/protocol";
 import {
   CommandType,
   ICommandService,
+  IUndoRedoService,
   IUniverInstanceService,
   LifecycleService,
   LifecycleStages,
   type Workbook,
 } from "@univerjs/core";
-import { UniverSheetsCorePreset } from "@univerjs/preset-sheets-core";
+import {
+  IRenderManagerService,
+  SheetInterceptorService,
+  SheetSkeletonManagerService,
+  UniverSheetsCorePreset,
+} from "@univerjs/preset-sheets-core";
 import zhCN from "@univerjs/preset-sheets-core/locales/zh-CN";
+import { UniverSheetsFindReplacePreset } from "@univerjs/preset-sheets-find-replace";
+import findZhCN from "@univerjs/preset-sheets-find-replace/locales/zh-CN";
 import { createUniver, LocaleType, mergeLocales } from "@univerjs/presets";
 import type { FWorkbook } from "@univerjs/sheets/facade";
 import { UniverSheetsConditionalFormattingPlugin } from "@univerjs/sheets-conditional-formatting";
+import { UniverSheetsConditionalFormattingUIPlugin } from "@univerjs/sheets-conditional-formatting-ui";
+import cfZhCN from "@univerjs/sheets-conditional-formatting-ui/locale/zh-CN";
 import { UniverSheetsDataValidationPlugin } from "@univerjs/sheets-data-validation";
+import { UniverSheetsDataValidationUIPlugin } from "@univerjs/sheets-data-validation-ui";
+import dvZhCN from "@univerjs/sheets-data-validation-ui/locale/zh-CN";
+import "@univerjs/sheets-data-validation-ui/lib/index.css";
 import { UniverSheetsFilterPlugin } from "@univerjs/sheets-filter";
+import "@univerjs/sheets-filter/facade";
+import { SortRangeCommand, UniverSheetsSortPlugin } from "@univerjs/sheets-sort";
 import { Loader2 } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { glassMenuItemClass, glassMenuPanelClass } from "@/components/ui/menu-panel";
+import { toast } from "@/components/ui/toaster";
+import { errorMessage } from "@/lib/backend/api";
 import type { ChangeEntry } from "@/lib/session/types";
 import { cn } from "@/lib/utils";
 import { type AskKind, SELECTION_ASKS } from "@/lib/workbook/ask-actions";
+import { AXIS_ACTIONS, editSelectionAxis } from "@/lib/workbook/axis-actions";
 import {
   CHANGE_HIGHLIGHT_MS,
-  changeDeadline,
-  changeHighlightFrame,
   changeHighlights,
+  createChangeHighlightFrames,
 } from "@/lib/workbook/change-highlights";
 import { EditTracker } from "@/lib/workbook/edit-session";
 import { keepEditingRoom, withEditingRoom } from "@/lib/workbook/editing-room";
-import { overlayStyles, rgba } from "@/lib/workbook/overlay-colors";
-import { pendingWriteTargets } from "@/lib/workbook/pending-writes";
+import { EditorValidationGate } from "@/lib/workbook/editor-validation-gate";
+import { EditorMutationBatch } from "@/lib/workbook/mutation-batch";
+import { overlayColor, overlayStyles, rgba } from "@/lib/workbook/overlay-colors";
+import { rangeDataCommands } from "@/lib/workbook/range-actions";
+import { readRangeDataColumns } from "@/lib/workbook/range-data";
+import { isWorkbookFormatShortcut } from "@/lib/workbook/shortcuts";
 import { dropEditorThemeColor, jadeTheme } from "@/lib/workbook/univer-theme";
-import { captureView, isFreshView, restoreView, type ViewState } from "@/lib/workbook/view-state";
-import { useChatStore } from "@/stores/chat-store";
+import {
+  type DocActivity,
+  useDocActivity,
+  usePendingOverlay,
+} from "@/lib/workbook/use-overlay-data";
+import {
+  captureView,
+  isFreshView,
+  loadView,
+  restoreView,
+  saveView,
+} from "@/lib/workbook/view-state";
 import {
   noteManualView,
   registerDocumentEditor,
   reloadDocument,
   setDraftConflict,
+  setInputDraft,
   setSelection,
-  submitDocumentMutation,
+  submitDocumentMutations,
   useWorkbookStore,
 } from "@/stores/workbook-store";
-import type { SheetApi } from "./FormatToolbar";
+import { focusGrid, type SheetApi } from "./FormatToolbar";
+import { type RangeDataContext, RangeDataDialog } from "./RangeDataDialog";
 
 export interface OverlayVisibility {
   activity: boolean;
@@ -80,76 +147,6 @@ function clampedRange(sheet: Sheet, key: string) {
   return sheet.getRange(r0, c0, r1 - r0 + 1, c1 - c0 + 1);
 }
 
-/** 当前文档上待审批写入的目标区域（拟修改），按行拼成稳定键。 */
-function usePendingRanges(): string {
-  const approvals = useChatStore((s) => s.session.approvals);
-  const doc = useWorkbookStore((s) => s.doc);
-  return useMemo(() => {
-    if (!doc) return "";
-    const out: string[] = [];
-    for (const approval of Object.values(approvals)) {
-      if (approval.status !== "pending") continue;
-      const plan = pendingWriteTargets(approval);
-      if (!plan) continue;
-      if (plan.docId ? plan.docId !== doc.docId : plan.path !== doc.path) continue;
-      out.push(...plan.ranges);
-    }
-    return [...new Set(out)].join("\n");
-  }, [approvals, doc]);
-}
-
-/** 待审批区域首格的拟写入值：{ 区域: 值 }，序列化为稳定键。 */
-function usePendingValues(): string {
-  const approvals = useChatStore((s) => s.session.approvals);
-  const doc = useWorkbookStore((s) => s.doc);
-  return useMemo(() => {
-    if (!doc) return "";
-    const out: Record<string, unknown> = {};
-    for (const approval of Object.values(approvals)) {
-      if (approval.status !== "pending") continue;
-      const plan = pendingWriteTargets(approval);
-      if (!plan) continue;
-      if (plan.docId ? plan.docId !== doc.docId : plan.path !== doc.path) continue;
-      for (const [r, v] of Object.entries(plan.values)) out[r] = v[0]?.[0] ?? "";
-    }
-    return JSON.stringify(out);
-  }, [approvals, doc]);
-}
-
-export interface DocActivity {
-  kind: "read" | "write";
-  ranges: string[];
-  label: string;
-}
-
-/** 当前文档上各代理正在进行的活动（含代理名标签）。 */
-function useDocActivity(): DocActivity[] {
-  const doc = useWorkbookStore((s) => s.doc);
-  const live = useChatStore((s) => s.session.live);
-  const roster = useChatStore((s) => s.session.roster);
-  const raw = useMemo(() => {
-    if (!doc) return "";
-    const out: { kind: string; ranges: string[]; agent: string }[] = [];
-    for (const [agentId, state] of Object.entries(live)) {
-      for (const a of state.activity) {
-        if (a.docId ? a.docId !== doc.docId : a.path !== doc.path) continue;
-        out.push({ kind: a.kind, ranges: a.ranges, agent: agentId });
-      }
-    }
-    return out.length === 0 ? "" : JSON.stringify(out);
-  }, [doc, live]);
-  return useMemo(() => {
-    if (raw === "") return [];
-    return (JSON.parse(raw) as { kind: "read" | "write"; ranges: string[]; agent: string }[]).map(
-      (a) => {
-        const who = a.agent === "main" ? null : (roster[a.agent]?.name ?? a.agent);
-        const verb = a.kind === "read" ? "正在读取" : "正在写入";
-        return { kind: a.kind, ranges: a.ranges, label: who ? `${who} · ${verb}` : verb };
-      },
-    );
-  }, [raw, roster]);
-}
-
 /** 叠加层用的活动：结束后再保留 1.2 秒，让很快的读取也能被看见。 */
 export function useActivityOverlay(): DocActivity[] {
   const live = useDocActivity();
@@ -163,25 +160,6 @@ export function useActivityOverlay(): DocActivity[] {
     return () => clearTimeout(t);
   }, [live]);
   return shown;
-}
-
-function ChartPlaceholder({ popup }: PopupProps) {
-  const p = popup.extraProps ?? {};
-  return (
-    <div
-      data-em-chart=""
-      className="pointer-events-none flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-muted/90 p-3 text-sm text-foreground"
-      style={{ width: Number(p.width ?? 640), height: Number(p.height ?? 360) }}
-    >
-      <strong>{String(p.title ?? "")}</strong>
-      <span>
-        {p.type === "image"
-          ? "图片（原样保留，表格内暂不显示）"
-          : "图表（原样保留，表格内暂不显示）"}
-      </span>
-      <span className="text-xs text-muted-foreground">{String(p.range ?? "")}</span>
-    </div>
-  );
 }
 
 /** 叠加层角标：计划修改 · 待确认 / 正在读取 / 正在写入。 */
@@ -237,14 +215,20 @@ function OverlayDiff({ popup }: PopupProps) {
   );
 }
 
-/** 画布上的右键菜单：只放「交给代理」的动作，不接管 Univer 的编辑命令。 */
+/** 仅开放已支持写回的编辑命令；操作对象始终为当前选区。 */
 function SheetContextMenu({
   enabled,
+  selectionLabel,
+  dataOnly,
+  onEdit,
   onAsk,
   onReference,
   children,
 }: {
   enabled: boolean;
+  selectionLabel: string;
+  dataOnly: boolean;
+  onEdit: (command: string) => void;
   onAsk: (kind: AskKind) => void;
   onReference: () => void;
   children: ReactNode;
@@ -278,7 +262,7 @@ function SheetContextMenu({
         <DropdownMenuTrigger asChild>
           <button
             type="button"
-            aria-label="交给代理"
+            aria-label="表格右键菜单"
             tabIndex={-1}
             style={{
               position: "fixed",
@@ -296,6 +280,67 @@ function SheetContextMenu({
           className={glassMenuPanelClass}
           onCloseAutoFocus={(e) => e.preventDefault()}
         >
+          <div
+            className="max-w-64 truncate px-2.5 pb-1 pt-0.5 text-[11px] text-muted-foreground"
+            title={selectionLabel}
+          >
+            当前选区 {selectionLabel}
+          </div>
+          {[
+            { label: "复制", command: "univer.command.copy" },
+            {
+              label: dataOnly ? "粘贴（仅值）" : "粘贴",
+              command: dataOnly ? "sheet.command.paste-value" : "univer.command.paste",
+            },
+            ...(!dataOnly ? [{ label: "仅粘贴值", command: "sheet.command.paste-value" }] : []),
+            { label: "排序选区…", command: "data.sort" },
+            ...(!dataOnly
+              ? [
+                  { label: "筛选数据…", command: "data.filter" },
+                  { label: "批注 / 备注…", command: "note.edit" },
+                  { label: "移除筛选", command: "sheet.command.remove-sheet-filter" },
+                ]
+              : []),
+            { label: "撤销上一步", command: "univer.command.undo" },
+            { label: "重做上一步", command: "univer.command.redo" },
+            { label: "清空选区内容", command: "sheet.command.clear-selection-content" },
+          ].map((action) => (
+            <DropdownMenuItem
+              key={action.command}
+              className={glassMenuItemClass}
+              onSelect={() => {
+                chosen.current = true;
+                setPoint(null);
+                onEdit(action.command);
+              }}
+            >
+              {action.label}
+            </DropdownMenuItem>
+          ))}
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger
+              className={glassMenuItemClass}
+              disabled={dataOnly}
+              title={dataOnly ? "CSV/TSV 的行列操作请先另存为 XLSX" : undefined}
+            >
+              插入或删除行列
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className={glassMenuPanelClass}>
+              {AXIS_ACTIONS.map((action) => (
+                <DropdownMenuItem
+                  key={action.id}
+                  className={glassMenuItemClass}
+                  onSelect={() => {
+                    setPoint(null);
+                    onEdit(action.id);
+                  }}
+                >
+                  {action.label}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+          <DropdownMenuSeparator className="mx-1 my-1.5 bg-[var(--em-hairline)]" />
           <div className="px-2.5 pb-1 pt-0.5 text-[11px] font-medium tracking-wide text-muted-foreground">
             交给代理
           </div>
@@ -336,7 +381,9 @@ export function UniverSheet({
   onApi,
   onAsk,
   onReference,
+  capturePacket,
 }: {
+  capturePacket?: WorkbookCapturePacket;
   visibility: OverlayVisibility;
   /** 需要闪烁的近期已提交改动。 */
   changes: ChangeEntry[];
@@ -345,18 +392,28 @@ export function UniverSheet({
   onAsk: (kind: AskKind) => void;
   onReference: () => void;
 }) {
-  const doc = useWorkbookStore((s) => s.doc);
+  const storedDoc = useWorkbookStore((s) => s.doc);
+  const captureReadonly = capturePacket !== undefined;
+  const doc = capturePacket
+    ? {
+        docId: capturePacket.docId,
+        path: "",
+        rev: capturePacket.rev,
+        snapshotRev: capturePacket.rev,
+        snapshot: capturePacket.snapshot,
+      }
+    : storedDoc;
   const docId = doc?.docId;
   const snapshot = doc?.snapshot;
   const focus = useWorkbookStore((s) => s.rangeFocus);
   const preview = useWorkbookStore((s) => s.rangePreview);
+  const selectionLabel = useWorkbookStore((s) => s.selection?.range ?? "");
   const hasSelection = useWorkbookStore(
     (s) => s.selection !== null && s.selection.docId === s.doc?.docId,
   );
   const hostRef = useRef<HTMLDivElement>(null);
   const apiRef = useRef<SheetApi | null>(null);
   // 快照重读会重建表格实例；销毁前记下位置，重建后接着看
-  const viewRef = useRef<ViewState | null>(null);
   const [ready, setReady] = useState(0);
   const [snapshotLoad, setSnapshotLoad] = useState<"loading" | "error" | null>(null);
   // 实例创建时刻：canvas 浮层要等首轮布局完成后才能拿到单元格坐标
@@ -366,15 +423,34 @@ export function UniverSheet({
   const [themeKey, setThemeKey] = useState(() =>
     document.documentElement.classList.contains("dark"),
   );
-  const pending = usePendingRanges();
-  const pendingValues = usePendingValues();
+  const [noteContext, setNoteContext] = useState<NoteContext | null>(null);
+  const [dataContext, setDataContext] = useState<RangeDataContext | null>(null);
+  const { ranges: pending, values: pendingValues } = usePendingOverlay();
   const activity = useActivityOverlay();
+
+  // Univer 在原生事件阶段处理快捷键，需要先于其监听器拦截 CSV 格式操作。
+  useEffect(() => {
+    if (captureReadonly || !/\.(csv|tsv)$/i.test(doc?.path ?? "")) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (
+        !(event.target instanceof Node) ||
+        !hostRef.current?.contains(event.target) ||
+        !isWorkbookFormatShortcut(event)
+      )
+        return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (!event.repeat) toast({ title: "CSV 只保存数据；需要设置格式时，请先另存为 XLSX。" });
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [doc?.path, captureReadonly]);
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host || !docId || !snapshot) return;
     const current = useWorkbookStore.getState().doc;
-    if (current?.docId === docId && current.snapshotRev < current.rev) {
+    if (!captureReadonly && current?.docId === docId && current.snapshotRev < current.rev) {
       // 工作台换了位置（侧栏 ↔ 全屏）或期间有远端修订：先取最新快照再建表
       let alive = true;
       setSnapshotLoad("loading");
@@ -390,11 +466,16 @@ export function UniverSheet({
       theme: jadeTheme,
       plugins: [
         UniverSheetsConditionalFormattingPlugin,
+        UniverSheetsConditionalFormattingUIPlugin,
+        UniverSheetsTablePlugin,
+        UniverSheetsTableUIPlugin,
         UniverSheetsDataValidationPlugin,
+        UniverSheetsDataValidationUIPlugin,
         UniverSheetsFilterPlugin,
+        UniverSheetsSortPlugin,
       ],
       locale: LocaleType.ZH_CN,
-      locales: { [LocaleType.ZH_CN]: mergeLocales(zhCN) },
+      locales: { [LocaleType.ZH_CN]: mergeLocales(zhCN, findZhCN, cfZhCN, tableZhCN, dvZhCN) },
       presets: [
         // 公式栏与工作表标签用 Univer 自带的；工具栏与右键菜单不开放（只放写回支持的命令）
         UniverSheetsCorePreset({
@@ -402,26 +483,121 @@ export function UniverSheet({
           header: true,
           toolbar: false,
           formulaBar: true,
-          footer: { sheetBar: true, statisticBar: true, menus: false, zoomSlider: true },
+          footer: { sheetBar: true, statisticBar: true, menus: false, zoomSlider: false },
           contextMenu: false,
         }),
+        // 查找依赖 Core 中的 UI 服务，必须在 Core 之后注册。
+        UniverSheetsFindReplacePreset(),
       ],
     });
     const injector = univer.__getInjector();
+    univer
+      .__getInjector()
+      .get(IResourceManagerService)
+      .registerPluginResource({
+        pluginName: ARRAY_CACHE_RESOURCE,
+        businesses: [UniverInstanceType.UNIVER_SHEET],
+        onLoad: (unitId, resource) => {
+          const model = univer.__getInjector().get(FormulaDataModel);
+          model.setArrayFormulaRange({
+            ...model.getArrayFormulaRange(),
+            [unitId]: resource.ranges ?? {},
+          });
+          model.setArrayFormulaCellData({
+            ...model.getArrayFormulaCellData(),
+            [unitId]: resource.cells ?? {},
+          });
+        },
+        onUnLoad: () => {},
+        parseJson: JSON.parse,
+        toJson: (unitId) => {
+          const model = univer.__getInjector().get(FormulaDataModel);
+          return JSON.stringify({
+            ranges: model.getArrayFormulaRange()[unitId] ?? {},
+            cells: model.getArrayFormulaCellData()[unitId] ?? {},
+          });
+        },
+      });
+
     const sheetOf = (unitId: string, sheetId: string) =>
       injector.get(IUniverInstanceService).getUnit<Workbook>(unitId)?.getSheetBySheetId(sheetId);
     injector
       .get(ICommandService)
       .registerCommand(sheetObjectsMutation(CommandType.MUTATION, sheetOf));
+    injector
+      .get(ICommandService)
+      .registerCommand(sheetPrintMutation(CommandType.MUTATION, sheetOf));
     injector.get(ICommandService).registerCommand(axisGroupMutation(CommandType.MUTATION, sheetOf));
+    injector
+      .get(ICommandService)
+      .registerCommand(arrayStateMutation(CommandType.MUTATION, sheetOf));
+    const getTableManager = () => injector.get(TableManager);
+    injector.get(ICommandService).beforeCommandExecuted((command) => {
+      if (command.id === "sheet.mutation.set-range-values") {
+        const p = command.params as {
+          unitId: string;
+          subUnitId: string;
+          cellValue?: Record<string, Record<string, unknown>>;
+        };
+        if (p.cellValue)
+          normalizeEditorTableValues(p.cellValue, p.subUnitId, p.unitId, getTableManager());
+      }
+
+      if (command.id !== "formula.mutation.set-super-table") return;
+      const p = command.params as {
+        unitId: string;
+        tableName: string;
+        reference: Record<string, unknown>;
+      };
+      const tableManager = getTableManager();
+      const table = tableManager.getTableList(p.unitId).find((t) => t.name === p.tableName);
+      const actual = table && tableManager.getTableById(p.unitId, table.id);
+      if (actual)
+        Object.assign(p.reference, {
+          showHeader: actual.isShowHeader(),
+          showFooter: actual.isShowFooter(),
+        });
+    });
+    injector.get(ICommandService).registerCommand(
+      sheetTablesMutation(CommandType.MUTATION, (unitId, sheetId, tables) => {
+        if (!sheetOf(unitId, sheetId)) return false;
+        const tableManager = getTableManager();
+        for (const t of tableManager.getTablesBySubunitId(unitId, sheetId))
+          tableManager.deleteTable(unitId, t.getId());
+        tableManager.fromJSON(unitId, {
+          [sheetId]: { tables: tables as never[], tableFilteredOutRows: [] },
+        });
+        return true;
+      }),
+    );
     const wb = univerAPI.createWorkbook(withEditingRoom(snapshot));
+    const sortCommands = injector.get(ICommandService);
+    const sortLexer = new LexerTreeBuilder();
+    sortCommands.unregisterCommand("sheet.mutation.reorder-range");
+    sortCommands.registerCommand(
+      formulaAwareReorderMutation(CommandType.MUTATION, sheetOf, (formula, columns, rows) =>
+        sortLexer.moveFormulaRefOffset(formula, columns, rows),
+      ),
+    );
+    sortCommands.unregisterCommand(SortRangeCommand.id);
+    sortCommands.registerCommand(safeSortRangeCommand(SortRangeCommand, sheetOf));
+
     // 工作台编辑与代理共用 doc.submit；服务端负责串行化与冲突判定
-    wb.setEditable(true);
-    const sheetApi: SheetApi = { univer, univerAPI, wb };
+    wb.setEditable(!captureReadonly);
+    const captureGuard = captureReadonly
+      ? injector.get(ICommandService).beforeCommandExecuted(assertCaptureCommand)
+      : null;
+    const sheetApi: SheetApi = { univer, univerAPI, wb, rendered: false };
+    void injector
+      .get(LifecycleService)
+      .onStage(LifecycleStages.Rendered)
+      .then(() => {
+        if (!sheetApi.disposed) sheetApi.rendered = true;
+      });
     apiRef.current = sheetApi;
     onApi(sheetApi);
-    if (import.meta.env.DEV) (window as { __emUniverAPI?: unknown }).__emUniverAPI = univerAPI;
-    const chartSub = univerAPI.registerComponent("em-chart-placeholder", ChartPlaceholder as never);
+    if (import.meta.env.DEV && !captureReadonly)
+      (window as { __emUniverAPI?: unknown }).__emUniverAPI = univerAPI;
     const tagSub = univerAPI.registerComponent("em-overlay-tag", OverlayTag as never);
     const diffSub = univerAPI.registerComponent("em-overlay-diff", OverlayDiff as never);
     createdAt.current = Date.now();
@@ -438,144 +614,179 @@ export function UniverSheet({
     const sheetSub = univerAPI.addEvent(univerAPI.Event.ActiveSheetChanged, () =>
       setActiveSheet(wb.getActiveSheet()?.getSheetName() ?? null),
     );
-    // 用户正在编辑单元格时不被跟随打断；同时记下编辑开始时的修订与键入的草稿
-    const editing = new EditTracker();
-    const editSub = univerAPI.addEvent(univerAPI.Event.SheetEditStarted, (p) => {
-      noteManualView();
-      editing.start(
-        p.worksheet.getSheetId(),
-        p.row,
-        p.column,
-        useWorkbookStore.getState().docSync.rev,
-      );
-    });
-    const changingSub = univerAPI.addEvent(univerAPI.Event.SheetEditChanging, (p) => {
-      const text = (p.value as { toPlainText?: () => string } | undefined)?.toPlainText?.();
-      if (typeof text === "string") editing.typed(text);
-    });
-    const editEndSub = univerAPI.addEvent(univerAPI.Event.SheetEditEnded, () => editing.end());
-    setActiveSheet(wb.getActiveSheet()?.getSheetName() ?? null);
-    let applyingRemote = false;
-    registerDocumentEditor({
-      docId,
-      applyRemote: async (mutations, source) => {
-        applyingRemote = true;
-        try {
-          for (const mutation of mutations) {
-            const clash = editing.remote(mutation);
-            if (clash) setDraftConflict({ docId, ...clash, source });
-            const ok = await univerAPI.executeCommand(
-              mutation.id,
-              keepEditingRoom(wb, mutation.id, mutation.params),
-              { fromCollab: true },
-            );
-            if (!ok) throw new Error(`远端修订无法回放：${mutation.id}`);
-          }
-        } finally {
-          applyingRemote = false;
-        }
-      },
-    });
-    const view = viewRef.current;
-    viewRef.current = null;
     let disposed = false;
-    if (isFreshView(view, docId))
-      // 滚动控制器要等首轮渲染完成才可用
-      void injector
-        .get(LifecycleService)
-        .onStage(LifecycleStages.Rendered)
-        .then(() => {
-          if (!disposed) restoreView(wb, view);
-        });
-    const commandSub = wb.onCommandExecuted((command, options) => {
-      if (applyingRemote || options?.fromCollab || options?.fromChangeset) return;
-      if (command.type !== CommandType.MUTATION) return;
-      if (isDerivedWorkbookMutation(command)) return;
-      const mutation = dropEditorThemeColor({ id: command.id, params: command.params ?? {} });
-      submitDocumentMutation(docId, mutation, editing.baseRevFor(mutation));
+    setActiveSheet(wb.getActiveSheet()?.getSheetName() ?? null);
+    // Filter/skeleton redraw is local rendering, independent of editing or submission.
+    const redrawSub = wb.onCommandExecuted((command) => {
+      // We use the filter model without Univer\u0027s filter UI; update the canvas row layout here.
+      if (
+        [
+          "excelmanus.mutation.set-sheet-tables",
+          "sheet.mutation.add-table",
+          "sheet.mutation.delete-table",
+          "sheet.mutation.set-filter-range",
+          "sheet.mutation.set-filter-criteria",
+          "sheet.mutation.remove-filter",
+          "sheet.mutation.re-calc-filter",
+        ].includes(command.id)
+      ) {
+        const sheetId = (command.params as { subUnitId?: string } | undefined)?.subUnitId;
+        if (sheetId)
+          queueMicrotask(() => {
+            if (disposed) return;
+            const render = injector.get(IRenderManagerService).getRenderUnitById(wb.getId());
+            const skeleton = render?.with(SheetSkeletonManagerService);
+            skeleton?.makeDirty({ sheetId });
+            if (sheetId === wb.getActiveSheet()?.getSheetId()) skeleton?.setCurrent({ sheetId });
+            render?.mainComponent?.makeDirty();
+          });
+      }
     });
-    // 选区跟随：鼠标、键盘与 activate() 都经 set-selections 操作
-    const selectionSub = wb.onCommandExecuted((command) => {
-      if (command.id !== "sheet.operation.set-selections") return;
-      const sheet = wb.getActiveSheet();
-      const sel = sheet?.getSelection()?.getActiveRange()?.getRange();
-      if (!sheet || !sel) return;
-      setSelection(
-        formatRange({
-          sheet: sheet.getSheetName(),
-          startCol: sel.startColumn + 1,
-          startRow: sel.startRow + 1,
-          endCol: sel.endColumn + 1,
-          endRow: sel.endRow + 1,
-        }),
+    let cleanupEditor: (() => void) | undefined;
+    if (!captureReadonly) {
+      // 用户正在编辑单元格时不被跟随打断；同时记下编辑开始时的修订与键入的草稿
+      const editing = new EditTracker();
+      const editSub = univerAPI.addEvent(univerAPI.Event.SheetEditStarted, (p) => {
+        noteManualView();
+        editing.start(
+          p.worksheet.getSheetId(),
+          p.row,
+          p.column,
+          useWorkbookStore.getState().docSync.rev,
+        );
+      });
+      const changingSub = univerAPI.addEvent(univerAPI.Event.SheetEditChanging, (p) => {
+        const text = (p.value as { toPlainText?: () => string } | undefined)?.toPlainText?.();
+        if (typeof text === "string") {
+          editing.typed(text);
+          setInputDraft(docId, editing.currentDraft());
+        }
+      });
+      const editEndSub = univerAPI.addEvent(univerAPI.Event.SheetEditEnded, (p) => {
+        editing.end(p.isConfirm);
+        if (!p.isConfirm) setInputDraft(docId, null);
+      });
+      let applyingRemote = false;
+      registerDocumentEditor({
+        docId,
+        applyRemote: async (mutations, source) => {
+          applyingRemote = true;
+          try {
+            for (const mutation of mutations) {
+              const clash = editing.remote(mutation);
+              if (clash) setDraftConflict({ docId, ...clash, source });
+              const ok = await univerAPI.executeCommand(
+                mutation.id,
+                keepEditingRoom(wb, mutation.id, mutation.params),
+                { fromCollab: true, excelmanusReplay: true },
+              );
+              if (!ok) throw new Error(`远端修订无法回放：${mutation.id}`);
+            }
+          } finally {
+            applyingRemote = false;
+          }
+        },
+      });
+      const view = loadView(docId);
+      const rememberView = () => saveView(captureView(docId, wb));
+      window.addEventListener("pagehide", rememberView);
+      if (isFreshView(view, docId))
+        // 滚动控制器要等首轮渲染完成才可用
+        void injector
+          .get(LifecycleService)
+          .onStage(LifecycleStages.Rendered)
+          .then(() => {
+            // An explicit region request takes priority over the previous tab position.
+            if (!disposed && !useWorkbookStore.getState().rangeFocus) restoreView(wb, view);
+          })
+          .catch((error: unknown) => {
+            // Closing a sheet before its first render rejects the lifecycle promise.
+            if (!disposed) console.warn("[excelmanus] 无法恢复表格视图", error);
+          });
+      const localBatch = new EditorMutationBatch((mutations, baseRev) =>
+        submitDocumentMutations(docId, mutations, baseRev),
       );
-    });
+      const validationGate = new EditorValidationGate((mutation, revision) =>
+        localBatch.push(mutation, revision),
+      );
+      const validationBeforeSub = injector
+        .get(ICommandService)
+        .beforeCommandExecuted((command, options) => {
+          if (
+            !applyingRemote &&
+            !options?.fromCollab &&
+            !options?.fromChangeset &&
+            (command.params as { unitId?: string } | undefined)?.unitId === wb.getId()
+          )
+            validationGate.before({ id: command.id, params: command.params });
+        });
+      const validationSub = validationGate.bindValidation(
+        injector.get(SheetInterceptorService),
+        () => injector.get(IUndoRedoService).pitchTopUndoElement() ?? undefined,
+      );
+      const commandSub = wb.onCommandExecuted((command, options) => {
+        validationGate.after({ id: command.id, params: command.params });
+        if (validationGate.isRollback({ id: command.id, params: command.params })) return;
+        if (applyingRemote || options?.fromCollab || options?.fromChangeset) return;
+        if (command.type !== CommandType.MUTATION) return;
+        if (isDerivedWorkbookMutation(command, options)) return;
+        const mutation = dropEditorThemeColor({ id: command.id, params: command.params ?? {} });
+        validationGate.push(
+          mutation,
+          editing.baseRevFor(mutation) ?? useWorkbookStore.getState().docSync.rev,
+        );
+      });
+      // 选区跟随：鼠标、键盘与 activate() 都经 set-selections 操作
+      const selectionSub = wb.onCommandExecuted((command) => {
+        if (command.id !== "sheet.operation.set-selections") return;
+        const sheet = wb.getActiveSheet();
+        const sel = sheet?.getSelection()?.getActiveRange()?.getRange();
+        if (!sheet || !sel) return;
+        setSelection(
+          formatRange({
+            sheet: sheet.getSheetName(),
+            startCol: sel.startColumn + 1,
+            startRow: sel.startRow + 1,
+            endCol: sel.endColumn + 1,
+            endRow: sel.endRow + 1,
+          }),
+        );
+      });
+      cleanupEditor = () => {
+        rememberView();
+        window.removeEventListener("pagehide", rememberView);
+        commandSub.dispose();
+        validationBeforeSub.dispose();
+        validationSub();
+        validationGate.dispose();
+        localBatch.flush();
+        editSub.dispose();
+        changingSub.dispose();
+        editEndSub.dispose();
+        selectionSub.dispose();
+        registerDocumentEditor(null);
+      };
+    }
     return () => {
       disposed = true;
-      viewRef.current = captureView(docId, wb);
+      sheetApi.disposed = true;
+      cleanupEditor?.();
+      captureGuard?.dispose();
+      redrawSub.dispose();
       themeObserver.disconnect();
-      chartSub.dispose();
       tagSub.dispose();
       diffSub.dispose();
-      commandSub.dispose();
       sheetSub.dispose();
-      editSub.dispose();
-      changingSub.dispose();
-      editEndSub.dispose();
-      selectionSub.dispose();
-      registerDocumentEditor(null);
       apiRef.current = null;
       onApi(null);
       univer.dispose();
     };
-  }, [docId, snapshot, onApi]);
-
-  // 图表与图片：表格内只放占位（原样保留在文件里）
-  // biome-ignore lint/correctness/useExhaustiveDependencies: 修订、工作表切换与实例重建时重新挂载
-  useEffect(() => {
-    const wb = apiRef.current?.wb;
-    if (!wb) return;
-    const disposers: { dispose(): void }[] = [];
-    const timer = setTimeout(
-      () => {
-        const sheet = wb.getActiveSheet();
-        if (!sheet) return;
-        const data = wb.save().sheets[sheet.getSheetId()];
-        const parsed = WorkbookObjects.safeParse(data?.custom?.excelmanusObjects);
-        if (!parsed.success) return;
-        for (const chart of [
-          ...parsed.data.charts,
-          ...parsed.data.images.map((image) => ({ ...image, type: "image", range: "" })),
-        ]) {
-          const range = parseRange(chart.anchor);
-          const popup = sheet
-            .getRange(range.startRow - 1, range.startCol - 1, 1, 1)
-            .attachRangePopup({
-              componentKey: "em-chart-placeholder",
-              direction: "bottom",
-              extraProps: {
-                title: chart.title,
-                type: chart.type,
-                range: chart.range,
-                width: chart.width,
-                height: chart.height,
-              },
-            });
-          if (popup) disposers.push(popup);
-        }
-      },
-      Math.max(20, 800 - (Date.now() - createdAt.current)),
-    );
-    return () => {
-      clearTimeout(timer);
-      for (const d of disposers) d.dispose();
-    };
-  }, [doc?.rev, activeSheet, ready]);
+  }, [docId, snapshot, onApi, captureReadonly]);
 
   // 定位：切到工作表、选中并滚动到区域，短暂高亮
   useEffect(() => {
     const wb = apiRef.current?.wb;
-    if (!wb || !focus) return;
+    if (captureReadonly || !wb || !focus) return;
     try {
       const parsed = parseRange(focus.range);
       const sheet = parsed.sheet ? wb.getSheetByName(parsed.sheet) : wb.getActiveSheet();
@@ -598,12 +809,12 @@ export function UniverSheet({
     } catch {
       useWorkbookStore.setState({ referenceError: "invalid-range" });
     }
-  }, [focus, ready]);
+  }, [focus, ready, captureReadonly]);
 
   // 悬停区域引用时的虚线预览
   useEffect(() => {
     const wb = apiRef.current?.wb;
-    if (!wb || !preview) return;
+    if (captureReadonly || !wb || !preview) return;
     try {
       const parsed = parseRange(preview);
       const sheet = wb.getActiveSheet();
@@ -620,7 +831,7 @@ export function UniverSheet({
     } catch {
       return;
     }
-  }, [preview]);
+  }, [preview, captureReadonly]);
 
   // 「计划修改」来自待审批记录，批准或拒绝后消失
   // biome-ignore lint/correctness/useExhaustiveDependencies: ready 表示 Univer 实例已重建
@@ -714,15 +925,16 @@ export function UniverSheet({
     const marks = changeHighlights(changes, sheet.getSheetName());
     if (marks.length === 0) return;
     const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const frameFor = createChangeHighlightFrames();
     const painted = new Map<string, { signature: string; dispose(): void }>();
     let timer: ReturnType<typeof setTimeout>;
     const draw = () => {
+      const color = overlayColor("ok");
       const now = Date.now();
       let remaining = false;
       let nextDelay = CHANGE_HIGHLIGHT_MS;
       for (const mark of marks) {
-        const age = now - (changeDeadline(mark.entry) - CHANGE_HIGHLIGHT_MS);
-        const frame = changeHighlightFrame(age, motion.matches);
+        const { age, frame, signature } = frameFor(mark.entry, now, motion.matches);
         const key = `${mark.entry.seq}:${mark.range}`;
         const previous = painted.get(key);
         if (frame.stroke === 0) {
@@ -739,7 +951,6 @@ export function UniverSheet({
               ? 40
               : CHANGE_HIGHLIGHT_MS - 900 - age,
         );
-        const signature = JSON.stringify(frame);
         if (previous?.signature === signature) continue;
         previous?.dispose();
         painted.delete(key);
@@ -747,8 +958,8 @@ export function UniverSheet({
           const range = clampedRange(sheet, mark.range);
           if (range) {
             const shape = range.highlight({
-              fill: rgba("ok", frame.fill),
-              stroke: rgba("ok", frame.stroke),
+              fill: color(frame.fill),
+              stroke: color(frame.stroke),
               strokeWidth: frame.width,
             });
             painted.set(key, { signature, dispose: () => shape.dispose() });
@@ -808,39 +1019,204 @@ export function UniverSheet({
   }, [activity, activeSheet, ready, themeKey, visibility.activity]);
 
   return (
-    <SheetContextMenu
-      enabled={hasSelection && snapshotLoad === null}
-      onAsk={onAsk}
-      onReference={onReference}
-    >
-      <div className="univer-host absolute inset-0" ref={hostRef} />
-      {snapshotLoad !== null && (
-        <div className="absolute inset-0 z-10 grid place-items-center bg-background">
-          {snapshotLoad === "error" ? (
-            <div
-              className="flex flex-col items-center gap-3 text-sm text-muted-foreground"
-              role="alert"
-            >
-              表格内容读取失败
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setSnapshotLoad("loading");
-                  void reloadDocument().catch(() => setSnapshotLoad("error"));
-                }}
-              >
-                重新读取
-              </Button>
-            </div>
-          ) : (
-            <span className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              正在读取最新内容…
-            </span>
-          )}
-        </div>
+    <>
+      {!captureReadonly && noteContext && (
+        <CellNoteDialog
+          context={noteContext}
+          onClose={() => setNoteContext(null)}
+          onSave={async (text, author) => {
+            const api = apiRef.current;
+            const current = useWorkbookStore.getState().doc;
+            if (
+              !api ||
+              !current ||
+              current.docId !== noteContext.docId ||
+              current.rev !== noteContext.revision
+            )
+              throw new Error("工作簿已更新，请关闭后重新打开批注再修改");
+            const objects = WorkbookObjects.parse(
+              api.wb.getSheetBySheetId(noteContext.sheetId)?.getSheet().getSnapshot().custom
+                ?.excelmanusObjects ?? {
+                charts: [],
+                images: [],
+              },
+            );
+            objects.notes = (objects.notes ?? []).filter((note) => note.ref !== noteContext.ref);
+            if (text !== null) objects.notes.push({ ref: noteContext.ref, text, author });
+            if (
+              !(await api.univerAPI.executeCommand(OBJECT_LAYER_MUTATION, {
+                unitId: api.wb.getId(),
+                subUnitId: noteContext.sheetId,
+                objects,
+              }))
+            )
+              throw new Error("批注保存未完成");
+          }}
+        />
       )}
-    </SheetContextMenu>
+      {!captureReadonly && dataContext && (
+        <RangeDataDialog
+          context={dataContext}
+          onClose={() => {
+            setDataContext(null);
+            if (apiRef.current) focusGrid(apiRef.current);
+          }}
+          onApply={async (action) => {
+            const api = apiRef.current;
+            if (
+              !api ||
+              api.wb.getId() !== dataContext.unitId ||
+              useWorkbookStore.getState().doc?.rev !== dataContext.revision
+            )
+              throw new Error("表格已更新，请关闭后重新选择区域");
+            const commands = rangeDataCommands(dataContext, action);
+            const service = api.univer.__getInjector().get(ICommandService);
+            for (const cmd of commands)
+              if (!service.syncExecuteCommand(cmd.id, cmd.params))
+                throw new Error("操作未完成，请检查选区是否包含合并单元格");
+          }}
+        />
+      )}
+      <SheetContextMenu
+        enabled={!captureReadonly && hasSelection && snapshotLoad === null}
+        selectionLabel={selectionLabel}
+        dataOnly={/\.(csv|tsv)$/i.test(doc?.path ?? "")}
+        onEdit={(command) => {
+          const api = apiRef.current;
+          if (captureReadonly || !api) return;
+          void (async () => {
+            try {
+              await api.wb.endEditingAsync(true);
+              focusGrid(api);
+              if (command === "note.edit") {
+                const sheet = api.wb.getActiveSheet();
+                const range = sheet?.getSelection()?.getActiveRange()?.getRange();
+                if (!sheet || !range || !docId) throw new Error("请先选择一个单元格");
+                const ref = sheet.getRange(range.startRow, range.startColumn, 1, 1).getA1Notation();
+                const objects = WorkbookObjects.parse(
+                  sheet.getSheet().getSnapshot().custom?.excelmanusObjects ?? {
+                    charts: [],
+                    images: [],
+                  },
+                );
+                const note = objects.notes?.find((note) => note.ref === ref);
+                setNoteContext({
+                  docId,
+                  sheetId: sheet.getSheetId(),
+                  ref,
+                  text: note?.text ?? "",
+                  author: note?.author ?? "",
+                  exists: !!note,
+                  revision: useWorkbookStore.getState().doc!.rev,
+                });
+                return;
+              }
+              if (command === "data.sort" || command === "data.filter") {
+                const sheet = api.wb.getActiveSheet();
+                if (!sheet) throw new Error("工作表已关闭");
+                const ranges = sheet.getSelection()?.getActiveRangeList() ?? [];
+                if (ranges.length !== 1) throw new Error("请先选择一个连续区域");
+                const filter = command === "data.filter" ? sheet.getFilter() : null;
+                const selected = filter?.getRange() ?? ranges[0]!;
+                const range = selected.getRange();
+                if (range.endRow <= range.startRow)
+                  throw new Error("请选择包含表头和明细的区域（至少两行）");
+                if (
+                  (range.endRow - range.startRow + 1) * (range.endColumn - range.startColumn + 1) >
+                  200000
+                )
+                  throw new Error("请缩小选区，单次最多处理 20 万格");
+                const kind = command === "data.sort" ? "sort" : "filter";
+                const columns = readRangeDataColumns(
+                  kind,
+                  range,
+                  (r) =>
+                    sheet
+                      .getRange(
+                        r.startRow,
+                        r.startColumn,
+                        r.endRow - r.startRow + 1,
+                        r.endColumn - r.startColumn + 1,
+                      )
+                      .getValues(),
+                  (index) => filter?.getColumnFilterCriteria(index)?.filters,
+                );
+                setDataContext({
+                  kind,
+                  unitId: api.wb.getId(),
+                  subUnitId: sheet.getSheetId(),
+                  range,
+                  label: `${sheet.getSheetName()}!${selected.getA1Notation()}`,
+                  hasFilter: !!filter,
+                  columns,
+                  revision: useWorkbookStore.getState().doc!.rev,
+                });
+                return;
+              }
+              const axis = AXIS_ACTIONS.find((action) => action.id === command);
+              if (axis) {
+                if (/\.(csv|tsv)$/i.test(doc?.path ?? ""))
+                  throw new Error("CSV/TSV 的行列操作请先另存为 XLSX");
+                const sheet = api.wb.getActiveSheet();
+                if (!sheet) throw new Error("工作表已关闭");
+                editSelectionAxis(sheet, axis.id);
+              } else {
+                const params =
+                  command === "sheet.command.remove-sheet-filter"
+                    ? { unitId: api.wb.getId(), subUnitId: api.wb.getActiveSheet()?.getSheetId() }
+                    : undefined;
+                const ok = await api.univerAPI.executeCommand(command, params);
+                if (!ok) toast({ title: "当前没有可执行的操作", tone: "info" });
+              }
+            } catch (error) {
+              toast({ title: errorMessage(error, "操作未完成，请重试"), tone: "error" });
+            } finally {
+              focusGrid(api);
+            }
+          })();
+        }}
+        onAsk={onAsk}
+        onReference={onReference}
+      >
+        <div className="univer-host absolute inset-0" ref={hostRef} />
+        <WorkbookZoom api={apiRef.current} ready={ready} />
+        <WorkbookObjectsLayer
+          api={apiRef.current}
+          host={hostRef.current}
+          docId={docId}
+          revision={doc?.rev}
+          sheetKey={activeSheet}
+          ready={ready}
+          captureReadonly={captureReadonly}
+        />
+        {snapshotLoad !== null && (
+          <div className="absolute inset-0 z-10 grid place-items-center bg-background">
+            {snapshotLoad === "error" ? (
+              <div
+                className="flex flex-col items-center gap-3 text-sm text-muted-foreground"
+                role="alert"
+              >
+                表格内容读取失败
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setSnapshotLoad("loading");
+                    void reloadDocument().catch(() => setSnapshotLoad("error"));
+                  }}
+                >
+                  重新读取
+                </Button>
+              </div>
+            ) : (
+              <span className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                正在读取最新内容…
+              </span>
+            )}
+          </div>
+        )}
+      </SheetContextMenu>
+    </>
   );
 }

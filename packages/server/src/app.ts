@@ -1,3 +1,20 @@
+import { ImportLegacyBody } from "@excelmanus/protocol";
+import { importLegacyFile } from "@excelmanus/workbook";
+import { contractConfirmationRecords } from "./contract-confirmations.ts";
+import {
+  issueUploadReceipt,
+  prepareUploadBinding,
+  uploadBindingProjection,
+} from "./contract-uploads.ts";
+import {
+  createConnection,
+  deleteConnection,
+  getConnection,
+  getConnectionRow,
+  listConnections,
+  updateConnection,
+} from "./provider-connections.ts";
+import { qaFirstScreenRoutes } from "./qa-first-screen.ts";
 // REST 网关（11 §2、§4）：/api/v1 前缀、Bearer 设备令牌/浏览器会话 Cookie、请求 ID、统一错误体。
 
 import { randomBytes, randomUUID } from "node:crypto";
@@ -12,7 +29,6 @@ import {
   readFileSync,
   realpathSync,
   statSync,
-  writeFileSync,
 } from "node:fs";
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -21,29 +37,42 @@ import { newId, nowIso, parseRange } from "@excelmanus/core";
 import {
   type AgentRuntime,
   type ApprovalCoordinator,
+  accessScopeAllows,
   approvalDto,
+  atomicWrite,
   type BlobStore,
   buildSystemPrompt,
+  effectiveIngressAccess,
+  ingressContractRef,
   type ModelGateway,
+  normalizeAccessPath,
   PathSafetyError,
+  prepareEffectPlan,
   resolveWorkspacePath,
+  runWithEffectPlan,
+  runWithHostNativeAccess,
   type SessionLog,
   type SyncBus,
   type TeamCoordinator,
 } from "@excelmanus/kernel";
 import { PROVIDER_PRESETS, redactSecrets } from "@excelmanus/models";
-import type { LogRecord, StepEvent } from "@excelmanus/protocol";
+import type { LogRecord, ModelProfile, StepEvent } from "@excelmanus/protocol";
 import {
   ApprovalDecisionBody,
   CompareDocsBody,
   ControlBody,
   CreateModelProfileBody,
+  CreateProviderConnectionBody,
   CreateSessionBody,
   createOpenApiDocument,
   DocRevisionsQuery,
   FeedbackBody,
   type FileEvent,
   findHttpContract,
+  HISTORY_WINDOW_DETAIL_MAX_BYTES,
+  HISTORY_WINDOW_DETAIL_MAX_ROWS,
+  HISTORY_WINDOW_MAX_BYTES,
+  MergeDocsBody,
   NewFileBody,
   OpenDocBody,
   protocolVersion,
@@ -57,6 +86,7 @@ import {
   SessionLogQuery,
   StopAllBody,
   UpdateModelProfileBody,
+  UpdateProviderConnectionBody,
   UpdateSessionBody,
 } from "@excelmanus/protocol";
 import {
@@ -196,6 +226,7 @@ function agentDto(row: {
 export function createApp(deps: AppDeps): Hono {
   const app = new Hono();
   const { db, emit } = deps;
+  deps.log.register(uploadBindingProjection());
 
   // 会话列表的活动摘要（侧栏状态点）：忙碌代理与待处理交互，按会话即时计算
   const busyAgentStmt = db.prepare(
@@ -325,6 +356,7 @@ export function createApp(deps: AppDeps): Hono {
         emit("http.rejected", { requestId, reason: "auth" });
         return fail(c, 401, "unauthorized", "设备令牌无效");
       }
+      c.set("authenticatedDeviceId" as never, String(device.id) as never);
     }
     const limitedResponse = await bodyLimit({
       maxSize,
@@ -343,7 +375,7 @@ export function createApp(deps: AppDeps): Hono {
   // 进程内保存 24 小时；同一键 + 同一请求体重放首次的成功响应，同一键不同请求体返回 409；
   // 首次未成功（非 2xx）不缓存，允许用同一键重试。
   const IDEMPOTENT_CREATE =
-    /^\/api\/v1\/(sessions|model-profiles|rules|memories|mcp-servers|workspaces)$/;
+    /^\/api\/v1\/(sessions|model-profiles|provider-connections|rules|memories|mcp-servers|workspaces)$/;
   const IDEMPOTENCY_TTL_MS = 24 * 3600_000;
   const MAX_IDEMPOTENCY_ENTRIES = 1000;
   type IdemResult = { status: number; body: string; contentType: string } | undefined;
@@ -424,6 +456,17 @@ export function createApp(deps: AppDeps): Hono {
     });
   }
 
+  if (deps.dataDir) {
+    app.route(
+      "/api/v1/qa",
+      qaFirstScreenRoutes({
+        dataDir: deps.dataDir,
+        sessionExists: (id) =>
+          db.prepare("SELECT 1 FROM sessions WHERE id = ?").get(id) !== undefined,
+      }),
+    );
+  }
+
   // ---------- 基础 ----------
 
   app.get("/api/v1/health", (c) => c.json({ ok: true, protocolVersion, version: APP_VERSION }));
@@ -489,6 +532,42 @@ export function createApp(deps: AppDeps): Hono {
 
   app.get("/api/v1/providers", (c) => c.json({ items: PROVIDER_PRESETS }));
 
+  app.get("/api/v1/provider-connections", (c) =>
+    c.json({ items: listConnections(db, deps.masterKey) }),
+  );
+  app.get("/api/v1/provider-connections/:id", (c) => {
+    const connection = getConnection(db, deps.masterKey, c.req.param("id"));
+    return connection ? c.json({ connection }) : fail(c, 404, "not_found", "供应商连接不存在");
+  });
+  app.post("/api/v1/provider-connections", async (c) => {
+    const body = parse(CreateProviderConnectionBody, await c.req.json().catch(() => null));
+    if ("issues" in body) return fail(c, 400, "bad_request", "请求体不合法", body.issues);
+    try {
+      return c.json({ connection: createConnection(db, deps.masterKey, body) }, 201);
+    } catch (e) {
+      return fail(c, 400, "bad_request", e instanceof Error ? e.message : "创建连接失败");
+    }
+  });
+  app.patch("/api/v1/provider-connections/:id", async (c) => {
+    const body = parse(UpdateProviderConnectionBody, await c.req.json().catch(() => null));
+    if ("issues" in body) return fail(c, 400, "bad_request", "请求体不合法", body.issues);
+    try {
+      const connection = updateConnection(db, deps.masterKey, c.req.param("id"), body);
+      return connection ? c.json({ connection }) : fail(c, 404, "not_found", "供应商连接不存在");
+    } catch (e) {
+      return fail(c, 400, "bad_request", e instanceof Error ? e.message : "更新连接失败");
+    }
+  });
+  app.delete("/api/v1/provider-connections/:id", (c) => {
+    try {
+      return deleteConnection(db, c.req.param("id"))
+        ? c.json({ ok: true })
+        : fail(c, 404, "not_found", "供应商连接不存在");
+    } catch (e) {
+      return fail(c, 409, "conflict", e instanceof Error ? e.message : "无法删除连接");
+    }
+  });
+
   // ---------- 模型档案 ----------
 
   app.get("/api/v1/model-profiles", (c) => c.json({ items: listProfiles(db, deps.masterKey) }));
@@ -496,12 +575,18 @@ export function createApp(deps: AppDeps): Hono {
   app.post("/api/v1/model-profiles", async (c) => {
     const body = parse(CreateModelProfileBody, await c.req.json().catch(() => null));
     if ("issues" in body) return fail(c, 400, "bad_request", "请求体不合法", body.issues);
-    if (!PROVIDER_PRESETS.some((p) => p.id === body.provider)) {
-      return fail(c, 400, "bad_request", `未知提供商：${body.provider}`);
-    }
-    const dupe = db.prepare("SELECT id FROM model_profiles WHERE name = ?").get(body.name);
+    if (!getConnectionRow(db, body.connectionId))
+      return fail(c, 400, "bad_request", "供应商连接不存在");
+    const dupe = body.name
+      ? db.prepare("SELECT id FROM model_profiles WHERE name = ?").get(body.name)
+      : undefined;
     if (dupe) return fail(c, 409, "conflict", `档案名 ${body.name} 已存在`);
-    const profile = createProfile(db, deps.masterKey, body);
+    let profile: ModelProfile | undefined;
+    try {
+      profile = createProfile(db, deps.masterKey, body, deps.resolveDeps);
+    } catch (e) {
+      return fail(c, 400, "bad_request", e instanceof Error ? e.message : "创建模型失败");
+    }
     emit("profile.created", { profileId: profile.id, provider: profile.provider });
     return c.json({ profile }, 201);
   });
@@ -515,16 +600,24 @@ export function createApp(deps: AppDeps): Hono {
   app.patch("/api/v1/model-profiles/:id", async (c) => {
     const body = parse(UpdateModelProfileBody, await c.req.json().catch(() => null));
     if ("issues" in body) return fail(c, 400, "bad_request", "请求体不合法", body.issues);
-    const profile = updateProfile(db, deps.masterKey, c.req.param("id"), body);
+    let profile: ModelProfile | undefined;
+    try {
+      profile = updateProfile(db, deps.masterKey, c.req.param("id"), body, deps.resolveDeps);
+    } catch (e) {
+      return fail(c, 400, "bad_request", e instanceof Error ? e.message : "更新模型失败");
+    }
     if (!profile) return fail(c, 404, "not_found", "模型档案不存在");
     return c.json({ profile });
   });
 
   app.delete("/api/v1/model-profiles/:id", (c) => {
-    if (!deleteProfile(db, c.req.param("id"))) {
-      return fail(c, 404, "not_found", "模型档案不存在");
+    try {
+      return deleteProfile(db, c.req.param("id"))
+        ? c.json({ ok: true })
+        : fail(c, 404, "not_found", "模型档案不存在");
+    } catch (e) {
+      return fail(c, 409, "conflict", e instanceof Error ? e.message : "无法删除模型");
     }
-    return c.json({ ok: true });
   });
 
   app.post("/api/v1/model-profiles/:id/default", (c) => {
@@ -868,7 +961,27 @@ export function createApp(deps: AppDeps): Hono {
       | undefined;
     if (!row) return fail(c, 404, "not_found", "问题不存在");
     try {
-      const out = deps.runtime.answerQuestion(c.req.param("id"), body.answer, body.rev);
+      const session = getSession(db, row.session_id);
+      if (!session) return fail(c, 404, "not_found", "会话不存在");
+      const workspace = db
+        .prepare("SELECT path FROM workspaces WHERE id=?")
+        .get(session.workspace_id) as { path: string } | undefined;
+      if (!workspace) return fail(c, 409, "conflict", "工作区不可用");
+      const deviceId = c.get("authenticatedDeviceId" as never) as string | undefined;
+      if (!deviceId) return fail(c, 401, "unauthorized", "缺少认证设备");
+      const hostRecords = contractConfirmationRecords(
+        db,
+        row.id,
+        body.answer,
+        workspace.path,
+        deviceId,
+      );
+      const out = deps.runtime.answerQuestion(
+        c.req.param("id"),
+        body.answer,
+        body.rev,
+        hostRecords,
+      );
       return c.json({
         question: {
           id: c.req.param("id"),
@@ -880,6 +993,132 @@ export function createApp(deps: AppDeps): Hono {
       });
     } catch (e) {
       return fail(c, 409, "conflict", e instanceof Error ? e.message : "问题无法处理");
+    }
+  });
+
+  app.get("/api/v1/sessions/:id/history-window", (c) => {
+    const id = c.req.param("id");
+    db.exec("BEGIN");
+    try {
+      // Inspect only lengths first: session titles and individual metadata fields can be huge.
+      const sessionMeta = db
+        .prepare(`SELECT last_seq AS headSeq,
+        6 * (length(CAST(id AS BLOB)) + length(CAST(workspace_id AS BLOB)) +
+          coalesce(length(CAST(title AS BLOB)),0) + length(CAST(permission_mode AS BLOB)) +
+          length(CAST(created_at AS BLOB)) + length(CAST(updated_at AS BLOB))) + 512 AS bytes
+        FROM sessions WHERE id=?`)
+        .get(id) as { headSeq: number; bytes: number } | undefined;
+      if (!sessionMeta) return fail(c, 404, "not_found", "会话不存在");
+      const headSeq = sessionMeta.headSeq;
+      const overflow = (reason: "records" | "bytes" | "metadata") =>
+        c.json({ kind: "overflow" as const, headSeq, reason });
+      if (sessionMeta.bytes > HISTORY_WINDOW_DETAIL_MAX_BYTES) return overflow("metadata");
+      const agentMeta = db
+        .prepare(`SELECT 6 * (length(CAST(id AS BLOB)) +
+        length(CAST(session_id AS BLOB)) + coalesce(length(CAST(parent_id AS BLOB)),0) +
+        coalesce(length(CAST(name AS BLOB)),0) + length(CAST(role AS BLOB)) +
+        length(CAST(status AS BLOB)) + coalesce(length(CAST(model_profile_id AS BLOB)),0) + length(CAST(created_at AS BLOB))) + 256 AS bytes
+        FROM agents WHERE session_id=? ORDER BY id LIMIT ?`)
+        .all(id, HISTORY_WINDOW_DETAIL_MAX_ROWS + 1) as { bytes: number }[];
+      const pendingMeta = db
+        .prepare(`SELECT 6 * (length(CAST(id AS BLOB)) +
+        length(CAST(kind AS BLOB)) + length(CAST(agent_id AS BLOB)) +
+        coalesce(length(CAST(tool_call_id AS BLOB)),0) + length(CAST(created_at AS BLOB))) + 256 AS bytes
+        FROM pending_interactions WHERE session_id=? AND status='pending' LIMIT ?`)
+        .all(id, HISTORY_WINDOW_DETAIL_MAX_ROWS + 1) as { bytes: number }[];
+      if (
+        agentMeta.length > HISTORY_WINDOW_DETAIL_MAX_ROWS ||
+        pendingMeta.length > HISTORY_WINDOW_DETAIL_MAX_ROWS ||
+        [...agentMeta, ...pendingMeta].reduce((sum, row) => sum + row.bytes, sessionMeta.bytes) >
+          HISTORY_WINDOW_DETAIL_MAX_BYTES
+      )
+        return overflow("metadata");
+      const row = db
+        .prepare(
+          "SELECT id,workspace_id,title,permission_mode,created_at,updated_at,last_seq FROM sessions WHERE id=?",
+        )
+        .get(id) as SessionRowLike;
+      const agents = db
+        .prepare(`SELECT id,session_id,parent_id,name,role,status,model_profile_id,created_at
+        FROM agents WHERE session_id=? ORDER BY id LIMIT ?`)
+        .all(id, HISTORY_WINDOW_DETAIL_MAX_ROWS) as unknown as (Parameters<typeof agentDto>[0] & {
+        created_at: string;
+      })[];
+      agents.sort((a, b) =>
+        a.created_at < b.created_at
+          ? -1
+          : a.created_at > b.created_at
+            ? 1
+            : a.id < b.id
+              ? -1
+              : a.id > b.id
+                ? 1
+                : 0,
+      );
+      const pending = db
+        .prepare(`SELECT id,kind,agent_id,tool_call_id,created_at
+        FROM pending_interactions WHERE session_id=? AND status='pending' LIMIT ?`)
+        .all(id, HISTORY_WINDOW_DETAIL_MAX_ROWS) as {
+        id: string;
+        kind: "approval" | "question";
+        agent_id: string;
+        tool_call_id: string | null;
+        created_at: string;
+      }[];
+      pending.sort((a, b) =>
+        a.created_at < b.created_at
+          ? -1
+          : a.created_at > b.created_at
+            ? 1
+            : a.id < b.id
+              ? -1
+              : a.id > b.id
+                ? 1
+                : 0,
+      );
+      // Do not call sessionDto/listAgents: their hidden aggregate/unbounded reads defeat the fast-path budget.
+      const detail = {
+        session: {
+          id: row.id,
+          workspaceId: row.workspace_id,
+          title: row.title,
+          permissionMode: row.permission_mode,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+          lastSeq: headSeq,
+          activity: {
+            busy: agents.some((a) =>
+              ["running", "waiting", "blocked", "queued"].includes(a.status),
+            ),
+            pendingApprovals: pending.filter((p) => p.kind === "approval").length,
+            pendingQuestions: pending.filter((p) => p.kind === "question").length,
+          },
+        },
+        agents: agents.map(agentDto),
+        headSeq,
+        pendingInteractions: pending.map((p) => ({
+          id: p.id,
+          kind: p.kind,
+          agentId: p.agent_id,
+          toolCallId: p.tool_call_id,
+          createdAt: p.created_at,
+        })),
+      };
+      const detailBytes = Buffer.byteLength(JSON.stringify(detail), "utf8");
+      if (detailBytes > HISTORY_WINDOW_DETAIL_MAX_BYTES) return overflow("metadata");
+      const window = deps.log.readHistoryWindow(
+        id,
+        headSeq,
+        HISTORY_WINDOW_MAX_BYTES - detailBytes - 512,
+      );
+      if (window.kind === "overflow") return overflow(window.reason);
+      const result = { ...window, detail, headSeq };
+      const json = JSON.stringify(result);
+      if (Buffer.byteLength(json, "utf8") > HISTORY_WINDOW_MAX_BYTES) return overflow("bytes");
+      return c.body(json, 200, { "content-type": "application/json; charset=UTF-8" });
+    } finally {
+      // A read-only snapshot: no writes, network awaits, or exclusive lock within its lifetime.
+      db.exec("ROLLBACK");
     }
   });
 
@@ -941,6 +1180,7 @@ export function createApp(deps: AppDeps): Hono {
               context?: unknown;
               mode?: string;
               replacesDispatchId?: string;
+              inputUploadIds?: string[];
             })
           : undefined;
         if (
@@ -949,6 +1189,7 @@ export function createApp(deps: AppDeps): Hono {
           JSON.stringify((old as { attachments?: unknown }).attachments ?? []) !==
             JSON.stringify(body.attachments ?? []) ||
           (body.mode !== undefined && (old.mode ?? "steer") !== mode) ||
+          JSON.stringify(old.inputUploadIds ?? []) !== JSON.stringify(body.inputUploadIds ?? []) ||
           old.replacesDispatchId !== body.replacesDispatchId
         ) {
           return fail(c, 409, "conflict", "clientMessageId 已使用且内容不同");
@@ -976,15 +1217,42 @@ export function createApp(deps: AppDeps): Hono {
       if (!deps.blobs?.has(a.sha256)) return fail(c, 400, "bad_request", "附件不存在，请重新上传");
     }
 
+    const ingressScope = effectiveIngressAccess(db, {
+      sessionId,
+      agentId,
+      text: body.text,
+      mode,
+      running: deps.runtime.isRunning(sessionId, agentId) || blockedIdle,
+    });
+    // Context content waits for the host-validated contract, not a regex fallback.
+    const deferContext = true;
     for (const ref of body.context ?? []) {
       const document = db
-        .prepare("SELECT workspace_id FROM documents WHERE id = ?")
-        .get(ref.docId) as { workspace_id: string } | undefined;
+        .prepare("SELECT workspace_id, path, rev FROM documents WHERE id = ?")
+        .get(ref.docId) as { workspace_id: string; path: string; rev: number } | undefined;
       if (!document || document.workspace_id !== row.workspace_id || !deps.docService) {
         return fail(c, 400, "bad_request", "选区引用的文档不属于当前工作区");
       }
       const workspace = getWorkspace(db, row.workspace_id);
       if (!workspace) return fail(c, 400, "bad_request", "工作区不存在");
+      if (deferContext) {
+        const path = normalizeAccessPath(document.path);
+        if (path === undefined || !accessScopeAllows(ingressScope, path))
+          return fail(
+            c,
+            400,
+            "bad_request",
+            "选区引用不在明确的允许目录或文件集合内；未读取该文档。请另发明确范围的新任务。",
+          );
+        if (document.rev !== ref.rev)
+          return fail(c, 409, "conflict", "选区修订已变化，请重新选择区域");
+        try {
+          parseRange(ref.range);
+        } catch {
+          return fail(c, 400, "bad_request", "选区范围无效");
+        }
+        continue;
+      }
       try {
         const { meta, snapshot } = await deps.docService.snapshot(ref.docId, workspace.path);
         if (meta.rev !== ref.rev) return fail(c, 409, "conflict", "选区修订已变化，请重新选择区域");
@@ -1035,6 +1303,21 @@ export function createApp(deps: AppDeps): Hono {
       }
     }
     const dispatchId = newId("dsp");
+    const contractRef = ingressContractRef(db, sessionId, agentId);
+    const workspace = getWorkspace(db, row.workspace_id)!;
+    let uploadBinding: ReturnType<typeof prepareUploadBinding>;
+    try {
+      uploadBinding = prepareUploadBinding(db, {
+        ownerId: c.get("authenticatedDeviceId" as never) as string,
+        workspaceId: row.workspace_id,
+        workspaceRoot: workspace.path,
+        sessionId,
+        ref: contractRef,
+        ids: body.inputUploadIds ?? [],
+      });
+    } catch (error) {
+      return fail(c, 403, "forbidden", error instanceof Error ? error.message : "输入上传回执无效");
+    }
     const running = deps.runtime.isRunning(sessionId, agentId);
     // 挂起语义：运行中或等待审批/回答期间受理的消息都先记 queued（04 §4.1/§4.2）
     const initialStatus = running || blockedIdle ? "queued" : "accepted";
@@ -1054,6 +1337,12 @@ export function createApp(deps: AppDeps): Hono {
           clientMessageId: body.clientMessageId,
           ...(body.replacesDispatchId ? { replacesDispatchId: body.replacesDispatchId } : {}),
           text: body.text,
+          accessInputOrigin: "user",
+          contractRef,
+          ...(body.inputUploadIds ? { inputUploadIds: body.inputUploadIds } : {}),
+          taskRelation: running || blockedIdle ? "continue" : "new",
+          ...(deferContext && body.context?.length ? { deferredContextValidation: true } : {}),
+          ...(!deferContext && body.context?.length ? { unscopedContextRead: true } : {}),
           mode,
           ...(body.chatMode !== undefined ? { chatMode: body.chatMode } : {}),
           ...(body.context !== undefined ? { context: body.context } : {}),
@@ -1066,6 +1355,11 @@ export function createApp(deps: AppDeps): Hono {
           ...(prepared.skill ? { skill: prepared.skill } : {}),
         },
       },
+      { type: "contract.baseline", data: uploadBinding },
+      {
+        type: "contract.expected",
+        data: { ...contractRef, dispatchId, requestedByAgentId: agentId },
+      },
       {
         type: "dispatch.updated",
         data: { dispatchId, status: initialStatus },
@@ -1073,7 +1367,13 @@ export function createApp(deps: AppDeps): Hono {
     ]);
     if (blockedIdle && mode === "interrupt" && blockedPending !== undefined) {
       // 待审批被新指令打断：视为拒绝，resumePersistedApproval 收口旧轮后 pump 开新轮
-      deps.runtime.decideApproval(blockedPending.id, "denied", "用户发送了新指令");
+      deps.runtime.decideApproval(
+        blockedPending.id,
+        "denied",
+        "用户发送了新指令",
+        false,
+        "cancelled",
+      );
     }
     if (body.replacesDispatchId)
       deps.runtime.cancelDispatch(sessionId, agentId, body.replacesDispatchId);
@@ -1103,7 +1403,7 @@ export function createApp(deps: AppDeps): Hono {
       .prepare("SELECT id FROM agents WHERE session_id = ? AND id = ?")
       .get(sessionId, agentId);
     if (!agent) return fail(c, 404, "not_found", "代理不存在");
-    const stopped = deps.runtime.stop(sessionId, agentId);
+    const stopped = deps.runtime.stop(sessionId, agentId, { cancellationCause: "user" });
     return c.json({ ok: true, stopped });
   });
 
@@ -1117,6 +1417,7 @@ export function createApp(deps: AppDeps): Hono {
     if ("issues" in body) return fail(c, 400, "bad_request", "请求体不合法", body.issues);
     const stopped = deps.runtime.stopAll(sessionId, {
       subagentsOnly: body.scope === "subagents",
+      cancellationCause: "user",
     });
     return c.json({ ok: true, stopped });
   });
@@ -1283,6 +1584,29 @@ export function createApp(deps: AppDeps): Hono {
     return fail(c, 400, "bad_request", e instanceof Error ? e.message : String(e));
   };
 
+  app.get("/api/v1/workspaces/:id/docs/:docId/images/:imageId", async (c) => {
+    const ws = getWorkspace(db, c.req.param("id"));
+    const svc = deps.docService;
+    if (!ws || !svc) return fail(c, 404, "not_found", "工作区不存在");
+    const row = db
+      .prepare("SELECT workspace_id FROM documents WHERE id = ?")
+      .get(c.req.param("docId"));
+    if (row?.workspace_id !== ws.id) return fail(c, 404, "not_found", "文档不存在");
+    try {
+      const image = await svc.imagePreview(
+        c.req.param("docId"),
+        ws.path,
+        c.req.query("sheetId") ?? "",
+        c.req.param("imageId"),
+      );
+      return new Response(new Uint8Array(image.bytes), {
+        headers: { "Content-Type": image.mediaType, "Cache-Control": "private, no-store" },
+      });
+    } catch (e) {
+      return docErr(c, e);
+    }
+  });
+
   app.post("/api/v1/workspaces/:id/docs/open", async (c) => {
     const svc = deps.docService;
     if (!svc) return fail(c, 501, "not_implemented", "workbook 模块未装配");
@@ -1342,7 +1666,7 @@ export function createApp(deps: AppDeps): Hono {
     const body = RenderDocBody.safeParse(await c.req.json().catch(() => null));
     if (!body.success) return fail(c, 400, "bad_request", "截图参数无效");
     try {
-      const { meta, snapshot } = await svc.snapshot(docId, workspace.path);
+      const { meta, snapshot } = await svc.snapshot(docId, workspace.path, true);
       if (body.data.rev !== undefined && body.data.rev !== meta.rev)
         return fail(c, 409, "conflict", "只能渲染当前修订，请重新读取工作簿");
       let sheetName = body.data.sheet;
@@ -1366,8 +1690,13 @@ export function createApp(deps: AppDeps): Hono {
       try {
         if (!deps.renderDocument) throw new Error("没有可用的渲染端");
         png = await deps.renderDocument(output.layout);
-      } catch {
-        return fail(c, 502, "bad_gateway", "截图失败：请保持工作台打开并确认渲染端已连接");
+      } catch (error) {
+        return fail(
+          c,
+          502,
+          "bad_gateway",
+          `截图失败：${error instanceof Error ? error.message : "请缩小区域后重试"}`,
+        );
       }
       return c.json({
         docId,
@@ -1427,6 +1756,32 @@ export function createApp(deps: AppDeps): Hono {
     }
   });
 
+  app.post("/api/v1/workspaces/:id/docs/merge", async (c) => {
+    const svc = deps.docService;
+    if (!svc) return fail(c, 501, "not_implemented", "workbook 模块未装配");
+    const body = parse(MergeDocsBody, await c.req.json().catch(() => null));
+    if ("issues" in body) return fail(c, 400, "bad_request", "请求体不合法", body.issues);
+    const ws = docWorkspace(c.req.param("id"), body.targetDocId);
+    if (!ws || !docWorkspace(ws.id, body.sourceDocId))
+      return fail(c, 404, "not_found", "文档不存在");
+    try {
+      const result = await runWithHostNativeAccess(
+        { db, workspaceId: ws.id, workspaceRoot: ws.path, operationId: newId("manual") },
+        () => svc.merge(ws.id, ws.path, body),
+      );
+      if (!result.ok)
+        return fail(
+          c,
+          result.code === "VERSION_CONFLICT" ? 409 : 400,
+          result.code === "VERSION_CONFLICT" ? "conflict" : "bad_request",
+          result.message,
+        );
+      return c.json({ docId: body.targetDocId, rev: result.rev, changes: result.changes });
+    } catch (e) {
+      return docErr(c, e);
+    }
+  });
+
   /** 文档属于该工作区时返回工作区行。 */
   const docWorkspace = (workspaceId: string, docId: string) => {
     const wsRow = getWorkspace(db, workspaceId);
@@ -1476,7 +1831,10 @@ export function createApp(deps: AppDeps): Hono {
     if (!wsRow) return fail(c, 404, "not_found", "文档不存在");
     const rev = Number(c.req.param("rev"));
     if (!Number.isInteger(rev) || rev <= 0) return fail(c, 400, "bad_request", "修订号不合法");
-    const out = await svc.undoRevision(docId, wsRow.path, rev, { kind: "user", id: "undo" });
+    const out = await runWithHostNativeAccess(
+      { db, workspaceId: wsRow.id, workspaceRoot: wsRow.path, operationId: newId("manual") },
+      () => svc.undoRevision(docId, wsRow.path, rev, { kind: "user", id: "undo" }),
+    );
     if (!out.ok) {
       const status = out.code === "DOC_NOT_FOUND" ? 404 : out.code === "INTERNAL" ? 500 : 409;
       return fail(
@@ -1627,6 +1985,23 @@ export function createApp(deps: AppDeps): Hono {
     }
   });
 
+  app.post("/api/v1/workspaces/:id/files/import-legacy", async (c) => {
+    const ws = getWorkspace(db, c.req.param("id"));
+    if (!ws) return fail(c, 404, "not_found", "工作区不存在");
+    const body = parse(ImportLegacyBody, await c.req.json().catch(() => null));
+    if ("issues" in body) return fail(c, 400, "bad_request", "请求体不合法", body.issues);
+    try {
+      const result = runWithHostNativeAccess(
+        { db, workspaceId: ws.id, workspaceRoot: ws.path, operationId: newId("manual") },
+        () => importLegacyFile(ws.path, body.source, body.destination),
+      );
+      deps.bus.publish({ kind: "app", data: { type: "files.changed", workspaceId: ws.id } });
+      return c.json(result);
+    } catch (e) {
+      return docErr(c, e);
+    }
+  });
+
   app.post("/api/v1/workspaces/:id/files/new", async (c) => {
     const wsRow = getWorkspace(db, c.req.param("id"));
     if (!wsRow) return fail(c, 404, "not_found", "工作区不存在");
@@ -1635,14 +2010,24 @@ export function createApp(deps: AppDeps): Hono {
     const ext = extname(body.path).toLowerCase();
     if (basename(body.path).startsWith(".")) return fail(c, 400, "bad_request", "文件名不合法");
     try {
-      if (ext === ".xlsx") {
-        if (!deps.docService) return fail(c, 501, "not_implemented", "workbook 模块未装配");
-        deps.docService.createEmpty(wsRow.path, body.path);
-      } else if ([".csv", ".txt", ".md"].includes(ext)) {
-        writeFileSync(resolveWorkspacePath(wsRow.path, body.path).abs, "", { flag: "wx" });
-      } else {
+      if (![".xlsx", ".csv", ".txt", ".md"].includes(ext))
         return fail(c, 400, "bad_request", "只能新建 .xlsx、.csv、.txt 或 .md 文件");
-      }
+      if (ext === ".xlsx" && !deps.docService)
+        return fail(c, 501, "not_implemented", "workbook 模块未装配");
+      runWithHostNativeAccess(
+        { db, workspaceId: wsRow.id, workspaceRoot: wsRow.path, operationId: newId("manual") },
+        () => {
+          const permit = prepareEffectPlan({
+            workspaceRoot: wsRow.path,
+            atomicScope: "single-resource",
+            effects: [{ operation: "create", path: body.path }],
+          });
+          runWithEffectPlan(permit, () => {
+            if (ext === ".xlsx") deps.docService!.createEmpty(wsRow.path, body.path);
+            else atomicWrite(wsRow.path, body.path, Buffer.alloc(0), null);
+          });
+        },
+      );
     } catch (e) {
       const code = (e as { code?: string }).code;
       if (code === "EEXIST" || code === "VERSION_CONFLICT")
@@ -1820,10 +2205,28 @@ export function createApp(deps: AppDeps): Hono {
     const dir = typeof body?.path === "string" ? body.path : "";
     const bytes = Buffer.from(await file.arrayBuffer());
     try {
-      const { abs } = resolveWorkspacePath(wsRow.path, dir === "" ? `${name}` : `${dir}/${name}`);
-      writeFileSync(abs, bytes, { flag: "wx" });
-      const { rel } = resolveWorkspacePath(wsRow.path, dir === "" ? `${name}` : `${dir}/${name}`);
-      return c.json({ path: rel, size: file.size }, 201);
+      const path = dir === "" ? name : `${dir}/${name}`;
+      const receipt = runWithHostNativeAccess(
+        { db, workspaceId: wsRow.id, workspaceRoot: wsRow.path, operationId: newId("upload") },
+        () => {
+          const permit = prepareEffectPlan({
+            workspaceRoot: wsRow.path,
+            effects: [{ operation: "create", path }],
+            atomicScope: "single-resource",
+          });
+          return runWithEffectPlan(permit, () => {
+            atomicWrite(wsRow.path, path, bytes, null);
+            return issueUploadReceipt(db, {
+              ownerId: c.get("authenticatedDeviceId" as never) as string,
+              workspaceId: wsRow.id,
+              workspaceRoot: wsRow.path,
+              path,
+              bytes,
+            });
+          });
+        },
+      );
+      return c.json({ path: receipt.path, size: file.size, uploadId: receipt.id }, 201);
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === "EEXIST") {
         return fail(c, 409, "conflict", "同名文件已存在，请更换文件名后上传");

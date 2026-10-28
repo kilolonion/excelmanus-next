@@ -1,0 +1,7 @@
+import React,{useState,useEffect}from'react';import{createRoot}from'react-dom/client';import{ThreadedCommentsPanel}from'../src/components/excel/ThreadedCommentsPanel';import'../src/app/globals.css';
+const id=(n:number)=>`{00000000-0000-4000-8000-${String(n).padStart(12,'0')}}`;
+let reads=0;let listener:((c:{id:string})=>void)|null=null;
+const comments=Array.from({length:20},(_,i)=>[{id:id(i*3+1),personId:id(1000),ref:'A1',text:`QA 讨论 ${i+1}`,author:'QA',done:i%10===0},{id:id(i*3+2),personId:id(1000),parentId:id(i*3+1),ref:'A1',text:`QA 回复 ${i+1}`,author:'QA',done:false}]).flat();
+const data={name:'QA 工作表',custom:{excelmanusObjects:{charts:[],images:[],threadedComments:comments}}};
+const api:any={disposed:false,wb:{getSheets:()=>[{getSheetId:()=> 's',getSheet:()=>({getSnapshot:()=>{reads++;return data;}})}],onCommandExecuted:(fn:any)=>{listener=fn;return{dispose(){listener=null;}}},save(){throw Error('独立测试页禁止写入');}}};
+function QA(){const[show,setShow]=useState(true);const[count,setCount]=useState(0);useEffect(()=>{const t=setInterval(()=>setCount(reads),250);return()=>clearInterval(t)},[]);return <main style={{position:'relative',height:650,margin:30}}><h1>批注面板受控测试</h1><p>合成内容，无业务接口。读取次数：{count}</p><button onClick={()=>{data.name='更新后的工作表';listener?.({id:'sheet.mutation.set-worksheet-name'});}}>模拟工作表重命名</button><br/><button onClick={()=>setShow(true)}>打开测试面板</button>{show&&<ThreadedCommentsPanel api={api} onClose={()=>setShow(false)}/>}</main>};createRoot(document.getElementById('root')!).render(<QA/>);

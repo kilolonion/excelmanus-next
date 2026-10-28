@@ -1,6 +1,6 @@
 import type { Rule } from "@excelmanus/protocol";
 import { Loader2, Plus, ScrollText, ToggleLeft, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { confirmAction } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
@@ -63,25 +63,42 @@ export function RulesTab({ sessionId: sessionIdProp }: { sessionId?: string } = 
   const [rules, setRules] = useState<Rule[]>([]);
   const [totals, setTotals] = useState<{ total: number; max: number } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [updating, setUpdating] = useState<string | null>(null);
   const [globalInput, setGlobalInput] = useState("");
   const [sessionInput, setSessionInput] = useState("");
   const [adding, setAdding] = useState<"global" | "session" | null>(null);
 
+  const readScope = useRef<{ sessionId: string | undefined } | null>(null);
+  const readRequest = useRef(0);
+
   const fetchRules = useCallback(async () => {
+    const scope = readScope.current;
+    if (!scope || scope.sessionId !== sessionId) return;
+    const request = ++readRequest.current;
+    setLoadError(null);
+    const isCurrent = () => readScope.current === scope && readRequest.current === request;
     try {
       const res = await api().listRules(sessionId);
+      if (!isCurrent()) return;
       setRules(res.items);
       setTotals({ total: res.totalChars, max: res.maxTotalChars });
     } catch (error) {
-      toast({ title: "读取规则失败", description: errorMessage(error), tone: "error" });
+      if (isCurrent()) setLoadError(errorMessage(error, "读取规则失败"));
+    } finally {
+      if (isCurrent()) setLoading(false);
     }
   }, [sessionId]);
 
   useEffect(() => {
+    readScope.current = { sessionId };
     setLoading(true);
-    void fetchRules().finally(() => setLoading(false));
-  }, [fetchRules]);
+    void fetchRules();
+    return () => {
+      readScope.current = null;
+      readRequest.current += 1;
+    };
+  }, [fetchRules, sessionId]);
 
   useEffect(
     () =>
@@ -150,6 +167,24 @@ export function RulesTab({ sessionId: sessionIdProp }: { sessionId?: string } = 
       setUpdating(null);
     }
   };
+
+  if (loadError) {
+    return (
+      <div role="alert" className="flex items-center gap-2 py-6 text-xs text-destructive">
+        <span className="min-w-0 flex-1">{loadError}</span>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => {
+            setLoading(true);
+            void fetchRules();
+          }}
+        >
+          重新读取
+        </Button>
+      </div>
+    );
+  }
 
   if (loading) {
     return (

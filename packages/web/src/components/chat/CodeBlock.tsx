@@ -1,5 +1,6 @@
 import { Check, Copy } from "lucide-react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { HIGHLIGHT_WORKER_THRESHOLD } from "@/lib/highlight-policy";
 import { ensureHljs, highlightCode } from "@/lib/hljs-utils";
 
 interface CodeBlockProps {
@@ -7,6 +8,7 @@ interface CodeBlockProps {
   language?: string;
   code: string;
   maxHeightClass?: string;
+  streaming?: boolean;
 }
 
 export const CodeBlock = React.memo(function CodeBlock({
@@ -14,23 +16,58 @@ export const CodeBlock = React.memo(function CodeBlock({
   language,
   code,
   maxHeightClass,
+  streaming = false,
 }: CodeBlockProps) {
   const [copied, setCopied] = useState(false);
-  const [highlightedHtml, setHighlightedHtml] = useState<string | null>(null);
+  const [highlighted, setHighlighted] = useState<{
+    code: string;
+    language?: string;
+    html: string | null;
+  } | null>(null);
+  const highlightedHtml =
+    !streaming && highlighted?.code === code && highlighted.language === language
+      ? highlighted.html
+      : null;
   const codeRef = useRef<HTMLElement>(null);
 
-  // 挂载或 code/语言变化时高亮
+  // 流式代码先显示原文；完整大代码沿用预览 Worker，避免主线程全文高亮。
   useEffect(() => {
+    if (streaming) return;
     let cancelled = false;
-    ensureHljs().then(() => {
-      if (cancelled) return;
-      const html = highlightCode(code, language);
-      if (!cancelled) setHighlightedHtml(html);
-    });
+    let worker: Worker | null = null;
+    const complete = (html: string | null) => {
+      if (!cancelled) setHighlighted({ code, language, html });
+    };
+    if (code.length >= HIGHLIGHT_WORKER_THRESHOLD) {
+      try {
+        worker = new Worker(new URL("../../lib/preview-highlight.worker.ts", import.meta.url), {
+          type: "module",
+        });
+        worker.onmessage = (event: MessageEvent<string | null>) => {
+          if (!cancelled) complete(event.data);
+          worker?.terminate();
+          worker = null;
+        };
+        worker.onerror = () => {
+          worker?.terminate();
+          worker = null;
+        };
+        worker.postMessage({ code, language: language ?? "", output: "html" });
+      } catch {
+        worker?.terminate();
+        worker = null;
+      }
+    } else {
+      ensureHljs(language).then(() => {
+        if (!cancelled) complete(highlightCode(code, language));
+      });
+    }
     return () => {
       cancelled = true;
+      worker?.terminate();
+      worker = null;
     };
-  }, [code, language]);
+  }, [code, language, streaming]);
 
   const handleCopy = useCallback(() => {
     navigator.clipboard

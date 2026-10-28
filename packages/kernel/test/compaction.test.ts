@@ -30,6 +30,42 @@ const toolResult = (id: string, name = "find"): ContextItem => ({
 
 const rowsOf = (...items: ContextItem[]) => items.map((item, i) => ({ item, fromSeq: i + 1 }));
 
+const screenshot = (data: string): ContextItem => ({
+  kind: "toolResult",
+  toolCallId: "render",
+  toolName: "workbook_render",
+  output: {
+    status: "ok",
+    data: { docId: "doc", sheet: "Sheet1", range: "A1:B2", rev: 3 },
+    images: [{ mediaType: "image/png", data }],
+  },
+});
+
+test("image estimates do not count base64 as text and summary explicitly loses pixels", () => {
+  const short = screenshot("a".repeat(100));
+  const large = screenshot("SECRET_PIXEL_BYTES".repeat(10000));
+  expect(estimateTokens([large])).toBe(estimateTokens([short]));
+  expect(estimateTokens([large])).toBeGreaterThan(1000);
+  const summary = transcriptForSummary([large]);
+  expect(summary).not.toContain("SECRET_PIXEL_BYTES");
+  expect(summary).toContain("图片未保留");
+  expect(summary).toContain("A1:B2");
+});
+
+test("unconsumed screenshot and its call survive compaction, including retry/restart context", () => {
+  const history = rowsOf(
+    user("old"),
+    assistant("old answer"),
+    assistant("", [{ id: "render", name: "workbook_render", args: {} }]),
+    screenshot("x".repeat(100000)),
+  );
+  expect(planCompaction(history, 0)?.keepFromSeq).toBe(3);
+  // A successful following model output consumes the pixels; older images may then compact.
+  expect(
+    planCompaction([...history, { item: assistant("observed"), fromSeq: 5 }], 0)?.keepFromSeq,
+  ).toBeNull();
+});
+
 describe("estimateTokens", () => {
   test("空历史为 0；按 JSON 字符数 / 4 向上取整", () => {
     expect(estimateTokens([])).toBe(0);

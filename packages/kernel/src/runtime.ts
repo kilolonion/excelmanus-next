@@ -1,4 +1,5 @@
 import { type FileIntentMeta, type ReplayKind, toToolErrorCode } from "@excelmanus/protocol";
+import { renderAccessFacts, turnAccessFacts } from "./access-facts.ts";
 import {
   type ApprovalCoordinator,
   type ApprovalEffect,
@@ -28,10 +29,38 @@ import {
   tailFrom,
   transcriptForSummary,
 } from "./compaction.ts";
+import {
+  harnessContext,
+  harnessProgress,
+  harnessState,
+  harnessTaskId,
+  harnessUsefulProgress,
+  harnessUsefulProofs,
+  stableHarnessHash,
+} from "./harness-state.ts";
 import { FileLeaseError, type LeaseService } from "./leases.ts";
+import { NUMERIC_DELIVERY_GUIDANCE, numericDeliveryState } from "./numeric-delivery.ts";
+import { numericExecutionFacts } from "./numeric-execution-facts.ts";
 import { lastCompactionSeq } from "./projections.ts";
 import type { QuestionCoordinator } from "./questions.ts";
-import { isResultPage, resultPageTool } from "./result-pages.ts";
+import { isTaskContractPending, taskContractState } from "./task-contract.ts";
+import { compactWorkbookCheckSpec } from "./compact-workbook-check.ts";
+import { compactModelToolSpec, compactWorkbookEditSpec, deduplicateModelToolSchema, enabledAuxiliaryTools, isAuxiliaryTool, stagedCatalogState, stagedModelToolSpec, appendStagedCatalog, withStagedCapabilityDirectory } from "./model-tool-catalog.ts";
+import { isResultPage, resultPageTool, withResultCursor } from "./result-pages.ts";
+import {
+  assertToolEffectsAllowed,
+  bindToolAccess,
+  runWithToolAccess,
+  TurnAccessError,
+} from "./tool-access.ts";
+import {
+  ACCESS_DELIVERY_GUIDANCE,
+  accessDeliveryRequired,
+  createTurnAccessBinding,
+  hasTaskContractRequirement,
+  steeredTurnAccessBinding,
+  turnAccessBinding,
+} from "./turn-access.ts";
 // Agent actor（04 §3 子集）：邮箱串行；Preparing→Calling→Executing→循环；
 // Retrying（网络/429/5xx/流中断，指数退避最多 5 次，尊重 retryAfterMs，写
 // retry.scheduled；流中断写 attempt.discarded）；不可重试写 error.guidance +
@@ -86,6 +115,10 @@ export interface AgentRuntimeDeps {
   workspaceId(sessionId: string): string;
   /** 非文件资源读取（skill://，12 §1.2），由装配层提供。 */
   resolveResource?(sessionId: string, uri: string): { text: string } | { error: ToolResult };
+  validateContext?(
+    refs: { docId: string; rev: number; range: string }[],
+    workspaceRoot: string,
+  ): Promise<void>;
   backups?: BackupService;
   /** 内容寻址存储：用户消息图片附件在调用模型前从这里读出（01 §3、04 §7）。 */
   blobs?: BlobStore;
@@ -286,7 +319,7 @@ export class AgentRuntime {
 
   /**
    * 继续（04 §4.2、§8.3）：把该代理在 DB 中挂起（accepted/queued）的派发按
-   * 消息顺序重新入队；没有挂起派发且代理处于 interrupted 时开一轮无派发的
+   * 消息顺序重新入队；没有挂起派发且代理处于 interrupted/failed 时开一轮无派发的
    * 继续轮（只用已持久化历史，不重放任何副作用）。
    */
   resumeAgent(sessionId: string, agentId: string): { resumed: number; started: boolean } {
@@ -294,6 +327,15 @@ export class AgentRuntime {
     this.halted.delete(sessionId);
     const actor = this.actor(sessionId, agentId);
     if (actor.running) return { resumed: 0, started: false };
+    const agent = this.deps.db
+      .prepare("SELECT role, status FROM agents WHERE session_id = ? AND id = ?")
+      .get(sessionId, agentId) as { role: string; status: string } | undefined;
+    // 失败子代理只在显式继续时解除终态阻挡，之后仍须经过并发/暂停/关闭闸门。
+    if (agent?.role !== "main" && agent?.status === "failed") {
+      this.deps.log.append(sessionId, agentId, [
+        { type: "agent.status", data: { status: "idle" } },
+      ]);
+    }
     const rows = this.deps.db
       .prepare(
         `SELECT d.id, d.mode FROM dispatches d
@@ -312,10 +354,7 @@ export class AgentRuntime {
       actor.enqueue(row.id, row.mode);
     }
     if (resumed === 0) {
-      const agent = this.deps.db
-        .prepare("SELECT status FROM agents WHERE session_id = ? AND id = ?")
-        .get(sessionId, agentId) as { status: string } | undefined;
-      if (agent?.status === "interrupted") actor.enqueueInbox();
+      if (agent?.status === "interrupted" || agent?.status === "failed") actor.enqueueResume();
     }
     return { resumed, started: actor.running };
   }
@@ -371,11 +410,11 @@ export class AgentRuntime {
    * 停止：中止当前模型请求/工具，返回是否有运行中的轮。不在运行的 actor 也
    * 清掉内存队列并退出闸门 FIFO（排队中的派发留在 DB 挂起，经 resume 恢复）。
    */
-  stop(sessionId: string, agentId: string): boolean {
+  stop(sessionId: string, agentId: string, opts: { cancellationCause?: "user" } = {}): boolean {
     const actor = this.actors.get(`${sessionId}/${agentId}`);
     if (!actor) return false;
     this.leaveGate(sessionId, actor);
-    return actor.requestStop();
+    return actor.requestStop(opts.cancellationCause);
   }
 
   /**
@@ -383,7 +422,10 @@ export class AgentRuntime {
    * 子代理回到 idle（任务派发挂起）；此后收件箱消息不唤醒任何代理，直到用户
    * 发消息或继续。返回被停止（含被撤出闸门）的 agentId。
    */
-  stopAll(sessionId: string, opts: { subagentsOnly?: boolean } = {}): string[] {
+  stopAll(
+    sessionId: string,
+    opts: { subagentsOnly?: boolean; cancellationCause?: "user" } = {},
+  ): string[] {
     // 只停子代理时主代理照常运行，子代理的中断报告仍按正常路径投递给它
     if (!opts.subagentsOnly) this.halted.add(sessionId);
     const gated = new Set(this.turnWaiters.get(sessionId) ?? []);
@@ -399,7 +441,8 @@ export class AgentRuntime {
     for (const [key, actor] of this.actors) {
       if (!key.startsWith(`${sessionId}/`)) continue;
       if (opts.subagentsOnly && main.has(actor.agentId)) continue;
-      if (actor.requestStop() || gated.has(actor)) stopped.push(actor.agentId);
+      if (actor.requestStop(opts.cancellationCause) || gated.has(actor))
+        stopped.push(actor.agentId);
     }
     const queued = this.deps.db
       .prepare("SELECT id FROM agents WHERE session_id = ? AND status = 'queued'")
@@ -502,6 +545,7 @@ export class AgentRuntime {
     decision: "approved" | "denied",
     reason?: string,
     remember = false,
+    cause: "user" | "cancelled" | "timeout" | "system" = "user",
   ): {
     row: import("./approvals.ts").ApprovalRow;
     idempotent: boolean;
@@ -510,7 +554,7 @@ export class AgentRuntime {
     if (!approval) throw new Error("审批执行器未装配");
     const current = approval.get(id);
     if (!current) throw new Error("审批不存在");
-    const out = approval.decide(id, decision, reason, remember);
+    const out = approval.decide(id, decision, reason, remember, cause);
     if (!out.idempotent && !approval.hasWaiter(id)) {
       const actor = this.actor(current.session_id, current.agent_id);
       void actor.resumePersistedApproval(id);
@@ -523,12 +567,13 @@ export class AgentRuntime {
     id: string,
     answer: unknown,
     rev?: number,
+    hostRecords: import("./session-log.ts").NewRecord[] = [],
   ): { row: import("./questions.ts").QuestionRow; idempotent: boolean } {
     const question = this.deps.question;
     if (!question) throw new Error("提问执行器未装配");
     const current = question.get(id);
     if (!current) throw new Error("问题不存在");
-    const out = question.answer(id, answer, rev);
+    const out = question.answer(id, answer, rev, hostRecords);
     if (!out.idempotent && !question.hasWaiter(id)) {
       const actor = this.actor(current.session_id, current.agent_id);
       void actor.resumePersistedQuestion(id);
@@ -565,9 +610,10 @@ const REWINDABLE = new Set(["idle", "interrupted", "failed"]);
 type StepOutcome = "continue" | "done" | "failed" | "interrupted" | "budget_exceeded";
 
 /** 内存队列条目：用户消息派发或收件箱唤醒。 */
-type QueueEntry = { dispatchId: string; mode: DispatchMode } | { inbox: true };
+type QueueEntry = { dispatchId: string; mode: DispatchMode } | { inbox: true; resume?: true };
 
 class AgentActor {
+  private stagedCatalog?: {taskId:string;tools:ToolSpec[]};
   private queue: QueueEntry[] = [];
   private _running = false;
   private stopRequested = false;
@@ -580,6 +626,8 @@ class AgentActor {
   private abortReason = "代理已停止";
   private callAbort: AbortController | null = null;
   private currentTurnId: string | null = null;
+  /** 显式宿主取消仅归属当时的活动轮，不从 AbortError 或模型内容推断。 */
+  private userCancelledTurnId: string | null = null;
   private readonly deps: AgentRuntimeDeps;
   readonly sessionId: string;
   readonly agentId: string;
@@ -616,8 +664,14 @@ class AgentActor {
     void this.pump();
   }
 
+  /** 用户明确继续中断/失败轮，不要求另有未消费消息。 */
+  enqueueResume(): void {
+    this.queue.push({ inbox: true, resume: true });
+    void this.pump();
+  }
+
   enqueueInbox(): void {
-    this.queue.push({ inbox: true });
+    if (!this.queue.some((entry) => "inbox" in entry)) this.queue.push({ inbox: true });
     void this.pump();
   }
 
@@ -725,6 +779,28 @@ class AgentActor {
             retryable: false,
           },
         };
+      } else if (
+        hasTaskContractRequirement(
+          this.deps.db,
+          this.sessionId,
+          this.agentId,
+          spec.turnId ?? "legacy-approval",
+        ) &&
+        (tool.externalTransport === true ||
+          (typeof tool.effect === "function"
+            ? (tool.effect as (args: unknown) => string)(parsed.data)
+            : tool.effect) === "external")
+      ) {
+        // Recovered approval never grants an external capability added by a
+        // current tool definition, even if its historical spec said write/read.
+        result = {
+          status: "error",
+          error: {
+            code: "UNSUPPORTED_FEATURE",
+            message: "当前任务契约不支持业务外发授权；历史普通审批不能允许该操作。",
+            retryable: false,
+          },
+        };
       } else {
         const ctrl = new AbortController();
         const startedAt = Date.now();
@@ -738,18 +814,36 @@ class AgentActor {
               { mainBypass: true },
             );
           }
-          result = await tool.execute(parsed.data, {
-            ...scope,
-            signal: AbortSignal.any([ctrl.signal, AbortSignal.timeout(tool.timeoutMs)]),
+          const access = bindToolAccess({
+            db: this.deps.db,
+            log: this.deps.log,
+            workspaceRoot: scope.workspaceRoot,
+            sessionId: this.sessionId,
+            agentId: this.agentId,
+            turnId: spec.turnId ?? "legacy-approval",
+            stepId: spec.stepId,
             toolCallId: spec.toolCallId,
-            role: (this.agent()?.role ?? "main") as AgentRole,
-            reads: this.reads,
-            backups: (this.deps.backups ?? new BackupService(this.deps.db)).bind(scope),
-            leases: this.deps.leases,
-            agents: this.deps.agents,
-            rawArgs: spec.args,
-            destructiveApproved: true,
           });
+          result = await runWithToolAccess(access, () =>
+            tool.execute(parsed.data, {
+              ...scope,
+              access,
+              turnId: spec.turnId,
+              stepId: spec.stepId,
+              toolTargets: spec.targets,
+              signal: AbortSignal.any([ctrl.signal, AbortSignal.timeout(tool.timeoutMs)]),
+              toolCallId: spec.toolCallId,
+              role: (this.agent()?.role ?? "main") as AgentRole,
+              reads: this.reads,
+              backups: runWithToolAccess(access, () =>
+                (this.deps.backups ?? new BackupService(this.deps.db)).bind(scope),
+              ),
+              leases: this.deps.leases,
+              agents: this.deps.agents,
+              rawArgs: spec.args,
+              destructiveApproved: true,
+            }),
+          );
           durationMs = Date.now() - startedAt;
         } catch (err) {
           durationMs = Date.now() - startedAt;
@@ -764,7 +858,12 @@ class AgentActor {
                 }
               : {}),
             error: {
-              code: err instanceof FileLeaseError ? "FILE_LEASED" : "INTERNAL",
+              code:
+                err instanceof FileLeaseError
+                  ? "FILE_LEASED"
+                  : err instanceof TurnAccessError
+                    ? "INVALID_ARGUMENT"
+                    : "INTERNAL",
               message:
                 err instanceof FileLeaseError
                   ? err.message
@@ -799,7 +898,7 @@ class AgentActor {
         }
         if (this.stopRequested || this.interruptRequested) {
           this.deps.log.append(this.sessionId, this.agentId, [
-            { type: "turn.interrupted", data: { turnId: spec.turnId } },
+            { type: "turn.interrupted", data: this.interruptedTurnData(spec.turnId) },
           ]);
           return;
         }
@@ -900,6 +999,36 @@ class AgentActor {
     const toolCallId =
       row.tool_call_id ?? (typeof meta.toolCallId === "string" ? meta.toolCallId : undefined);
     if (!toolCallId) return;
+    // A question's display metadata is not authority to impersonate another tool.
+    // Contract recovery requires both its real runtime intent and host request.
+    let restoredToolName = "ask_user";
+    const intentRow = this.deps.db
+      .prepare(
+        "SELECT data FROM session_log WHERE session_id=? AND agent_id=? AND type='tool.intent' AND json_extract(data,'$.toolCallId')=? ORDER BY seq DESC LIMIT 1",
+      )
+      .get(this.sessionId, this.agentId, toolCallId) as { data: string } | undefined;
+    const intent = intentRow
+      ? (JSON.parse(intentRow.data) as {
+          toolName?: unknown;
+          stepId?: unknown;
+          args?: { action?: unknown };
+        })
+      : undefined;
+    if (meta.toolName === "contract" || intent?.toolName === "contract") {
+      const requested = this.deps.db
+        .prepare(
+          "SELECT 1 FROM session_log WHERE session_id=? AND agent_id=? AND type='contract.confirmation.requested' AND json_extract(data,'$.questionId')=?",
+        )
+        .get(this.sessionId, this.agentId, id);
+      if (
+        !requested ||
+        intent?.toolName !== "contract" ||
+        intent.args?.action !== "confirm" ||
+        intent.stepId !== meta.stepId
+      )
+        return;
+      restoredToolName = "contract";
+    }
     // 停止/打断已收口该调用或所属轮已结束：回答只落在问题投影，不再追加结果、不复活旧轮
     if (
       this.hasToolResult(toolCallId) ||
@@ -922,7 +1051,7 @@ class AgentActor {
       this.deps.log.append(this.sessionId, this.agentId, [
         {
           type: "tool.result",
-          data: { toolCallId, toolName: "ask_user", status: result.status, result },
+          data: { toolCallId, toolName: restoredToolName, status: result.status, result },
         },
       ]);
       // 同审批恢复：回答作为 tool.result 后继续本轮（04 §5.2）。
@@ -935,7 +1064,7 @@ class AgentActor {
         }
         if (this.stopRequested || this.interruptRequested) {
           this.deps.log.append(this.sessionId, this.agentId, [
-            { type: "turn.interrupted", data: { turnId } },
+            { type: "turn.interrupted", data: this.interruptedTurnData(turnId) },
           ]);
           return;
         }
@@ -951,11 +1080,25 @@ class AgentActor {
     }
   }
 
-  requestStop(): boolean {
+  private interruptedTurnData(turnId: string) {
+    const userCancelled = this.userCancelledTurnId === turnId;
+    if (userCancelled) this.userCancelledTurnId = null;
+    return userCancelled
+      ? { turnId, reason: "stopped" as const, cancellationCause: "user" as const }
+      : { turnId };
+  }
+
+  requestStop(cancellationCause?: "user"): boolean {
     // 停止后排队中的消息不自动开始（04 §4.2）：内存队列清空，DB 里保持
     // queued 即挂起，只经 resume 恢复。不在运行（如闸门排队）时同样清空。
     this.queue = [];
     if (!this._running) return false;
+    if (
+      cancellationCause === "user" &&
+      this.currentTurnId !== null &&
+      !this.turnEnded(this.currentTurnId)
+    )
+      this.userCancelledTurnId = this.currentTurnId;
     this.stopRequested = true;
     this.abortReason = "代理已停止";
     this.callAbort?.abort();
@@ -1213,11 +1356,16 @@ class AgentActor {
    * 取下一轮输入：队列第一个有效条目 + 全部剩余 steer 条目（interrupt 插队会
    * 打乱队列顺序，按 user.message 的 seq 恢复到达顺序）。inbox 唤醒返回空数组。
    */
-  private takeBatch(): string[] | null {
+  private takeBatch(): { dispatchIds: string[]; resume: boolean } | null {
     let head: QueueEntry | undefined;
     while (head === undefined && this.queue.length > 0) {
       const item = this.queue.shift() as QueueEntry;
-      if ("inbox" in item || this.dispatchAlive(item.dispatchId)) head = item;
+      if (
+        "inbox" in item
+          ? item.resume || this.hasPendingInbox()
+          : this.dispatchAlive(item.dispatchId)
+      )
+        head = item;
     }
     if (head === undefined) return null;
     const dispatchIds = "inbox" in head ? [] : [head.dispatchId];
@@ -1235,7 +1383,10 @@ class AgentActor {
     }
     this.queue = rest;
     dispatchIds.sort((a, b) => this.dispatchSeq(a) - this.dispatchSeq(b));
-    return dispatchIds;
+    return {
+      dispatchIds,
+      resume: "inbox" in head && head.resume === true && dispatchIds.length === 0,
+    };
   }
 
   /** 等待审批/回答且内存中无在跑轮：不自动开新轮（重启后持久化 pending 仍在的情况）。 */
@@ -1251,9 +1402,23 @@ class AgentActor {
     );
   }
 
-  /** 内存队列里是否还有可开轮的条目（顺带丢弃已撤回/已应用的派发）。 */
+  /** 运行中步骤可能已消费报告；队列里的唤醒标记本身不代表仍有输入。 */
+  private hasPendingInbox(): boolean {
+    return (
+      this.deps.db
+        .prepare(
+          "SELECT 1 FROM inbox_pending WHERE session_id = ? AND to_agent_id = ? AND status = 'pending' AND from_agent_id != 'environment' LIMIT 1",
+        )
+        .get(this.sessionId, this.agentId) !== undefined
+    );
+  }
+
+  /** 丢弃已消费的 inbox 唤醒及已撤回/已应用的派发。 */
   private hasWork(): boolean {
-    this.queue = this.queue.filter((e) => "inbox" in e || this.dispatchAlive(e.dispatchId));
+    const pendingInbox = this.hasPendingInbox();
+    this.queue = this.queue.filter((e) =>
+      "inbox" in e ? e.resume || pendingInbox : this.dispatchAlive(e.dispatchId),
+    );
     return this.queue.length > 0;
   }
 
@@ -1281,13 +1446,14 @@ class AgentActor {
     const gate = this.host.acquireTurn(this, fromGate);
     if (gate === "blocked") return handOff();
     if (gate === "queued") return;
-    const dispatchIds = this.takeBatch();
-    if (dispatchIds === null) return handOff();
+    const batch = this.takeBatch();
+    if (batch === null) return handOff();
     this._running = true;
     this.stopRequested = false;
     this.interruptRequested = false;
+    this.userCancelledTurnId = null;
     try {
-      await this.runTurn(dispatchIds);
+      await this.runTurn(batch.dispatchIds, batch.resume);
     } catch (err) {
       // 未捕获的内部错误：尽力写 turn.failed，避免 actor 卡死在 running
       this.failInternal(err);
@@ -1340,16 +1506,150 @@ class AgentActor {
     });
   }
 
-  private async runTurn(dispatchIds: string[]): Promise<void> {
+  /** Derived discharge only: the immutable attempt, failure and fact records stay intact. */
+  private completedNumericDelivery(turnId: string): boolean {
+    const { db } = this.deps;
+    const start = db
+      .prepare(
+        "SELECT seq FROM session_log WHERE session_id=? AND agent_id=? AND type='turn.started' AND json_extract(data,'$.turnId')=? ORDER BY seq DESC LIMIT 1",
+      )
+      .get(this.sessionId, this.agentId, turnId) as { seq: number } | undefined;
+    if (!start) return false;
+    const rows = db
+      .prepare(
+        "SELECT type,data FROM session_log WHERE session_id=? AND agent_id=? AND seq>? AND seq<COALESCE((SELECT MIN(seq) FROM session_log WHERE session_id=? AND agent_id=? AND type='turn.started' AND seq>?),9223372036854775807) AND type IN ('step.started','tool.intent','tool.result','model.output','inbox.delivered','turn.completed','turn.failed','turn.interrupted') ORDER BY seq",
+      )
+      .all(this.sessionId, this.agentId, start.seq, this.sessionId, this.agentId, start.seq) as {
+      type: string;
+      data: string;
+    }[];
+    const object = (value: unknown): Record<string, unknown> =>
+      value !== null && typeof value === "object" && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : {};
+    let stepId: string | undefined;
+    let latest:
+      | { callId: string; stepId: string; toolName: string; finalText?: string }
+      | undefined;
+    let candidate = false;
+    let completed = false;
+    for (const row of rows) {
+      const data = object(JSON.parse(row.data));
+      if (row.type === "step.started") {
+        stepId =
+          data.turnId === turnId && typeof data.stepId === "string" ? data.stepId : undefined;
+        latest = undefined;
+        candidate = completed = false;
+      } else if (row.type === "tool.intent") {
+        candidate = completed = false;
+        const args = object(data.args);
+        const finalizing =
+          (data.toolName === "deliver" && args.action === "finalize") ||
+          (data.toolName === "present" && Object.hasOwn(args, "finalize"));
+        latest =
+          finalizing &&
+          stepId !== undefined &&
+          data.stepId === stepId &&
+          typeof data.toolCallId === "string" &&
+          typeof data.toolName === "string"
+            ? { callId: data.toolCallId, stepId, toolName: data.toolName }
+            : undefined;
+      } else if (row.type === "tool.result") {
+        candidate = completed = false;
+        const result = object(data.result),
+          output = object(result.data);
+        if (
+          latest &&
+          data.toolCallId === latest.callId &&
+          data.toolName === latest.toolName &&
+          stepId === latest.stepId &&
+          data.status === "ok" &&
+          result.status === "ok" &&
+          output.outcome === "completed" &&
+          output.finalizationStatus === "complete" &&
+          typeof output.finalText === "string" &&
+          output.finalText.length > 0
+        )
+          latest.finalText = output.finalText;
+        else latest = undefined;
+      } else if (row.type === "model.output") {
+        // Model prose, lookalike JSON, old IDs and a new call-bearing step cannot discharge.
+        completed = false;
+        candidate =
+          latest?.finalText !== undefined &&
+          data.stepId === latest.stepId &&
+          data.sourceToolCallId === latest.callId &&
+          data.deliveryStatus === "complete" &&
+          data.text === latest.finalText &&
+          !data.toolCalls;
+        if (Array.isArray(data.toolCalls) && data.toolCalls.length > 0) latest = undefined;
+      } else if (row.type === "turn.completed") {
+        completed = data.turnId === turnId && candidate;
+      } else {
+        latest = undefined;
+        candidate = completed = false;
+      }
+    }
+    return completed;
+  }
+
+  private async runTurn(dispatchIds: string[], resume = false): Promise<void> {
     const { log } = this.deps;
+    const previous = this.deps.db
+      .prepare(
+        "SELECT json_extract(data,'$.turnId') AS turnId FROM session_log WHERE session_id=? AND agent_id=? AND type='turn.started' ORDER BY seq DESC LIMIT 1",
+      )
+      .get(this.sessionId, this.agentId) as { turnId: string } | undefined;
     const turnId = newId("trn");
     this.currentTurnId = turnId;
+    const accessBinding = createTurnAccessBinding(this.deps.db, {
+      sessionId: this.sessionId,
+      agentId: this.agentId,
+      turnId,
+      dispatchIds,
+      resume,
+    });
+    const previousBinding = previous
+      ? turnAccessBinding(this.deps.db, this.sessionId, this.agentId, previous.turnId)
+      : undefined;
+    const sameContractOrigin =
+      previousBinding?.contractRef !== undefined &&
+      accessBinding.contractRef !== undefined &&
+      previousBinding.contractRef.contractId === accessBinding.contractRef.contractId &&
+      previousBinding.contractRef.originAgentId === accessBinding.contractRef.originAgentId &&
+      previousBinding.contractRef.originTurnId === accessBinding.contractRef.originTurnId;
+    const inherited =
+      previous !== undefined &&
+      (resume || sameContractOrigin) &&
+      numericDeliveryState(this.deps.db, this.sessionId, this.agentId, previous.turnId).required &&
+      !this.completedNumericDelivery(previous.turnId);
     log.append(this.sessionId, this.agentId, [
       ...dispatchIds.map((dispatchId) => ({
         type: "dispatch.updated",
         data: { dispatchId, status: "applied" },
       })),
-      { type: "turn.started", data: { turnId } },
+      {
+        type: "turn.started",
+        data: { turnId, accessBinding, ...(inherited ? { numericDeliveryRequired: true } : {}) },
+      },
+      ...(dispatchIds.some((id) =>
+        this.deps.db
+          .prepare(
+            "SELECT 1 FROM session_log WHERE session_id=? AND agent_id=? AND type='user.message' AND json_extract(data,'$.dispatchId')=? AND json_extract(data,'$.unscopedContextRead')=1",
+          )
+          .get(this.sessionId, this.agentId, id),
+      )
+        ? [
+            {
+              type: "access.unscoped",
+              data: {
+                turnId,
+                originAgentId: accessBinding.originAgentId,
+                originTurnId: accessBinding.originTurnId,
+              },
+            },
+          ]
+        : []),
     ]);
     await this.continueTurn(turnId, 0);
   }
@@ -1359,8 +1659,111 @@ class AgentActor {
    * 已有 step.started 条数——恢复路径在旧步骤的工具调用续完后接着走步骤循环，
    * 不写新的 turn.started。
    */
+  private completeAccessIncomplete(turnId: string, message: string): void {
+    this.deps.log.append(this.sessionId, this.agentId, [
+      {
+        type: "model.output",
+        data: {
+          stepId: newId("stp"),
+          text:
+            message +
+            "\n\n" +
+            renderAccessFacts(
+              turnAccessFacts(this.deps.db, {
+                sessionId: this.sessionId,
+                agentId: this.agentId,
+                turnId,
+              }),
+            ),
+          deliveryStatus: "incomplete",
+        },
+      },
+      { type: "turn.completed", data: { turnId, reason: "stop" } },
+    ]);
+  }
+  private async validateAccessContext(turnId: string): Promise<boolean> {
+    const binding = turnAccessBinding(this.deps.db, this.sessionId, this.agentId, turnId);
+    // A legacy parser ambiguity is a crosscheck for contract-backed tasks, not
+    // authority to terminate before contract/ask_user can resolve it. File effects
+    // remain fail-closed at the persisted contract gate.
+    if (!binding?.contractRef && binding?.decision.kind === "unresolved") {
+      this.completeAccessIncomplete(
+        turnId,
+        "本轮允许文件或目录不明确，文件任务未完成。请另发新消息，写明：仅访问目录 <相对目录>，执行 <任务>；或明确两个文件及另存目标。",
+      );
+      return false;
+    }
+    if (!binding) return true;
+    for (const dispatchId of binding.sourceDispatchIds) {
+      const row = this.deps.db
+        .prepare(
+          "SELECT data FROM session_log WHERE session_id=? AND agent_id=? AND type='user.message' AND json_extract(data,'$.dispatchId')=? ORDER BY seq DESC LIMIT 1",
+        )
+        .get(this.sessionId, this.agentId, dispatchId) as { data: string } | undefined;
+      if (!row) continue;
+      const msg = JSON.parse(row.data) as {
+        deferredContextValidation?: boolean;
+        context?: { docId: string; rev: number; range: string }[];
+      };
+      if (!msg.deferredContextValidation || !msg.context?.length) continue;
+      if (
+        this.deps.db
+          .prepare(
+            "SELECT 1 FROM session_log WHERE session_id=? AND agent_id=? AND type='turn.context.validated' AND json_extract(data,'$.dispatchId')=?",
+          )
+          .get(this.sessionId, this.agentId, dispatchId)
+      )
+        continue;
+      try {
+        // Ingress has already checked workspace, scope, revision and range syntax.
+        // A snapshot needs read authority, so let the model propose the contract first.
+        // Revisit this same reference next step; do not mark it validated while pending.
+        if (binding.contractRef && isTaskContractPending({
+          db: this.deps.db,
+          sessionId: this.sessionId,
+          ...binding.contractRef,
+          contractExpected: true,
+        })) continue;
+        if (!this.deps.validateContext) throw new Error("未装配选区验证");
+        const workspaceRoot = this.deps.workspaceRoot(this.sessionId);
+        const access = bindToolAccess({
+          db: this.deps.db,
+          log: this.deps.log,
+          workspaceRoot,
+          sessionId: this.sessionId,
+          agentId: this.agentId,
+          turnId,
+          toolCallId: `context:${dispatchId}`,
+        });
+        await runWithToolAccess(access, () =>
+          this.deps.validateContext!(msg.context!, workspaceRoot),
+        );
+        this.deps.log.append(this.sessionId, this.agentId, [
+          { type: "turn.context.validated", data: { turnId, dispatchId } },
+        ]);
+      } catch (error) {
+        // Keep the proposal/confirmation loop reachable while a context read is
+        // awaiting permission. This does not validate the reference or grant I/O.
+        if (binding.contractRef && error instanceof Error &&
+            error.message === "Contract permission unavailable or needs_confirmation") {
+          const contract = taskContractState({ db: this.deps.db, sessionId: this.sessionId,
+            ...binding.contractRef, contractExpected: true });
+          if (contract?.permissions.some(permission => permission.state === "needs_confirmation" &&
+              (permission.operation === "read-content" || permission.operation === "read-metadata"))) continue;
+        }
+        this.completeAccessIncomplete(
+          turnId,
+          "选区引用无法在当前允许文件或目录内完成验证，本轮未完成。请重新选择许可文件中的有效选区并另发明确任务。",
+        );
+        return false;
+      }
+    }
+    return true;
+  }
+
   private async continueTurn(turnId: string, startStep: number): Promise<void> {
     const { log } = this.deps;
+    if (!(await this.validateAccessContext(turnId))) return;
     const agent = this.agent();
     if (!agent) {
       this.failTurn(turnId, {
@@ -1396,7 +1799,9 @@ class AgentActor {
     let step = startStep;
     for (;;) {
       if (this.stopRequested || this.interruptRequested) {
-        log.append(this.sessionId, this.agentId, [{ type: "turn.interrupted", data: { turnId } }]);
+        log.append(this.sessionId, this.agentId, [
+          { type: "turn.interrupted", data: this.interruptedTurnData(turnId) },
+        ]);
         return;
       }
       step += 1;
@@ -1405,6 +1810,10 @@ class AgentActor {
       const overStepLimit = step > maxSteps;
       if (!overStepLimit && !checkBudget(this.budget, this.budgetUsage).ok) {
         const budgetCheck = checkBudget(this.budget, this.budgetUsage);
+        if (accessDeliveryRequired(this.deps.db, this.sessionId, this.agentId, turnId)) {
+          this.completeAccessIncomplete(turnId, "本轮预算已用尽，证据交付未完成。");
+          return;
+        }
         log.append(this.sessionId, this.agentId, [
           { type: "turn.completed", data: { turnId, reason: "budget_exceeded" } },
           {
@@ -1427,6 +1836,10 @@ class AgentActor {
       const outcome = await this.runStep(turnId, step, resolved, agent, overStepLimit);
       if (outcome === "continue") continue;
       if (outcome === "budget_exceeded") {
+        if (accessDeliveryRequired(this.deps.db, this.sessionId, this.agentId, turnId)) {
+          this.completeAccessIncomplete(turnId, "本轮预算已用尽，证据交付未完成。");
+          return;
+        }
         log.append(this.sessionId, this.agentId, [
           { type: "turn.completed", data: { turnId, reason: "budget_exceeded" } },
         ]);
@@ -1469,14 +1882,18 @@ class AgentActor {
     // 本步内 auto/manual 压缩只尝试一次（失败跳过本次）；overflow 只压缩重试一次（04 §6.3）。
     let compactTried = false;
     let overflowCompacted = false;
+    let admittedProgressDrain = false;
 
     for (;;) {
       // 压缩等步前工作可能消耗时间在标记置位之后：每个循环边界先收口停止/打断。
       if (this.stopRequested || this.interruptRequested) {
-        log.append(topic, this.agentId, [{ type: "turn.interrupted", data: { turnId } }]);
+        log.append(topic, this.agentId, [
+          { type: "turn.interrupted", data: this.interruptedTurnData(turnId) },
+        ]);
         return "interrupted";
       }
       this.applyQueuedSteers();
+      if (!(await this.validateAccessContext(turnId))) return "done";
       this.deliverInbox();
       if (this.compactRequested || (!compactTried && this.shouldAutoCompact(model))) {
         const trigger: CompactionTrigger = this.compactRequested ? "manual" : "auto";
@@ -1494,7 +1911,9 @@ class AgentActor {
         }
         // 摘要调用可能被停止/打断中止：继续前先收口本轮
         if (this.stopRequested || this.interruptRequested) {
-          log.append(topic, this.agentId, [{ type: "turn.interrupted", data: { turnId } }]);
+          log.append(topic, this.agentId, [
+            { type: "turn.interrupted", data: this.interruptedTurnData(turnId) },
+          ]);
           return "interrupted";
         }
       }
@@ -1505,11 +1924,111 @@ class AgentActor {
           data: { turnId, stepId, step, model: `${model.provider}/${model.model}` },
         },
       ]);
+      const numericDelivery = numericDeliveryState(
+        this.deps.db,
+        this.sessionId,
+        this.agentId,
+        turnId,
+      );
+      const accessRequired = accessDeliveryRequired(
+        this.deps.db,
+        this.sessionId,
+        this.agentId,
+        turnId,
+      );
+      const taskBinding = turnAccessBinding(this.deps.db, this.sessionId, this.agentId, turnId);
+      const harness = harnessState(
+        this.deps.db,
+        this.sessionId,
+        harnessTaskId({ sessionId: this.sessionId, agentId: this.agentId, turnId, ...taskBinding }),
+      );
+      const progress = harnessProgress(this.deps.db, this.sessionId, harness.taskId);
+      const descendantsBusy = () =>
+        this.deps.db
+          .prepare(
+            "WITH RECURSIVE descendants(id,status) AS (SELECT id,status FROM agents WHERE session_id=? AND parent_id=? UNION ALL SELECT a.id,a.status FROM agents a JOIN descendants d ON a.parent_id=d.id WHERE a.session_id=?) SELECT 1 FROM descendants WHERE status IN ('running','waiting') LIMIT 1",
+          )
+          .get(this.sessionId, this.agentId, this.sessionId) !== undefined;
+      const childBusy = descendantsBusy();
+      if (progress.exhausted && childBusy && progress.drainSteps === 0)
+        admittedProgressDrain = true;
+      const progressStopping = progress.exhausted && !admittedProgressDrain;
+      const progressReason =
+        progress.reason === "invalid_exploration_budget"
+          ? "连续 12 次无效或不支持的检查预检未增加有效证据"
+          : "同语义检查已重复 3 次且未增加有效证据";
+      if (progressStopping && progress.terminationSteps >= 2) {
+        // Do not report a terminal task while already-started descendants can still publish.
+        // No wall-clock timeout: user stop remains responsive and pending approvals remain pending.
+        while (descendantsBusy()) {
+          if (this.stopRequested || this.interruptRequested) {
+            log.append(topic, this.agentId, [
+              { type: "turn.interrupted", data: this.interruptedTurnData(turnId) },
+            ]);
+            return "interrupted";
+          }
+          await new Promise<void>((resolve) => setTimeout(resolve, 50));
+        }
+        const settledProgress = harnessProgress(this.deps.db, this.sessionId, harness.taskId);
+        if (!settledProgress.exhausted) continue;
+        this.completeAccessIncomplete(
+          turnId,
+          `${progressReason}，宿主已停止无进展循环。已保存文件和失败义务仍保留；没有自动发卡或认定完成。`,
+        );
+        return "done";
+      }
+      const delivery = {
+        ...numericDelivery,
+        required:
+          numericDelivery.required || accessRequired || harness.required || progressStopping,
+      };
+      const deliveryGuidance = [
+        numericDelivery.required ? NUMERIC_DELIVERY_GUIDANCE : "",
+        accessRequired ? ACCESS_DELIVERY_GUIDANCE : "",
+        harnessContext(harness),
+        progressStopping
+          ? `${progressReason}。仅允许 inspect 当前目录并用 partial/blocked 结束；最多两步，不能再执行修复或重试检查。`
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+      if (forceFinal && delivery.required) {
+        log.append(topic, this.agentId, [
+          {
+            type: "model.output",
+            data: {
+              stepId,
+              text:
+                "本轮已达到执行限制，证据交付未完成。\n\n" +
+                (harness.required
+                  ? "文件保存和业务校验的宿主状态仍需完成交付；未完成不表示已回滚。\n\n"
+                  : "") +
+                numericExecutionFacts(this.deps.db, this.sessionId, this.agentId, turnId) +
+                (accessRequired
+                  ? "\n\n" +
+                    renderAccessFacts(
+                      turnAccessFacts(this.deps.db, {
+                        sessionId: this.sessionId,
+                        agentId: this.agentId,
+                        turnId,
+                      }),
+                    )
+                  : ""),
+              deliveryStatus: "incomplete",
+            },
+          },
+          { type: "turn.completed", data: { turnId, reason: "step_limit" } },
+        ]);
+        return "done";
+      }
 
       const ctrl = new AbortController();
       this.callAbort = ctrl;
       let sawContent = false;
       let text = "";
+      let textBytes = 0;
+      let textOverflow = false;
+      const textByteLimit = 256 * 1024;
       let reasoning = "";
       let reasoningStart: number | undefined;
       let reasoningEnd: number | undefined;
@@ -1521,7 +2040,88 @@ class AgentActor {
       let classified: ClassifiedError | undefined;
       let part = 0;
       try {
+        const contractPending = taskBinding?.contractRef
+          ? isTaskContractPending({
+              db: this.deps.db,
+              sessionId: this.sessionId,
+              ...taskBinding.contractRef,
+              contractExpected: true,
+            })
+          : false;
+        const contract = !contractPending && taskBinding?.contractRef
+          ? taskContractState({
+              db: this.deps.db,
+              sessionId: this.sessionId,
+              ...taskBinding.contractRef,
+              contractExpected: true,
+            })
+          : undefined;
+        // Catalog relevance only; actual calls retain all path/range and confirmation checks.
+        // Pending confirmation must remain callable so normal approval can resolve it.
+        const operations = new Set(contract?.permissions
+          .filter((permission) => permission.state !== "denied")
+          .map((permission) => permission.operation));
+        const canWrite = operations.has("create") || operations.has("mutate") ||
+          operations.has("remove") || operations.has("relocate");
+        const contentWrites = contract?.permissions.filter(permission =>
+          permission.state !== "denied" && (permission.operation === "create" || permission.operation === "mutate")) ?? [];
+        const textWriteAvailable = contentWrites.some(permission => permission.target.match === "tree" ||
+          !/\.(xlsx|xlsm|xls|xlsb|ods|zip|png|jpe?g|gif|webp|pdf|exe|dll|bin|gz|7z|woff2?|mp[34])$/i.test(permission.target.path));
+        const workbookWriteAvailable = contentWrites.some(permission => permission.target.match === "tree" ||
+          !/\.(xlsx|xlsm|csv|tsv|txt|md|json|jsonl|ya?ml|xml|html?|css|[cm]?js|[cm]?ts|py|png|jpe?g|gif|webp|pdf|zip)$/i.test(permission.target.path) ||
+          (permission.operation === "create"
+            ? /\.xlsx$/i.test(permission.target.path)
+            : /\.(xlsx|xlsm|csv|tsv)$/i.test(permission.target.path)));
+        const canReadContent = operations.has("read-content");
+        const canReadMetadata = operations.has("read-metadata");
+        const auxiliaryEnabled = contract ? enabledAuxiliaryTools(this.deps.db, this.sessionId, this.agentId) : undefined;
+        const relevantTool = (name: string): boolean => {
+          if (!contract) return true;
+          if (isAuxiliaryTool(name)) return auxiliaryEnabled!.has(name);
+          // Accepted enumeration-only tasks also need the lightweight discovery entry.
+          if (name === "workbook_check") return true;
+          if (name === "find")
+            return operations.has("enumerate") || canReadContent || canReadMetadata || canWrite;
+          if (name === "read" || name === "workbook_read")
+            return canReadContent || canReadMetadata || canWrite;
+          if (name === "workbook_query" || name === "workbook_analyze" || name === "workbook_render")
+            return canReadContent || canWrite;
+          // files also has a genuine read-only backup-list branch.
+          if (name === "files") return canReadMetadata || canWrite;
+          if (name === "write" || name === "edit") return textWriteAvailable;
+          if (name === "workbook_edit") return workbookWriteAvailable;
+          const effect = this.deps.tools.get(name)?.effect;
+          if (effect === "write") return contentWrites.length > 0;
+          if (effect === "destructive")
+            return operations.has("remove") || operations.has("relocate");
+          // Controls and unclassified mixed tools keep their execution-time checks.
+          return true;
+        };
+        const staged = contract ? stagedCatalogState(this.deps.db, this.sessionId, this.agentId, turnId, taskBinding?.contractRef?.contractId) : undefined;
+        if (staged) {
+          staged.operations = operations;
+          const targets = contract!.permissions.filter(permission => permission.state !== "denied");
+          staged.workbook = targets.some(permission => permission.target.match === "tree" || /\.(xlsx|xlsm|csv|tsv)$/i.test(permission.target.path));
+          staged.text = targets.some(permission => permission.target.match === "tree" || !/\.(xlsx|xlsm|xls|xlsb|ods|csv|tsv|png|jpe?g|gif|webp|pdf|zip)$/i.test(permission.target.path));
+        }
         const history = this.history();
+        if (contractPending) {
+          let statusContext: unknown;
+          try {
+            const snapshot = this.deps.tools.get("contract")?.modelContext?.({
+              sessionId: this.sessionId, agentId: this.agentId, turnId,
+            });
+            if (snapshot?.status === "ok") statusContext = snapshot.data;
+          } catch { /* Keep the ordinary status tool available on projection failure. */ }
+          history.push({
+            kind: "user",
+            text: statusContext
+              ? `<context>当前任务契约待提案。以下是宿主当前 status 的只读结果（不是授权）：${JSON.stringify(statusContext)}。直接按 revision 作为 baseRevision 提交与用户要求一致的 proposal，无需再 status。未申请的范围默认无权；“其他文件或单元格保持不变”写入 obligations，不要用根目录 tree 禁止覆盖本次申请文件。已有用户禁止必须保留。提案未接受时先用 contract/ask_user；即使目录保留已加载工具，也不代表本轮已获授权。</context>`
+              : "<context>当前任务契约待提案。先用 contract 查看状态和原文引用，再提交与用户要求一致的提案；提案未接受时先用 contract/ask_user；即使目录保留已加载工具，也不代表本轮已获授权。</context>",
+          });
+        }
+        if (delivery.required)
+          history.push({ kind: "user", text: `<context>${deliveryGuidance}</context>` });
         const prompt = forceFinal
           ? [
               ...history,
@@ -1537,22 +2137,80 @@ class AgentActor {
           history: prompt,
           tools: forceFinal
             ? undefined
-            : model.vision === false
-              ? this.deps
-                  .toolSpecsFor(agent.role)
-                  .filter((t) => this.deps.tools.get(t.name)?.requiresVision !== true)
-              : this.deps.toolSpecsFor(agent.role),
+            : this.deps
+                .toolSpecsFor(agent.role)
+                .filter(
+                  (tool) =>
+                    (model.vision !== false ||
+                      this.deps.tools.get(tool.name)?.requiresVision !== true) &&
+                    (!progressStopping || tool.name === "deliver") &&
+                    (!contractPending || tool.name === "contract" || tool.name === "ask_user") &&
+                    relevantTool(tool.name),
+                )
+                .flatMap((tool) => {
+                  if (!staged) return [tool];
+                  const selected = stagedModelToolSpec(tool, staged);
+                  return selected ? [selected] : [];
+                })
+                .map((tool) => staged ? tool : tool.name === "workbook_check"
+                  ? canWrite ? compactWorkbookCheckSpec(tool) : {
+                      ...tool,
+                      description: "普通只读回答无需写出计划。类型化检查先 action=describe 获取 verification 格式。写后首次校验直接 action=execute 提交完整声明，宿主同一次登记并执行；已有计划直接 execute 引用 planId/version，不要先 register 再 execute。仅写入前需要 planId/version 时用 register；prepare 仅预检、不登记或执行。describe 可带 tool=workbook_edit, ops=[操作名] 查询编辑参数。需要辅助能力时 action=describe, auxiliaryGroups=[agents|presentation|skills|memory]：分别为委派协作、图表展示、技能、长期记忆，下一轮恢复所选族的原工具格式；不执行或授予文件权限。登记/描述不证明完成，完整运行期校验不变。",
+                      inputSchema: withResultCursor({
+                        type: "object",
+                        properties: {
+                          action: { type: "string", enum: ["describe", "register", "prepare", "execute"] },
+                          auxiliaryGroups: { type: "array", items: { type: "string", enum: ["agents", "presentation", "skills", "memory"] }, minItems: 1, maxItems: 4, description: "仅 describe，不能同时传 tool/ops/verification。" },
+                          tool: { type: "string", enum: ["workbook_edit"], description: "仅 describe 使用。" },
+                          ops: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 8, description: "tool=workbook_edit 时必填。" },
+                          verification: {
+                            type: "object",
+                            additionalProperties: true,
+                            description: "describe 返回的完整声明格式，或现有计划的 planId/version；describe 时省略。",
+                          },
+                        },
+                        required: ["action"],
+                        additionalProperties: false,
+                        oneOf: [
+                          { properties: { action: { const: "describe" }, tool: false, ops: false, auxiliaryGroups: false, verification: false } },
+                          { required: ["tool", "ops"], properties: { action: { const: "describe" }, auxiliaryGroups: false, verification: false } },
+                          { required: ["auxiliaryGroups"], properties: { action: { const: "describe" }, tool: false, ops: false, verification: false } },
+                          { required: ["verification"], properties: { action: { enum: ["register", "prepare", "execute"] }, tool: false, ops: false, auxiliaryGroups: false } },
+                        ],
+                      }),
+                    }
+                  : tool.name === "workbook_edit" ? compactWorkbookEditSpec(tool) : compactModelToolSpec(tool))
+                .map(deduplicateModelToolSchema)
+                .map(withStagedCapabilityDirectory),
           providerOptions: model.providerOptions,
           signal: ctrl.signal,
         };
+        if (!forceFinal && !progressStopping && taskBinding?.contractRef) {
+          const taskId = taskBinding.contractRef.contractId;
+          const previous = this.stagedCatalog?.taskId === taskId ? this.stagedCatalog.tools : [];
+          req.tools = appendStagedCatalog(previous, req.tools ?? []);
+          this.stagedCatalog = {taskId,tools:req.tools};
+        }
         for await (const ev of gateway.step(req)) {
           part += 1;
           switch (ev.kind) {
-            case "text.delta":
+            case "text.delta": {
               sawContent = true;
+              // Tool calls may arrive after text: nothing is public until this step is classified.
+              const tail = text.charCodeAt(text.length - 1);
+              const head = ev.text.charCodeAt(0);
+              const joinedPair =
+                tail >= 0xd800 && tail <= 0xdbff && head >= 0xdc00 && head <= 0xdfff;
+              const bytes = Buffer.byteLength(ev.text, "utf8") - (joinedPair ? 2 : 0);
+              if (bytes > textByteLimit - textBytes) {
+                textOverflow = true;
+                ctrl.abort();
+                break;
+              }
+              textBytes += bytes;
               text += ev.text;
-              this.delta(stepId, part, "text", ev.text);
               break;
+            }
             case "reasoning.delta":
               sawContent = true;
               reasoning += ev.text;
@@ -1579,7 +2237,12 @@ class AgentActor {
             case "tool.call":
               sawContent = true;
               toolCallIdx.set(ev.toolCallId, toolCallIdx.size);
-              toolCalls.push({ id: ev.toolCallId, name: ev.toolName, args: ev.args });
+              toolCalls.push({
+                id: ev.toolCallId,
+                name: ev.toolName,
+                args: ev.args,
+                ...(ev.inputError ? { inputError: ev.inputError } : {}),
+              });
               break;
             case "usage":
               usage = ev.usage;
@@ -1593,6 +2256,7 @@ class AgentActor {
             default:
               break;
           }
+          if (textOverflow) break;
         }
       } catch (err) {
         classified = {
@@ -1604,6 +2268,51 @@ class AgentActor {
         this.callAbort = null;
       }
 
+      if (textOverflow) {
+        log.append(topic, this.agentId, [
+          {
+            type: "model.output",
+            data: { stepId, withheldText: text, ...(toolCalls.length ? { toolCalls } : {}) },
+          },
+          {
+            type: "context.notice",
+            data: {
+              kind: "model.text_buffer_exceeded",
+              text: "本步正文超过 256 KiB UTF-8 缓冲上限，记录仅保留有界前缀；未公开正文或执行本步工具。",
+            },
+          },
+          ...toolCalls.map((call) => ({
+            type: "tool.result",
+            data: {
+              toolCallId: call.id,
+              toolName: call.name,
+              status: "not_executed",
+              result: {
+                status: "not_executed",
+                error: {
+                  code: "LIMIT_EXCEEDED",
+                  message: "本步正文缓冲超限，工具未执行",
+                  retryable: false,
+                },
+              },
+            },
+          })),
+        ]);
+        this.failTurn(turnId, {
+          kind: "unknown",
+          retryable: false,
+          message: "模型正文超过单步 256 KiB 缓冲上限，本步已停止。",
+        });
+        return "failed";
+      }
+
+      if (!classified && (ctrl.signal.aborted || this.stopRequested || this.interruptRequested))
+        classified = {
+          kind: "aborted",
+          retryable: false,
+          message: "模型步骤已取消，缓存正文未公开。",
+        };
+
       if (!classified) {
         if (usage !== undefined) this.budgetUsage = addUsage(this.budgetUsage, usage);
         // 提供商报告的本步上下文占用（04 §6.1）；无报告回退字符估算。
@@ -1612,13 +2321,74 @@ class AgentActor {
             ? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)
             : undefined;
         this.budgetUsage.toolCalls += toolCalls.length;
+        if (progressStopping || admittedProgressDrain)
+          log.append(topic, this.agentId, [
+            {
+              type: "harness.progress",
+              data: { taskId: harness.taskId, kind: progressStopping ? "termination" : "drain" },
+            },
+          ]);
         const budgetRecord = usage !== undefined || toolCalls.length > 0;
+        const finalizing = toolCalls.some((call) => {
+          const tool = this.deps.tools.get(call.name);
+          return tool?.finalizesTurn?.(call.args) === true;
+        });
+        if (delivery.required && toolCalls.length === 0) {
+          log.append(topic, this.agentId, [
+            {
+              type: "model.output",
+              data: {
+                stepId,
+                withheldText: text,
+                deliveryStatus: "rejected",
+                ...(reasoning !== "" ? { reasoning } : {}),
+              },
+            },
+            ...(budgetRecord
+              ? [
+                  {
+                    type: "usage.updated",
+                    data: {
+                      turnId,
+                      usage: usage ?? {},
+                      cumulative: {
+                        inputTokens: this.budgetUsage.inputTokens,
+                        outputTokens: this.budgetUsage.outputTokens,
+                        reasoningTokens: this.budgetUsage.reasoningTokens,
+                        totalTokens: this.budgetUsage.totalTokens,
+                      },
+                      steps: this.budgetUsage.steps,
+                      toolCalls: this.budgetUsage.toolCalls,
+                      context: this.contextUsage(model),
+                    },
+                  },
+                ]
+              : []),
+          ]);
+          if (delivery.rejected >= 1) {
+            this.failNumericDelivery(turnId);
+            return "failed";
+          }
+          log.append(topic, this.agentId, [
+            {
+              type: "context.notice",
+              data: { kind: "numeric_delivery.required", text: deliveryGuidance },
+            },
+          ]);
+          return "continue";
+        }
+        if (text !== "" && !delivery.required && !finalizing && toolCalls.length === 0)
+          this.delta(stepId, part, "text", text);
         log.append(topic, this.agentId, [
           {
             type: "model.output",
             data: {
               stepId,
-              ...(text !== "" ? { text } : {}),
+              ...(text !== ""
+                ? delivery.required || finalizing || toolCalls.length > 0
+                  ? { withheldText: text }
+                  : { text }
+                : {}),
               ...(reasoning !== "" ? { reasoning } : {}),
               ...(reasoningProviderOptions !== undefined ? { reasoningProviderOptions } : {}),
               ...(toolCalls.length > 0 ? { toolCalls } : {}),
@@ -1721,17 +2491,64 @@ class AgentActor {
           ]);
           return "budget_exceeded";
         }
-        return this.executeCalls(turnId, stepId, toolCalls);
+        const outcome = await this.executeCalls(turnId, stepId, toolCalls, !progressStopping);
+        if (
+          text !== "" &&
+          !finalizing &&
+          outcome === "continue" &&
+          !this.stopRequested &&
+          !this.interruptRequested &&
+          !numericDeliveryState(this.deps.db, this.sessionId, this.agentId, turnId).required &&
+          !accessDeliveryRequired(this.deps.db, this.sessionId, this.agentId, turnId) &&
+          !harnessState(this.deps.db, this.sessionId, harness.taskId).required &&
+          toolCalls.every((call) => {
+            const latest = this.deps.db
+              .prepare(
+                "SELECT json_extract(data,'$.status') AS status,json_extract(data,'$.result.status') AS resultStatus FROM session_log WHERE session_id=? AND agent_id=? AND type='tool.result' AND json_extract(data,'$.toolCallId')=? AND seq>(SELECT MAX(seq) FROM session_log WHERE session_id=? AND agent_id=? AND type='tool.intent' AND json_extract(data,'$.stepId')=? AND json_extract(data,'$.toolCallId')=?) ORDER BY seq DESC LIMIT 1",
+              )
+              .get(
+                this.sessionId,
+                this.agentId,
+                call.id,
+                this.sessionId,
+                this.agentId,
+                stepId,
+                call.id,
+              ) as { status: string; resultStatus: string } | undefined;
+            return latest?.status === "ok" && latest.resultStatus === "ok";
+          })
+        ) {
+          // Calls remain in their original record; this sole text record cannot duplicate them.
+          this.delta(stepId, part, "text", text);
+          log.append(topic, this.agentId, [{ type: "model.output", data: { stepId, text } }]);
+        }
+        return outcome;
       }
 
       // 错误路径
       const stopped =
         this.stopRequested || this.interruptRequested || classified.kind === "aborted";
       if (stopped) {
-        if (sawContent) {
-          log.append(topic, this.agentId, [{ type: "attempt.discarded", data: { stepId } }]);
-        }
-        log.append(topic, this.agentId, [{ type: "turn.interrupted", data: { turnId } }]);
+        // Incomplete model steps never release buffered text, including ordinary-looking prefixes.
+        log.append(topic, this.agentId, [
+          ...(text !== "" || reasoning !== ""
+            ? [
+                {
+                  type: "model.output",
+                  data: {
+                    stepId,
+                    ...(text !== "" ? { withheldText: text } : {}),
+                    ...(reasoning !== "" ? { reasoning } : {}),
+                    ...(reasoningProviderOptions !== undefined ? { reasoningProviderOptions } : {}),
+                    ...(reasoningStart !== undefined && reasoningEnd !== undefined
+                      ? { reasoningMs: reasoningEnd - reasoningStart }
+                      : {}),
+                  },
+                },
+              ]
+            : []),
+          { type: "turn.interrupted", data: this.interruptedTurnData(turnId) },
+        ]);
         return "interrupted";
       }
       // 上下文超限（04 §6.3、14 场景 22）：压缩一次后重试本步；
@@ -1746,7 +2563,9 @@ class AgentActor {
             compacted = await this.compactContext("overflow", model);
           } catch (err) {
             if (this.stopRequested || this.interruptRequested) {
-              log.append(topic, this.agentId, [{ type: "turn.interrupted", data: { turnId } }]);
+              log.append(topic, this.agentId, [
+                { type: "turn.interrupted", data: this.interruptedTurnData(turnId) },
+              ]);
               return "interrupted";
             }
             this.deps.emit?.("compaction.failed", {
@@ -1786,7 +2605,9 @@ class AgentActor {
         await sleep(waitMs, sleepCtrl.signal);
         this.callAbort = null;
         if (this.stopRequested || this.interruptRequested) {
-          log.append(topic, this.agentId, [{ type: "turn.interrupted", data: { turnId } }]);
+          log.append(topic, this.agentId, [
+            { type: "turn.interrupted", data: this.interruptedTurnData(turnId) },
+          ]);
           return "interrupted";
         }
         continue;
@@ -1822,14 +2643,28 @@ class AgentActor {
       return;
     }
     this.queue = rest;
-    this.deps.log.append(
-      this.sessionId,
-      this.agentId,
-      ids.map((dispatchId) => ({
+    this.deps.log.append(this.sessionId, this.agentId, [
+      ...ids.map((dispatchId) => ({
         type: "dispatch.updated",
         data: { dispatchId, status: "applied" },
       })),
-    );
+      ...(this.currentTurnId
+        ? [
+            {
+              type: "turn.access.updated",
+              data: {
+                turnId: this.currentTurnId,
+                accessBinding: steeredTurnAccessBinding(this.deps.db, {
+                  sessionId: this.sessionId,
+                  agentId: this.agentId,
+                  turnId: this.currentTurnId,
+                  dispatchIds: ids,
+                }),
+              },
+            },
+          ]
+        : []),
+    ]);
   }
 
   /**
@@ -1865,6 +2700,7 @@ class AgentActor {
    * 进程重启时由 recoverInterruptedAgents 合成的 turn.interrupted 不经此路径。
    */
   private async afterTurn(turnId: string | null): Promise<void> {
+    if (this.userCancelledTurnId === turnId) this.userCancelledTurnId = null;
     if (turnId === null) return;
     await this.finishTurn(turnId).catch((err: unknown) => {
       this.deps.emit?.("turn.after_failed", {
@@ -1905,6 +2741,7 @@ class AgentActor {
             sessionId: this.sessionId,
             workspaceRoot: this.deps.workspaceRoot(this.sessionId),
             toolCallIds,
+            storedOnly: accessDeliveryRequired(this.deps.db, this.sessionId, this.agentId, turnId),
           })
         : [];
     if (docs.length > 0) {
@@ -2016,6 +2853,19 @@ class AgentActor {
           toAgentId: agent.parent_id,
           kind: "report",
           message,
+          ...(numericDeliveryState(db, this.sessionId, this.agentId, turnId).required
+            ? {
+                numericDelivery: {
+                  turnId,
+                  outcome:
+                    term.type === "turn.completed"
+                      ? "completed"
+                      : term.type === "turn.failed"
+                        ? "failed"
+                        : "interrupted",
+                },
+              }
+            : {}),
         },
       },
     ]);
@@ -2085,6 +2935,10 @@ class AgentActor {
       turnId: input.turnId,
       stepId: input.stepId,
       step: Number(input.stepId) || undefined,
+      workspaceRoot: this.deps.workspaceRoot(this.sessionId),
+      effects: this.deps.tools.get(input.toolName)?.effectIntents?.(input.args, {
+        workspaceRoot: this.deps.workspaceRoot(this.sessionId),
+      }),
     };
     const pending = approval.request(this.sessionId, this.agentId, spec);
     let decision: ApprovalResolution;
@@ -2099,7 +2953,7 @@ class AgentActor {
     if (this.host.isShuttingDown) return { required: true, decision: "denied" };
     if (approval.get(pending.id)?.status === "pending") {
       // 等待被中止（停止/打断）：以中止理由收口审批决定
-      approval.decide(pending.id, "denied", this.abortReason);
+      approval.decide(pending.id, "denied", this.abortReason, false, "cancelled");
       decision = { decision: "denied", reason: this.abortReason };
     }
     return {
@@ -2113,9 +2967,53 @@ class AgentActor {
     turnId: string,
     stepId: string,
     calls: ToolCall[],
+    admittedBeforeProgressStop = false,
   ): Promise<StepOutcome> {
     const { log, tools } = this.deps;
     const agentRole = (this.agent()?.role ?? "main") as AgentRole;
+    const terminalCalls = calls.filter((call) => {
+      const tool = tools.get(call.name);
+      return tool?.finalizesTurn?.(call.args) === true;
+    });
+    if (terminalCalls.length > 0 && calls.length !== 1) {
+      log.append(this.sessionId, this.agentId, [
+        ...calls.flatMap((call) => [
+          {
+            type: "tool.intent",
+            data: {
+              stepId,
+              toolCallId: call.id,
+              toolName: call.name,
+              args: call.args,
+              targets: [],
+              replay: "safe",
+            },
+          },
+          {
+            type: "tool.result",
+            data: {
+              toolCallId: call.id,
+              toolName: call.name,
+              status: "not_executed",
+              result: {
+                status: "not_executed",
+                error: {
+                  code: "INVALID_ARGUMENT",
+                  message: "证据终稿必须单独调用；本步所有调用均未执行。",
+                  retryable: false,
+                },
+              },
+            },
+          },
+        ]),
+        { type: "model.output", data: { stepId, withheldText: "", deliveryStatus: "rejected" } },
+      ]);
+      if (numericDeliveryState(this.deps.db, this.sessionId, this.agentId, turnId).rejected > 1) {
+        this.failNumericDelivery(turnId);
+        return "failed";
+      }
+      return "continue";
+    }
     const finishInterrupted = (from: number) => {
       const records = [
         ...calls.slice(from).map((c) => ({
@@ -2134,7 +3032,7 @@ class AgentActor {
             },
           },
         })),
-        { type: "turn.interrupted", data: { turnId } },
+        { type: "turn.interrupted", data: this.interruptedTurnData(turnId) },
       ];
       log.append(this.sessionId, this.agentId, records);
       return "interrupted" as const;
@@ -2145,7 +3043,16 @@ class AgentActor {
       const call = calls[i];
       if (!call) continue;
       // 06 §1.2/§8：执行时同样按 roles 裁剪；角色不可用的工具按"不存在"处理。
-      const declared = tools.get(call.name);
+      const callBinding = turnAccessBinding(this.deps.db, this.sessionId, this.agentId, turnId);
+      const callProgress = harnessProgress(
+        this.deps.db,
+        this.sessionId,
+        harnessTaskId({ sessionId: this.sessionId, agentId: this.agentId, turnId, ...callBinding }),
+      );
+      const declared =
+        callProgress.exhausted && !admittedBeforeProgressStop && call.name !== "deliver"
+          ? undefined
+          : tools.get(call.name);
       const tool =
         declared !== undefined && (declared.roles as readonly string[]).includes(agentRole)
           ? isResultPage(call.args)
@@ -2153,14 +3060,44 @@ class AgentActor {
             : declared
           : undefined;
       // 06 §2.1：targets/replay/effect 只对校验通过的参数求值；非法参数照常写 intent。
+      const access = bindToolAccess({
+        db: this.deps.db,
+        log: this.deps.log,
+        workspaceRoot: this.deps.workspaceRoot(this.sessionId),
+        sessionId: this.sessionId,
+        agentId: this.agentId,
+        turnId,
+        stepId,
+        toolCallId: call.id,
+      });
       const parsedArgs = tool?.input.safeParse(call.args);
       let targets: string[] = [];
+      let targetError: { code: string; message: string } | undefined;
       let replay: ReplayKind = "unknown";
       if (tool !== undefined && parsedArgs?.success) {
         try {
-          targets = tool.targets(parsedArgs.data) ?? [];
-        } catch {
-          targets = [];
+          runWithToolAccess(access, () =>
+            assertToolEffectsAllowed(
+              tool.effectIntents?.(parsedArgs.data, {
+                workspaceRoot: this.deps.workspaceRoot(this.sessionId),
+              }) ?? [],
+              this.deps.workspaceRoot(this.sessionId),
+            ),
+          );
+          targets =
+            runWithToolAccess(access, () =>
+              tool.targets(parsedArgs.data, {
+                workspaceId: this.deps.workspaceId(this.sessionId),
+                workspaceRoot: this.deps.workspaceRoot(this.sessionId),
+                access,
+              }),
+            ) ?? [];
+        } catch (error) {
+          const code = (error as { code?: unknown } | null)?.code;
+          targetError = {
+            code: typeof code === "string" ? toToolErrorCode(code) : "INVALID_ARGUMENT",
+            message: error instanceof Error ? error.message : "无法解析工具目标，本次调用未执行",
+          };
         }
         try {
           replay =
@@ -2192,13 +3129,17 @@ class AgentActor {
       let execTimer: PausableTimeout | undefined;
       const ctx = {
         ...scope,
+        access,
+        toolTargets: targets,
         signal: AbortSignal.timeout(tool?.timeoutMs ?? 30000),
         toolCallId: call.id,
         turnId,
         stepId,
         role: agentRole,
         reads: this.reads,
-        backups: (this.deps.backups ?? new BackupService(this.deps.db)).bind(scope),
+        backups: runWithToolAccess(access, () =>
+          (this.deps.backups ?? new BackupService(this.deps.db)).bind(scope),
+        ),
         leases: this.deps.leases,
         agents: this.deps.agents,
         rawArgs: call.args,
@@ -2232,10 +3173,11 @@ class AgentActor {
           : {}),
       };
       let intentMeta: FileIntentMeta | undefined;
-      let metaError: { code: string; message: string } | undefined;
+      let metaError: { code: string; message: string } | undefined = targetError;
       let durationMs: number | undefined;
       try {
-        if (parsedArgs?.success) intentMeta = tool?.intentMeta?.(parsedArgs.data, ctx);
+        if (!targetError && parsedArgs?.success)
+          intentMeta = runWithToolAccess(access, () => tool?.intentMeta?.(parsedArgs.data, ctx));
       } catch (err) {
         // 保留原错误码（如越界路径 OUT_OF_WORKSPACE），未知异常按参数问题报告
         const code = (err as { code?: unknown } | null)?.code;
@@ -2264,7 +3206,12 @@ class AgentActor {
         error: { code: "INTERNAL", message: "工具未执行", retryable: false },
       };
       try {
-        if (metaError) {
+        if (call.inputError) {
+          result = {
+            status: "error",
+            error: { code: "INVALID_ARGUMENT", message: call.inputError, retryable: false },
+          };
+        } else if (metaError) {
           result = {
             status: "error",
             error: { code: metaError.code, message: metaError.message, retryable: false },
@@ -2290,6 +3237,27 @@ class AgentActor {
                 ...(issue?.path !== undefined && issue.path.length > 0
                   ? { field: issue.path.join(".") }
                   : {}),
+                hint: `本次工具调用未执行。共 ${parsed.error.issues.length} 处校验问题（数组下标从 0 开始）：\n${parsed.error.issues
+                  .map((item) => `${item.path.join(".") || "参数根节点"}: ${item.message}`)
+                  .join("\n")}`,
+                retryable: false,
+              },
+            };
+          } else if (
+            hasTaskContractRequirement(this.deps.db, this.sessionId, this.agentId, turnId) &&
+            (tool.externalTransport === true ||
+              (typeof tool.effect === "function"
+                ? (tool.effect as (args: unknown) => string)(parsed.data)
+                : tool.effect) === "external")
+          ) {
+            // Business external transfers have no contract authorization interface
+            // in this stage. Ordinary approval/remember is not such authorization.
+            // The model provider's existing request transport is not a tool effect.
+            result = {
+              status: "error",
+              error: {
+                code: "UNSUPPORTED_FEATURE",
+                message: "当前任务契约不支持业务外发授权；普通审批不能允许该操作。",
                 retryable: false,
               },
             };
@@ -2397,11 +3365,13 @@ class AgentActor {
                   ...activity,
                 });
               try {
-                result = await tool.execute(parsed.data, {
-                  ...ctx,
-                  signal,
-                  ...(approved ? { destructiveApproved: true } : {}),
-                });
+                result = await runWithToolAccess(access, () =>
+                  tool.execute(parsed.data, {
+                    ...ctx,
+                    signal,
+                    ...(approved ? { destructiveApproved: true } : {}),
+                  }),
+                );
                 durationMs = Date.now() - startedAt;
                 const questionId =
                   result.status === "ok" &&
@@ -2462,7 +3432,13 @@ class AgentActor {
                 result = {
                   status: "error",
                   error: {
-                    code: cancelled ? "CANCELLED" : timedOut ? "TIMEOUT" : "INTERNAL",
+                    code: cancelled
+                      ? "CANCELLED"
+                      : timedOut
+                        ? "TIMEOUT"
+                        : err instanceof TurnAccessError
+                          ? "INVALID_ARGUMENT"
+                          : "INTERNAL",
                     message: cancelled
                       ? this.abortReason
                       : timedOut
@@ -2502,7 +3478,100 @@ class AgentActor {
           .get(this.sessionId, this.agentId, call.id)
       )
         return "done";
+      if (call.name === "workbook_check" && parsedArgs && !parsedArgs.success) {
+        const binding = turnAccessBinding(this.deps.db, this.sessionId, this.agentId, turnId);
+        const taskId = harnessTaskId({
+          sessionId: this.sessionId,
+          agentId: this.agentId,
+          turnId,
+          ...binding,
+        });
+        log.append(this.sessionId, this.agentId, [
+          {
+            type: "harness.progress",
+            data: {
+              taskId,
+              kind: "attempt",
+              attemptKey: stableHarnessHash({
+                kind: "check_schema_invalid",
+                verification:
+                  call.args && typeof call.args === "object"
+                    ? (call.args as Record<string, unknown>).verification
+                    : undefined,
+                issues: parsedArgs.error.issues.map((issue) => ({
+                  code: issue.code,
+                  path: issue.path,
+                })),
+              }),
+              progressKey: harnessUsefulProgress(
+                harnessState(this.deps.db, this.sessionId, taskId),
+              ),
+              proofKeys: harnessUsefulProofs(harnessState(this.deps.db, this.sessionId, taskId)),
+              nonproductivePreflight: true,
+            },
+          },
+        ]);
+      }
+      const finalizing = tool?.finalizesTurn?.(call.args) === true;
+      const nativeDelivery = call.name === "deliver" || call.name === "present";
+      let hostFinalizationConflict = false;
+      if (
+        finalizing &&
+        nativeDelivery &&
+        result.status === "error" &&
+        result.error?.code === "VERSION_CONFLICT" &&
+        result.error.retryable === true
+      ) {
+        try {
+          hostFinalizationConflict = tool?.isHostFinalizationConflict?.(result) === true;
+        } catch {
+          /* fail closed */
+        }
+      }
+      // The callback authenticates the live result before normalization can clone it.
+      // Never accept a serialized marker as retry authority.
+      if (
+        nativeDelivery &&
+        result.data !== null &&
+        typeof result.data === "object" &&
+        !Array.isArray(result.data)
+      ) {
+        const data = { ...(result.data as Record<string, unknown>) };
+        delete data.__hostFinalizationConflict;
+        result = { ...result, data };
+      }
+      if (hostFinalizationConflict)
+        result = {
+          ...result,
+          data: {
+            ...(result.data !== null &&
+            typeof result.data === "object" &&
+            !Array.isArray(result.data)
+              ? (result.data as Record<string, unknown>)
+              : {}),
+            __hostFinalizationConflict: { version: 1, kind: "state_changed", turnId },
+          },
+        };
       result = withVocabularyCode(result);
+      let finalText: string | undefined;
+      if (finalizing && parsedArgs?.success && result.status === "ok") {
+        try {
+          finalText = tool?.finalReply?.(parsedArgs.data, result);
+          if (finalText === undefined) throw new Error("证据终稿没有返回服务端生成的文本");
+        } catch (error) {
+          result = {
+            status: "error",
+            error: {
+              code: "INTERNAL",
+              message: error instanceof Error ? error.message : "生成证据终稿失败",
+              retryable: false,
+            },
+          };
+        }
+      }
+      const stopped = this.stopRequested || this.interruptRequested;
+      const finalizationStatus = (result.data as { finalizationStatus?: unknown } | undefined)
+        ?.finalizationStatus;
       log.append(this.sessionId, this.agentId, [
         {
           type: "tool.result",
@@ -2514,10 +3583,68 @@ class AgentActor {
             ...(durationMs !== undefined ? { durationMs } : {}),
           },
         },
+        ...(finalText !== undefined && result.status === "ok" && !stopped
+          ? [
+              {
+                type: "model.output",
+                data: {
+                  stepId,
+                  text: finalText,
+                  sourceToolCallId: call.id,
+                  deliveryStatus: finalizationStatus === "incomplete" ? "incomplete" : "complete",
+                },
+              },
+              { type: "turn.completed", data: { turnId, reason: "stop" } },
+            ]
+          : finalizing && result.status !== "ok" && !hostFinalizationConflict
+            ? [
+                {
+                  type: "model.output",
+                  data: { stepId, withheldText: "", deliveryStatus: "rejected" },
+                },
+              ]
+            : []),
       ]);
       if (this.stopRequested || this.interruptRequested) return finishInterrupted(i + 1);
+      if (finalText !== undefined && result.status === "ok") return "done";
+      if (
+        finalizing &&
+        result.status !== "ok" &&
+        !hostFinalizationConflict &&
+        numericDeliveryState(this.deps.db, this.sessionId, this.agentId, turnId).rejected > 1
+      ) {
+        this.failNumericDelivery(turnId);
+        return "failed";
+      }
     }
     return "continue";
+  }
+
+  private failNumericDelivery(turnId: string): void {
+    if (accessDeliveryRequired(this.deps.db, this.sessionId, this.agentId, turnId)) {
+      this.completeAccessIncomplete(
+        turnId,
+        "本轮证据交付未完成：终稿仍未使用有效工具结果引用。已停止，已发生的文件操作不会自动撤销。",
+      );
+      return;
+    }
+    const message =
+      "数值证据交付未完成：终稿仍未使用有效工具结果引用。已停止本轮；工作簿改动不会自动撤销。";
+    this.deps.log.append(this.sessionId, this.agentId, [
+      {
+        type: "error.guidance",
+        data: {
+          kind: "unknown",
+          message,
+          actions: ["检查已完成的工作簿与工具结果", "继续核验后再交付"],
+          retryable: false,
+        },
+      },
+      {
+        type: "turn.failed",
+        data: { turnId, error: { kind: "unknown", message, retryable: false } },
+      },
+    ]);
   }
 
   private failTurn(turnId: string, error: ClassifiedError): void {
@@ -2539,6 +3666,26 @@ class AgentActor {
         this.agentId,
         "本轮已失败，该工具未执行",
       ),
+      ...(accessDeliveryRequired(this.deps.db, this.sessionId, this.agentId, turnId)
+        ? [
+            {
+              type: "model.output",
+              data: {
+                stepId: newId("stp"),
+                text:
+                  "本轮执行未完成。\n\n" +
+                  renderAccessFacts(
+                    turnAccessFacts(this.deps.db, {
+                      sessionId: this.sessionId,
+                      agentId: this.agentId,
+                      turnId,
+                    }),
+                  ),
+                deliveryStatus: "incomplete",
+              },
+            },
+          ]
+        : []),
       { type: "turn.failed", data: { turnId, error } },
     ]);
   }
@@ -2669,9 +3816,13 @@ export function recoverInterruptedAgents(deps: {
   for (const agent of running) {
     const intents = deps.db
       .prepare(
-        "SELECT tool_call_id, tool_name FROM open_intents WHERE session_id = ? AND agent_id = ? ORDER BY created_seq",
+        "SELECT tool_call_id, tool_name, created_seq FROM open_intents WHERE session_id = ? AND agent_id = ? ORDER BY created_seq",
       )
-      .all(agent.session_id, agent.id) as { tool_call_id: string; tool_name: string }[];
+      .all(agent.session_id, agent.id) as {
+      tool_call_id: string;
+      tool_name: string;
+      created_seq: number;
+    }[];
     const records: { type: string; data: unknown }[] = intents.map((it) => {
       const declared = deps.tools?.get(it.tool_name);
       const originalIntent = deps.db
@@ -2685,6 +3836,7 @@ export function recoverInterruptedAgents(deps: {
       const tool =
         declared && isResultPage(originalArgs) ? resultPageTool(declared, deps.db) : declared;
       let recovered: ToolResult | undefined;
+      let recoveryTurnId: string | undefined;
       if (tool?.recover) {
         // tool.intent 记录里有当时解析后的参数
         const intentRow = deps.db
@@ -2707,13 +3859,67 @@ export function recoverInterruptedAgents(deps: {
           }
         }
         try {
-          recovered = tool.recover({
-            sessionId: agent.session_id,
-            agentId: agent.id,
-            toolCallId: it.tool_call_id,
-            args,
-            intentMeta,
-          });
+          const intent = originalIntent
+            ? (JSON.parse(originalIntent.data) as { stepId?: string })
+            : undefined;
+          const step = intent?.stepId
+            ? (deps.db
+                .prepare(
+                  "SELECT json_extract(data,'$.turnId') AS turnId FROM session_log WHERE session_id=? AND agent_id=? AND type='step.started' AND json_extract(data,'$.stepId')=? ORDER BY seq DESC LIMIT 1",
+                )
+                .get(agent.session_id, agent.id, intent.stepId) as { turnId: string } | undefined)
+            : undefined;
+          recoveryTurnId = step?.turnId;
+          if (!step) {
+            const last = deps.db
+              .prepare(
+                "SELECT json_extract(data,'$.turnId') AS turnId FROM session_log WHERE session_id=? AND agent_id=? AND type='turn.started' ORDER BY seq DESC LIMIT 1",
+              )
+              .get(agent.session_id, agent.id) as { turnId: string } | undefined;
+            if (last && accessDeliveryRequired(deps.db, agent.session_id, agent.id, last.turnId))
+              throw new Error("受限恢复缺少原始步骤归属");
+          }
+          let workspaceRoot: string | undefined;
+          try {
+            workspaceRoot = (
+              deps.db
+                .prepare(
+                  "SELECT w.path FROM sessions s JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?",
+                )
+                .get(agent.session_id) as { path: string } | undefined
+            )?.path;
+          } catch {}
+          const access =
+            step && workspaceRoot
+              ? bindToolAccess({
+                  db: deps.db,
+                  log: deps.log,
+                  workspaceRoot,
+                  sessionId: agent.session_id,
+                  agentId: agent.id,
+                  turnId: step.turnId,
+                  toolCallId: it.tool_call_id,
+                })
+              : undefined;
+          if (
+            step &&
+            !access &&
+            accessDeliveryRequired(deps.db, agent.session_id, agent.id, step.turnId)
+          )
+            throw new Error("无法恢复受限任务的工作区");
+          const invoke = () =>
+            tool.recover!({
+              sessionId: agent.session_id,
+              agentId: agent.id,
+              toolCallId: it.tool_call_id,
+              args,
+              intentMeta,
+              intentSeq: it.created_seq,
+              workspaceRoot,
+              turnId: step?.turnId,
+              access,
+            });
+          recovered = access ? runWithToolAccess(access, invoke) : invoke();
         } catch {
           recovered = undefined;
         }
@@ -2727,6 +3933,63 @@ export function recoverInterruptedAgents(deps: {
           retryable: false,
         },
       };
+      // The recovery wrapper may not run when current access binding fails. An unsafe
+      // invocation with unknown outcome remains a task obligation, never basic chat.
+      let effect:
+        | ReturnType<Extract<ToolDefinition["effect"], (...args: never[]) => unknown>>
+        | ToolDefinition["effect"]
+        | undefined;
+      try {
+        effect =
+          tool &&
+          (typeof tool.effect === "function" ? tool.effect(originalArgs as never) : tool.effect);
+      } catch {
+        effect = "write";
+      }
+      const observedWrite =
+        effect !== "read" &&
+        ([
+          "workbook_edit",
+          "workbook_analyze",
+          "workbook_export",
+          "run_script",
+          "files",
+          "write",
+          "edit",
+        ].includes(it.tool_name) ||
+          it.tool_name.startsWith("mcp__"));
+      const hasReceipt = deps.db
+        .prepare(
+          "SELECT 1 FROM session_log WHERE session_id=? AND agent_id=? AND seq>? AND type='harness.event' AND json_extract(data,'$.kind')='artifact' AND json_extract(data,'$.artifact.toolCallId')=? LIMIT 1",
+        )
+        .get(agent.session_id, agent.id, it.created_seq, it.tool_call_id);
+      if (observedWrite && result.status !== "not_executed" && !hasReceipt) {
+        const turnId =
+          recoveryTurnId ??
+          (
+            deps.db
+              .prepare(
+                "SELECT json_extract(data,'$.turnId') AS turnId FROM session_log WHERE session_id=? AND agent_id=? AND type='turn.started' ORDER BY seq DESC LIMIT 1",
+              )
+              .get(agent.session_id, agent.id) as { turnId: string } | undefined
+          )?.turnId ??
+          "legacy";
+        const origin = turnAccessBinding(deps.db, agent.session_id, agent.id, turnId);
+        const taskId = harnessTaskId({
+          sessionId: agent.session_id,
+          agentId: agent.id,
+          turnId,
+          ...origin,
+        });
+        recordsNoopRecoveryGuard(
+          deps.log,
+          agent.session_id,
+          agent.id,
+          taskId,
+          it.tool_call_id,
+          it.tool_name,
+        );
+      }
       return {
         type: "tool.result",
         data: {
@@ -2762,4 +4025,37 @@ export function recoverInterruptedAgents(deps: {
     if (records.length > 0) deps.log.append(agent.session_id, agent.id, records);
   }
   return running.length + queuedOnly.length;
+}
+
+/** Metadata-only uncertainty record. No path access, checkpoint, rollback or replay. */
+function recordsNoopRecoveryGuard(
+  log: SessionLog,
+  sessionId: string,
+  agentId: string,
+  taskId: string,
+  toolCallId: string,
+  toolName: string,
+): void {
+  log.append(sessionId, agentId, [
+    {
+      type: "harness.event",
+      data: {
+        kind: "artifact",
+        artifact: {
+          id:
+            "hartifact_recovery_" + stableHarnessHash({ sessionId, taskId, toolCallId, toolName }),
+          taskId,
+          toolCallId,
+          path: "unresolved/" + toolName,
+          effect: "external",
+          execution: "uncertain",
+          persistence: "unknown",
+          footprint: ["*"],
+          validation: "unverified",
+          bindings: [],
+          dependencyGaps: ["RECOVERY_IDENTITY_OR_ACCESS_UNAVAILABLE"],
+        },
+      },
+    },
+  ]);
 }

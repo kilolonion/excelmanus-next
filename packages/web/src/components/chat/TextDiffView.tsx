@@ -31,8 +31,7 @@ const CONTEXT_COLLAPSE_THRESHOLD = 4;
 
 // ── diff 解析 ──────────────────────────────────────────
 
-function parseDiffLines(hunks: string[]): DiffLine[] {
-  const lines: DiffLine[] = [];
+function* parseDiffLines(hunks: Iterable<string>): Generator<DiffLine> {
   let oldLine = 0;
   let newLine = 0;
 
@@ -44,52 +43,60 @@ function parseDiffLines(hunks: string[]): DiffLine[] {
         oldLine = parseInt(match[1], 10);
         newLine = parseInt(match[2], 10);
       }
-      lines.push({ type: "hunk", content: raw });
+      yield { type: "hunk", content: raw };
     } else if (raw.startsWith("+")) {
-      lines.push({ type: "added", content: raw.slice(1), newLineNo: newLine });
+      yield { type: "added", content: raw.slice(1), newLineNo: newLine };
       newLine++;
     } else if (raw.startsWith("-")) {
-      lines.push({ type: "deleted", content: raw.slice(1), oldLineNo: oldLine });
+      yield { type: "deleted", content: raw.slice(1), oldLineNo: oldLine };
       oldLine++;
     } else {
       const content = raw.startsWith(" ") ? raw.slice(1) : raw;
-      lines.push({ type: "context", content, oldLineNo: oldLine, newLineNo: newLine });
+      yield { type: "context", content, oldLineNo: oldLine, newLineNo: newLine };
       oldLine++;
       newLine++;
     }
   }
-  return lines;
 }
 
 // ── 展示项：行 | 折叠标记 ──────────────────────────────
 
 type DisplayItem = { kind: "line"; line: DiffLine } | { kind: "hidden"; count: number };
 
-function buildDisplayItems(diffLines: DiffLine[]): DisplayItem[] {
-  const items: DisplayItem[] = [];
-  let i = 0;
-
-  while (i < diffLines.length) {
-    const line = diffLines[i];
-
-    if (line.type === "context") {
-      const start = i;
-      while (i < diffLines.length && diffLines[i].type === "context") i++;
-      const count = i - start;
-
-      if (count <= CONTEXT_COLLAPSE_THRESHOLD) {
-        for (let j = start; j < i; j++) {
-          items.push({ kind: "line", line: diffLines[j] });
-        }
-      } else {
-        items.push({ kind: "line", line: diffLines[start] });
-        items.push({ kind: "hidden", count: count - 2 });
-        items.push({ kind: "line", line: diffLines[i - 1] });
-      }
+function* buildDisplayItems(diffLines: Iterable<DiffLine>): Generator<DisplayItem> {
+  let context: DiffLine[] = [];
+  let contextCount = 0;
+  let lastContext: DiffLine | undefined;
+  function* flushContext(): Generator<DisplayItem> {
+    if (contextCount > CONTEXT_COLLAPSE_THRESHOLD) {
+      yield { kind: "line", line: context[0] };
+      yield { kind: "hidden", count: contextCount - 2 };
+      yield { kind: "line", line: lastContext! };
     } else {
-      items.push({ kind: "line", line });
-      i++;
+      for (const line of context) yield { kind: "line", line };
     }
+    context = [];
+    contextCount = 0;
+    lastContext = undefined;
+  }
+  for (const line of diffLines) {
+    if (line.type === "context") {
+      if (contextCount < CONTEXT_COLLAPSE_THRESHOLD) context.push(line);
+      contextCount++;
+      lastContext = line;
+    } else {
+      if (contextCount) yield* flushContext();
+      yield { kind: "line", line };
+    }
+  }
+  if (contextCount) yield* flushContext();
+}
+
+function readDisplayItems(hunks: Iterable<string>, limit: number): DisplayItem[] {
+  const items: DisplayItem[] = [];
+  for (const item of buildDisplayItems(parseDiffLines(hunks))) {
+    items.push(item);
+    if (items.length >= limit) break;
   }
   return items;
 }
@@ -97,22 +104,25 @@ function buildDisplayItems(diffLines: DiffLine[]): DisplayItem[] {
 // ── 组件 ────────────────────────────────────────────────
 
 export function TextDiffView({ data, defaultOpen = false }: TextDiffViewProps) {
-  const diffLines = useMemo(() => parseDiffLines(data.hunks), [data.hunks]);
-  const displayItems = useMemo(() => buildDisplayItems(diffLines), [diffLines]);
-  const filename = fileName(data.path) || data.path;
-  const [mode, setMode] = useState<DisplayMode>(
-    defaultOpen ? (displayItems.length > PREVIEW_ITEM_COUNT ? "preview" : "expanded") : "collapsed",
+  const [mode, setMode] = useState<DisplayMode>(defaultOpen ? "preview" : "collapsed");
+  const displayItems = useMemo(
+    () =>
+      mode === "collapsed"
+        ? []
+        : readDisplayItems(data.hunks, mode === "preview" ? PREVIEW_ITEM_COUNT + 1 : Infinity),
+    [data.hunks, mode],
   );
+  const filename = fileName(data.path) || data.path;
 
   const previewItems = useMemo(() => displayItems.slice(0, PREVIEW_ITEM_COUNT), [displayItems]);
   const hasMoreThanPreview = displayItems.length > PREVIEW_ITEM_COUNT;
 
   const handleHeaderClick = useCallback(() => {
     setMode((m) => {
-      if (m === "collapsed") return hasMoreThanPreview ? "preview" : "expanded";
+      if (m === "collapsed") return "preview";
       return "collapsed";
     });
-  }, [hasMoreThanPreview]);
+  }, []);
 
   const itemsToRender = mode === "preview" ? previewItems : displayItems;
 

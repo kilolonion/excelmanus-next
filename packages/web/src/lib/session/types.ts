@@ -7,6 +7,7 @@ import type {
   ContextRef,
   DispatchMode,
   ErrorGuidance,
+  PendingInteraction,
   PresentPayload,
   ToolResult,
   ToolResultStatus,
@@ -53,6 +54,7 @@ export interface TurnSegment {
   /** 本轮模型调用次数。 */
   steps: number;
   reason?: string;
+  cancellationCause?: "user";
   failure?: ClassifiedError;
   endedAt?: string;
 }
@@ -132,6 +134,7 @@ export interface DocChange {
   structural: string[];
   added: string[];
   backupPath?: string;
+  metadataLimited?: boolean;
 }
 
 export type Block =
@@ -276,6 +279,10 @@ export interface SessionState {
   permissionMode: string | null;
   title: string | null;
   roster: Record<string, AgentEntry>;
+  /** 详情快照里的未决交互身份，保留历史窗口外的阻塞来源，不虚构交互卡。 */
+  pendingInteractions?: PendingInteraction[];
+  /** 逐步 usage.updated 按代理和轮次累计，回放时也使用同一口径。 */
+  usageByTurn: Record<string, Record<string, Usage>>;
   timelines: Record<string, TimelineItem[]>;
   /** 已受理但尚未应用（或已撤回/失败）的用户消息，按代理。 */
   dispatches: Record<string, UserItem>;

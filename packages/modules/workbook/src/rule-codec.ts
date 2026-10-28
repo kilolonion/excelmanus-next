@@ -1,9 +1,15 @@
 // Conditional formats and data validation use the engine's native resources.
 // Unknown original rules remain untouched; unsupported new engine rules fail closed.
-import { indexToCol, parseRange } from "@excelmanus/core";
+import {
+  dataValidationXmlErrorStyle,
+  indexToCol,
+  normalizeDataValidationRule,
+  parseRange,
+} from "@excelmanus/core";
 import { FileOperationError } from "@excelmanus/kernel";
 import type { IWorkbookData } from "@univerjs/core";
 import { XMLParser } from "fast-xml-parser";
+import { exportVisualRule, importVisualRule } from "./cf-visual-codec.ts";
 import { bytesOf, elements, escapeXml, textOf, xmlAttrs } from "./xml.ts";
 
 export const CF_RESOURCE = "SHEET_CONDITIONAL_FORMATTING_PLUGIN";
@@ -109,10 +115,14 @@ export function importRules(
           const attrs = xmlAttrs(raw.open),
             parsed = parser.parse(raw.raw).cfRule;
           const style = dxfStyle(dxfs[Number(attrs.dxfId)]?.raw ?? "<dxf/>");
-          if (!style) continue;
+          if (!style && !["colorScale", "dataBar", "iconSet"].includes(attrs.type ?? "")) continue;
           let rule: Rule;
           const formulas = arr(parsed.formula).map(String);
-          if (attrs.type === "expression")
+          if (["colorScale", "dataBar", "iconSet"].includes(attrs.type ?? "")) {
+            const visual = importVisualRule(attrs.type!, parsed);
+            if (!visual) continue;
+            rule = visual;
+          } else if (attrs.type === "expression")
             rule = {
               type: "highlightCell",
               subType: "formula",
@@ -159,26 +169,30 @@ export function importRules(
         if (!dvTypes.has(attrs.type ?? "") || !attrs.sqref) continue;
         const formula1 = String(parsed.formula1 ?? "");
         dv[sid] ??= [];
-        dv[sid].push({
-          uid: attrs["em:id"] ?? id,
-          type: attrs.type,
-          ranges: rangesOf(attrs.sqref),
-          operator: attrs.operator ?? "between",
-          formula1:
-            attrs.type === "list" && /^".*"$/.test(formula1)
-              ? formula1.slice(1, -1).replaceAll('""', '"')
-              : formula1,
-          formula2: String(parsed.formula2 ?? ""),
-          allowBlank: attrs.allowBlank === "1",
-          showErrorMessage: attrs.showErrorMessage === "1",
-          showInputMessage: attrs.showInputMessage === "1",
-          showDropDown: attrs.showDropDown !== "1",
-          error: attrs.error ?? "",
-          errorTitle: attrs.errorTitle ?? "",
-          errorStyle: attrs.errorStyle ?? "stop",
-          prompt: attrs.prompt ?? "",
-          promptTitle: attrs.promptTitle ?? "",
-        });
+        dv[sid].push(
+          normalizeDataValidationRule({
+            uid: attrs["em:id"] ?? id,
+            type: attrs.type,
+            ranges: rangesOf(attrs.sqref),
+            operator: attrs.operator ?? "between",
+            formula1:
+              attrs.type === "list" && formula1
+                ? /^"[\s\S]*"$/.test(formula1)
+                  ? formula1.slice(1, -1).replaceAll('""', '"')
+                  : `=${formula1.replace(/^=/, "")}`
+                : formula1,
+            formula2: String(parsed.formula2 ?? ""),
+            allowBlank: attrs.allowBlank === "1",
+            showErrorMessage: attrs.showErrorMessage === "1",
+            showInputMessage: attrs.showInputMessage === "1",
+            showDropDown: attrs.showDropDown !== "1",
+            error: attrs.error ?? "",
+            errorTitle: attrs.errorTitle ?? "",
+            errorStyle: attrs.errorStyle ?? "stop",
+            prompt: attrs.prompt ?? "",
+            promptTitle: attrs.promptTitle ?? "",
+          }),
+        );
       } catch {
         /* Unrepresentable original rule is preserved. */
       }
@@ -200,7 +214,7 @@ function appendDxf(parts: Record<string, Uint8Array>, path: string, style: Rule)
   };
   if (Object.keys(style).some((k) => !["bg", "cl", "bl"].includes(k)))
     unsupported("该条件格式样式尚不能保真导出");
-  const raw = `<dxf>${style.bl !== undefined || style.cl ? `<font>${style.bl !== undefined ? `<b val="${style.bl ? 1 : 0}"/>` : ""}${style.cl ? `<color rgb="${color(style.cl.rgb)}"/>` : ""}</font>` : ""}${style.bg ? `<fill><patternFill patternType="solid"><fgColor rgb="${color(style.bg.rgb)}"/><bgColor indexed="64"/></patternFill></fill>` : ""}</dxf>`;
+  const raw = `<dxf>${style.bl !== undefined || style.cl ? `<font>${style.bl !== undefined ? `<b val="${style.bl ? 1 : 0}"/>` : ""}${style.cl ? `<color rgb="${color(style.cl.rgb)}"/>` : ""}</font>` : ""}${style.bg ? `<fill><patternFill patternType="solid"><fgColor rgb="${color(style.bg.rgb)}"/></patternFill></fill>` : ""}</dxf>`;
   const same = current.findIndex((d) => d.raw === raw);
   if (same >= 0) return same;
   const replacement = `<dxfs count="${current.length + 1}">${old?.inner ?? ""}${raw}</dxfs>`;
@@ -265,6 +279,11 @@ export function exportRules(
         let fragments = "";
         for (const item of next) {
           const rule = item.rule as Rule;
+          if (rule && ["colorScale", "dataBar", "iconSet"].includes(rule.type)) {
+            const content = exportVisualRule(rule);
+            fragments += `<conditionalFormatting sqref="${escapeXml(rangeText(item.ranges))}" xmlns:em="urn:excelmanus:rules" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" mc:Ignorable="em" em:managed="1" em:id="${escapeXml(item.cfId)}"><cfRule type="${rule.type}" priority="${++priority}"${item.stopIfTrue ? ' stopIfTrue="1"' : ""}>${content}</cfRule></conditionalFormatting>`;
+            continue;
+          }
           if (!rule || rule.type !== "highlightCell") unsupported("该条件格式类型尚不能保真导出");
           const dxf = appendDxf(parts, stylesPart, rule.style ?? {});
           let type: string,
@@ -300,13 +319,20 @@ export function exportRules(
         for (const rule of next) {
           if (!dvTypes.has(rule.type)) unsupported("该数据验证类型尚不能保真导出");
           const attrs = [`type="${rule.type}"`, `sqref="${escapeXml(rangeText(rule.ranges))}"`];
-          if (rule.operator && operators.has(rule.operator))
+          if (
+            rule.type !== "list" &&
+            rule.type !== "custom" &&
+            rule.operator &&
+            operators.has(rule.operator)
+          )
             attrs.push(`operator="${rule.operator}"`);
           for (const key of ["allowBlank", "showErrorMessage", "showInputMessage"] as const)
             if (rule[key] !== undefined) attrs.push(`${key}="${rule[key] ? 1 : 0}"`);
           if (rule.showDropDown !== undefined)
             attrs.push(`showDropDown="${rule.showDropDown ? 0 : 1}"`);
-          for (const key of ["error", "errorTitle", "errorStyle", "prompt", "promptTitle"] as const)
+          const errorStyle = dataValidationXmlErrorStyle(rule.errorStyle);
+          if (errorStyle) attrs.push(`errorStyle="${errorStyle}"`);
+          for (const key of ["error", "errorTitle", "prompt", "promptTitle"] as const)
             if (rule[key]) attrs.push(`${key}="${escapeXml(rule[key])}"`);
           let f1 = String(rule.formula1 ?? "");
           if (rule.type === "list" && !f1.startsWith("=")) f1 = `"${f1.replaceAll('"', '""')}"`;

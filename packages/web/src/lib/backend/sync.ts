@@ -2,7 +2,7 @@
 // 主题由各 store 显式订阅/退订；本端编辑断线时不自动重发（11 §3.4）。
 
 import { type ClientMessage, ServerMessage } from "@excelmanus/protocol";
-import { wsUrl } from "./api";
+import { wsUrl } from "./api.js";
 
 export interface SyncClientOptions {
   ticket(): Promise<string>;

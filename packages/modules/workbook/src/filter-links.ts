@@ -14,6 +14,37 @@ import {
 export const FILTER_RESOURCE = "SHEET_FILTER_PLUGIN";
 type Parts = Record<string, Uint8Array>;
 type Mapping = Record<string, { path: string }>;
+const numericOperators = new Set([
+  "equal",
+  "notEqual",
+  "greaterThan",
+  "greaterThanOrEqual",
+  "lessThan",
+  "lessThanOrEqual",
+]);
+function numericMatch(value: unknown, rule: { operator?: string; val: string | number }): boolean {
+  if (value === null || value === undefined || value === "" || typeof value === "boolean")
+    return false;
+  const n = typeof value === "number" ? value : Number(value),
+    target = Number(rule.val);
+  if (!Number.isFinite(n) || !Number.isFinite(target)) return false;
+  switch (rule.operator ?? "equal") {
+    case "equal":
+      return n === target;
+    case "notEqual":
+      return n !== target;
+    case "greaterThan":
+      return n > target;
+    case "greaterThanOrEqual":
+      return n >= target;
+    case "lessThan":
+      return n < target;
+    case "lessThanOrEqual":
+      return n <= target;
+    default:
+      return false;
+  }
+}
 const relPath = (path: string) => path.replace(/\/([^/]+)$/, "/_rels/$1.rels");
 const read = (parts: Parts, path: string) => (parts[path] ? textOf(parts[path]) : "");
 const ranges = (ref: string) => {
@@ -40,14 +71,32 @@ export function importFilterLinks(
     const filter = elements(xml, "autoFilter")[0];
     if (filter) {
       const ref = xmlAttrs(filter.open).ref;
+      const customRules = elements(filter.inner, "customFilter").map((e) => xmlAttrs(e.open));
+      const supportedCustom = customRules.every(
+        (r) =>
+          numericOperators.has(r.operator ?? "equal") &&
+          !!r.val?.trim() &&
+          Number.isFinite(Number(r.val)),
+      );
       if (
         ref &&
-        !/<(?:customFilters|dynamicFilter|colorFilter|iconFilter|top10|dateGroupItem|extLst)\b/.test(
-          filter.inner,
-        )
+        supportedCustom &&
+        !/<(?:dynamicFilter|colorFilter|iconFilter|top10|dateGroupItem|extLst)\b/.test(filter.inner)
       ) {
         const range = ranges(ref),
           columns = elements(filter.inner, "filterColumn").map((column) => {
+            const custom = elements(column.inner, "customFilters")[0];
+            if (custom)
+              return {
+                colId: range.startColumn + Number(xmlAttrs(column.open).colId),
+                customFilters: {
+                  ...(xmlAttrs(custom.open).and === "1" ? { and: 1 } : {}),
+                  customFilters: elements(custom.inner, "customFilter").map((e) => {
+                    const a = xmlAttrs(e.open);
+                    return { operator: a.operator ?? "equal", val: Number(a.val) };
+                  }),
+                },
+              };
             const f = elements(column.inner, "filters")[0];
             return {
               colId: range.startColumn + Number(xmlAttrs(column.open).colId),
@@ -63,9 +112,15 @@ export function importFilterLinks(
             if (
               columns.some((c) => {
                 const value = sheet.cellData?.[row]?.[c.colId]?.v;
+                if (c.customFilters) {
+                  const tests = c.customFilters.customFilters.map((rule) =>
+                    numericMatch(value, rule),
+                  );
+                  return !(c.customFilters.and ? tests.every(Boolean) : tests.some(Boolean));
+                }
                 return value === null || value === undefined || value === ""
-                  ? !c.filters.blank
-                  : !c.filters.filters.includes(String(value));
+                  ? !c.filters!.blank
+                  : !c.filters!.filters.includes(String(value));
               })
             ) {
               cachedFilteredOut.push(row);
@@ -128,8 +183,30 @@ export function exportFilterLinks(
       if (filter) {
         const columns = (filter.filterColumns ?? [])
           .map((column: any) => {
-            if (column.customFilters || column.colorFilters)
-              throw new FileOperationError("UNSUPPORTED_FEATURE", "当前筛选写回支持枚举值和空白项");
+            if (column.colorFilters)
+              throw new FileOperationError(
+                "UNSUPPORTED_FEATURE",
+                "当前筛选写回支持枚举值、空白项和数值比较",
+              );
+            if (column.customFilters) {
+              const rules = column.customFilters.customFilters;
+              if (
+                !Array.isArray(rules) ||
+                rules.length < 1 ||
+                rules.length > 2 ||
+                rules.some(
+                  (r: any) =>
+                    !numericOperators.has(r.operator ?? "equal") ||
+                    String(r.val).trim() === "" ||
+                    !Number.isFinite(Number(r.val)),
+                )
+              )
+                throw new FileOperationError(
+                  "UNSUPPORTED_FEATURE",
+                  "当前自定义筛选写回仅支持数值比较",
+                );
+              return `<filterColumn colId="${column.colId - filter.ref.startColumn}"><customFilters${column.customFilters.and ? ' and="1"' : ""}>${rules.map((r: any) => `<customFilter operator="${r.operator ?? "equal"}" val="${Number(r.val)}"/>`).join("")}</customFilters></filterColumn>`;
+            }
             return `<filterColumn colId="${column.colId - filter.ref.startColumn}"><filters${column.filters?.blank ? ' blank="1"' : ""}>${(column.filters?.filters ?? []).map((v: string) => `<filter val="${escapeXml(v)}"/>`).join("")}</filters></filterColumn>`;
           })
           .join("");

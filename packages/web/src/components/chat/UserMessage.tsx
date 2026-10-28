@@ -1,3 +1,4 @@
+import { formatClock } from "@/lib/message-time";
 // 用户消息气泡：点击编辑后从这里重新开始；附带的选区与图片、派发状态（排队 / 插话 / 失败）一并显示。
 
 import type { AttachmentRef, ContextRef, DispatchMode } from "@excelmanus/protocol";
@@ -20,8 +21,8 @@ import {
   X,
 } from "lucide-react";
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { acquireAttachmentUrl } from "@/lib/attachment-urls";
 import { cn } from "@/lib/utils";
-import { attachmentUrl } from "@/stores/chat-store";
 import { focusRange } from "@/stores/workbook-store";
 import { MentionHighlighter } from "./MentionHighlighter";
 
@@ -34,24 +35,18 @@ const MODE_LABEL: Partial<Record<DispatchMode, string>> = {
   interrupt: "打断后发送",
 };
 
-function formatClock(at?: string): string | null {
-  if (!at) return null;
-  const date = new Date(at);
-  return Number.isNaN(date.getTime())
-    ? null
-    : date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
-}
-
 function AttachmentThumb({ attachment }: { attachment: AttachmentRef }) {
   const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
-    if (attachment.mediaType.startsWith("image/"))
-      void attachmentUrl(attachment.sha256)
-        .then((u) => alive && setUrl(u))
-        .catch(() => undefined);
+    setUrl(null);
+    const preview = attachment.mediaType.startsWith("image/")
+      ? acquireAttachmentUrl(attachment.sha256)
+      : null;
+    void preview?.url.then((u) => alive && setUrl(u)).catch(() => undefined);
     return () => {
       alive = false;
+      preview?.release();
     };
   }, [attachment.sha256, attachment.mediaType]);
   if (!url)
@@ -125,8 +120,9 @@ export const UserMessage = React.memo(function UserMessage({
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 320)}px`;
-    el.style.overflowY = el.scrollHeight > 320 ? "auto" : "hidden";
+    const naturalHeight = el.scrollHeight;
+    el.style.height = `${Math.min(naturalHeight, 320)}px`;
+    el.style.overflowY = naturalHeight > 320 ? "auto" : "hidden";
   }, []);
   useLayoutEffect(() => {
     if (editing) resize();

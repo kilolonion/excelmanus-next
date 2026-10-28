@@ -3,7 +3,7 @@
 import { getIsMobile } from "@/hooks/use-mobile";
 import { insertIntoComposer } from "@/stores/chat-store";
 import {
-  composerContext,
+  dismissContext,
   pinRange,
   pinSelection,
   setFullView,
@@ -16,6 +16,8 @@ import { type AskKind, askPrompt } from "./ask-actions";
 export const COMPOSER_SELECTOR = "[data-composer-input]";
 
 export function focusComposer(): void {
+  // 聚焦表格视图不再把对话挤成窄列；提问时返回对话侧栏布局。
+  if (useWorkbookStore.getState().fullView) setFullView(false);
   // 手机上表格与对话不同屏：先回到对话
   if (getIsMobile()) {
     setFullView(false);
@@ -30,8 +32,10 @@ export function askAgent(kind: AskKind, opts: { range?: string } = {}): void {
   const st = useWorkbookStore.getState();
   const doc = st.doc;
   if (!doc) return;
-  const range = opts.range ?? composerContext(st)?.range ?? null;
+  // 表格内入口针对当前工作簿，不能把输入框钉住的另一份文件的区域移植过来。
+  const range = opts.range ?? (st.selection?.docId === doc.docId ? st.selection.range : null);
   if (range) pinRange(range);
+  else dismissContext();
   insertIntoComposer(askPrompt(kind, { path: doc.path, range }), true);
   focusComposer();
 }

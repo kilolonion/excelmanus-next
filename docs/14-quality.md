@@ -49,3 +49,5 @@ CI 在每次推送和 PR 时运行，本地用 `pnpm check:all` 一次跑完。
 ## 5. 记录
 
 不要求验收记录。完成情况看代码和 [backlog](backlog.md)；`docs/acceptance/` 是历史存档，不再新增。
+
+许可证扫描使用 packageManager 锁定的 pnpm 10.34.7，扫描脚本复用启动它的同一 CLI（避免 PATH 上旧 pnpm 将 URL 依赖解析为 xlsx@undefined）。已有安装的缓存索引不完整时，先用该版本运行 `pnpm fetch --force --ignore-scripts` 重新获取锁定依赖，再执行 `pnpm check:licenses`；不得跳过 URL 包、伪造索引或放宽白名单。

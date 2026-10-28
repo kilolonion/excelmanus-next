@@ -14,11 +14,13 @@ import {
   RotateCcw,
   Trash2,
 } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
+import { BackupPreviewButton } from "@/components/files/BackupPreviewButton";
 import { OverlayCard, OverlayCardBody, OverlayCardHeader } from "@/components/ui/overlay-card";
 import { api, errorMessage } from "@/lib/backend/api";
 import { classifyWorkspaceFile } from "@/lib/file-kind";
+import { findSessionSummary } from "@/lib/session-list-index";
 import { normalizePath, samePath } from "@/lib/paths";
 import { useChatStore } from "@/stores/chat-store";
 import { selectSession, useSessionStore } from "@/stores/session-store";
@@ -29,7 +31,7 @@ import {
   restoreBackupWithConfirm,
   saveBackupAs,
 } from "./file-actions";
-import { formatBytes, formatTime } from "./file-tree-helpers";
+import { createFileTimeFormatter, formatBytes, formatTime } from "./file-tree-helpers";
 import { SESSION_MARK_LABEL, useSessionFileMarks } from "./session-file-marks";
 
 const KIND_LABELS: Record<string, string> = {
@@ -45,23 +47,35 @@ interface FileInfoDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-export function BackupRow({ backup, onChanged }: { backup: BackupEntry; onChanged: () => void }) {
-  const session = useSessionStore((s) => s.sessions.find((x) => x.id === backup.sessionId));
+export function BackupRow({
+  backup,
+  onChanged,
+  formatTimestamp = formatTime,
+}: {
+  backup: BackupEntry;
+  onChanged: () => void;
+  formatTimestamp?: (iso: string | undefined) => string;
+}) {
+  const workspaceId = useChatStore((s) => s.workspaceId);
+  const session = useSessionStore((s) => findSessionSummary(s.sessions, backup.sessionId));
   return (
     <div className="group flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs hover:bg-muted/50">
       <History className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
       <div className="min-w-0 flex-1">
         <div className="truncate text-foreground/90">
-          {formatTime(backup.createdAt)} · {formatBytes(backup.size)}
+          {formatTimestamp(backup.createdAt)} · {formatBytes(backup.size)}
         </div>
         <div className="truncate text-[10px] text-muted-foreground">
-          {session
-            ? `由「${session.title?.trim() || "未命名对话"}」产生`
-            : backup.sessionId
-              ? "产生它的对话已删除"
-              : "文件操作前自动备份"}
+          {backup.sourceKind === "user" || backup.sessionId === "user"
+            ? "手动操作前自动备份"
+            : session
+              ? `由「${session.title?.trim() || "未命名对话"}」产生`
+              : backup.sessionId
+                ? "来源对话暂不可用"
+                : "文件操作前自动备份"}
         </div>
       </div>
+      <BackupPreviewButton workspaceId={workspaceId ?? ""} entry={backup} />
       <button
         type="button"
         aria-label="另存备份"
@@ -121,6 +135,7 @@ function eventText(e: FileEvent): { icon: ReactNode; title: string } {
 
 /** 来源与修改历史（新到旧）：谁在哪个对话里改了哪些区域。点对话名跳过去。 */
 function FileHistorySection({ path }: { path: string }) {
+  const formatTimestamp = createFileTimeFormatter();
   const workspaceId = useChatStore((s) => s.workspaceId);
   const [events, setEvents] = useState<FileEvent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -177,7 +192,7 @@ function FileHistorySection({ path }: { path: string }) {
                       ) : null}
                     </span>
                     <span className="ml-auto flex-shrink-0 text-[10.5px] tabular-nums text-muted-foreground">
-                      {formatTime(e.at)}
+                      {formatTimestamp(e.at)}
                     </span>
                   </div>
                   {(ranges.length > 0 || e.sessionId) && (
@@ -212,27 +227,41 @@ function FileHistorySection({ path }: { path: string }) {
 }
 
 export function FileInfoDialog({ entry, onOpenChange }: FileInfoDialogProps) {
+  const formatTimestamp = createFileTimeFormatter();
   const [backups, setBackups] = useState<BackupEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const marks = useSessionFileMarks();
   const path = entry?.path ?? "";
+  const workspaceId = useSessionStore((s) => s.activeWorkspaceId);
+  const scope = JSON.stringify([workspaceId, path]);
+  const activeScope = useRef<string | null>(scope);
+  const request = useRef(0);
+  activeScope.current = scope;
 
   const load = useCallback(async () => {
-    if (!path) return;
+    if (!path || activeScope.current !== scope) return;
+    const id = ++request.current;
     setError(null);
     try {
       const all = await listFileBackups();
+      if (id !== request.current || activeScope.current !== scope) return;
       setBackups(all.filter((b) => samePath(b.originalPath, path)));
     } catch (err) {
+      if (id !== request.current || activeScope.current !== scope) return;
       setBackups([]);
       setError(errorMessage(err, "备份列表加载失败"));
     }
-  }, [path]);
+  }, [path, scope]);
 
   useEffect(() => {
+    activeScope.current = scope;
     setBackups(null);
     void load();
-  }, [load]);
+    return () => {
+      request.current += 1;
+      activeScope.current = null;
+    };
+  }, [load, scope]);
 
   const mark = entry ? marks.get(normalizePath(entry.path)) : undefined;
 
@@ -261,11 +290,11 @@ export function FileInfoDialog({ entry, onOpenChange }: FileInfoDialogProps) {
                 <span className="text-muted-foreground">大小</span>
                 <span>{formatBytes(entry.size)}</span>
                 <span className="text-muted-foreground">修改时间</span>
-                <span>{formatTime(entry.modifiedAt)}</span>
+                <span>{formatTimestamp(entry.modifiedAt)}</span>
                 {entry.openedAt && (
                   <>
                     <span className="text-muted-foreground">最近打开</span>
-                    <span>{formatTime(entry.openedAt)}</span>
+                    <span>{formatTimestamp(entry.openedAt)}</span>
                   </>
                 )}
                 {mark && (
@@ -312,7 +341,12 @@ export function FileInfoDialog({ entry, onOpenChange }: FileInfoDialogProps) {
               ) : (
                 <div className="-mx-2 max-h-[min(40vh,280px)] overflow-y-auto">
                   {backups.map((b) => (
-                    <BackupRow key={b.id} backup={b} onChanged={() => void load()} />
+                    <BackupRow
+                      key={b.id}
+                      backup={b}
+                      onChanged={() => void load()}
+                      formatTimestamp={formatTimestamp}
+                    />
                   ))}
                 </div>
               )}

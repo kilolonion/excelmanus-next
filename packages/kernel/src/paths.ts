@@ -4,7 +4,15 @@
 // 每一层的 .excelmanus/（含大小写/Unicode 折叠别名）与数据目录对代理不可见。
 
 import { lstatSync, realpathSync } from "node:fs";
-import { isAbsolute, join, normalize, relative, sep } from "node:path";
+import { isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
+import { taskContractState, type ContractAccessContext } from "./task-contract.ts";
+
+import {
+  assertPhysicalToolAccess,
+  assertToolPathAccess,
+  currentToolAccess,
+  markUnscopedAccess,
+} from "./tool-access.ts";
 
 export class PathSafetyError extends Error {
   readonly code: "OUT_OF_WORKSPACE" | "NOT_FOUND";
@@ -82,6 +90,14 @@ export function resolveWorkspacePath(
   workspaceRoot: string,
   input: string,
 ): { abs: string; rel: string } {
+  return resolveWorkspacePathInternal(workspaceRoot, input, false);
+}
+
+/** Private mode is reachable only from the persisted pending-confirmation inspection below. */
+function resolveWorkspacePathInternal(
+  workspaceRoot: string, input: string, pendingInspection: boolean,
+): { abs: string; rel: string } {
+  if (!pendingInspection) assertToolPathAccess(input, workspaceRoot);
   if (typeof input !== "string" || input.length === 0) {
     throw new PathSafetyError("NOT_FOUND", "路径为空");
   }
@@ -111,6 +127,10 @@ export function resolveWorkspacePath(
 
   // 规范路径：realpathSync.native 返回磁盘上的真实拼写（大小写、Unicode 别名都归一），
   // 使同一物理文件只有一个 rel（文档 actor、备份、租约以此为键）。
+  if (!pendingInspection) {
+    markUnscopedAccess();
+    assertPhysicalToolAccess(input, workspaceRoot);
+  }
   const rootReal = realpathSync.native(workspaceRoot);
   let resolved = rootReal;
   let consumed = 0;
@@ -123,6 +143,12 @@ export function resolveWorkspacePath(
     } catch {
       break; // 不存在：更深的段必然也不存在
     }
+    if (
+      st.isSymbolicLink() &&
+      (pendingInspection || (currentToolAccess() &&
+      currentToolAccess()?.binding().decision.kind !== "unbounded"))
+    )
+      throw new PathSafetyError("OUT_OF_WORKSPACE", "受限任务不跟随符号链接");
     let real: string;
     try {
       real = realpathSync.native(candidate);
@@ -145,7 +171,48 @@ export function resolveWorkspacePath(
     throw new PathSafetyError("OUT_OF_WORKSPACE", "路径越出工作区");
   }
   rejectInternal(rootReal, abs);
-  return { abs, rel: relative(rootReal, abs).split(sep).join("/") };
+  const rel = relative(rootReal, abs).split(sep).join("/");
+  if (!pendingInspection) assertToolPathAccess(rel || ".", workspaceRoot);
+  return { abs, rel };
+}
+
+/**
+ * Host-only bounded metadata inspection for a current persisted confirmation item.
+ * No caller-selected path, content, directory enumeration, or general guard bypass is exposed.
+ */
+export function inspectPendingContractTargetIdentity(
+  ctx: ContractAccessContext & { workspaceRoot: string; contractExpected: true },
+  permissionId: string,
+): { path: string; exists: false } | {
+  path: string; exists: true; device: string; inode: string;
+  size: string; mtime: string; ctime: string;
+} {
+  const access = currentToolAccess();
+  if (access && (access.db !== ctx.db || access.sessionId !== ctx.sessionId ||
+      access.originAgentId !== ctx.originAgentId || access.originTurnId !== ctx.originTurnId ||
+      resolve(access.workspaceRoot) !== resolve(ctx.workspaceRoot)))
+    throw new PathSafetyError("OUT_OF_WORKSPACE", "确认资源检查不能跨任务或工作区");
+  const contract = taskContractState(ctx);
+  const permission = contract?.permissions.find((item) => item.id === permissionId);
+  if (!permission || permission.state !== "needs_confirmation")
+    throw new PathSafetyError("NOT_FOUND", "该权限不是当前持久待确认差异");
+  if (permission.target.match !== "exact")
+    throw new PathSafetyError("OUT_OF_WORKSPACE", "目录树扩权暂不支持；请逐个明确资源确认");
+  const { abs, rel } = resolveWorkspacePathInternal(ctx.workspaceRoot, permission.target.path, true);
+  const rootNames = permission.operation === "enumerate" && permission.target.path === "." &&
+    permission.target.match === "exact";
+  if ((rootNames ? rel !== "" : rel !== permission.target.path))
+    throw new PathSafetyError("OUT_OF_WORKSPACE", "确认路径必须是规范工作区相对路径");
+  try {
+    const st = lstatSync(abs, { bigint: true });
+    if (rootNames ? !st.isDirectory() || st.isSymbolicLink() : !st.isFile() || st.nlink !== 1n)
+      throw new PathSafetyError("OUT_OF_WORKSPACE", "确认资源不能是目录或链接");
+    return { path: rootNames ? "." : rel, exists: true, device: String(st.dev), inode: String(st.ino),
+      size: String(st.size), mtime: String(st.mtimeNs), ctime: String(st.ctimeNs) };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { path: rel, exists: false };
+    throw error;
+  }
 }
 
 /** 工作区相对路径展示（隐藏 .excelmanus 由调用方过滤）。 */

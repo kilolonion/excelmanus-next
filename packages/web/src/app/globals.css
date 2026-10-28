@@ -685,6 +685,19 @@ header .univer-box-border .univer-w-5.univer-cursor-pointer {
   margin-bottom: 0.15em;
 }
 
+.prose ol {
+  list-style-type: decimal;
+}
+.prose ul {
+  list-style-type: disc;
+}
+.prose ul ul {
+  list-style-type: circle;
+}
+.prose li::marker {
+  color: var(--em-muted);
+}
+
 .prose.prose-sm h1,
 .prose.prose-sm h2,
 .prose.prose-sm h3,
@@ -3235,10 +3248,12 @@ body {
 }
 
 .em-chat-input-shell {
+  display: flex;
+  flex-direction: column;
   border-color: var(--em-line-strong);
   border-radius: var(--em-radius-md);
   background: rgba(255, 255, 255, 0.95);
-  box-shadow: 0 12px 28px rgba(24, 58, 40, 0.09);
+  box-shadow: 0 4px 18px rgba(24, 58, 40, 0.06);
 }
 
 .em-chat-input-shell:focus-within {
@@ -3252,25 +3267,136 @@ body {
   border-top: 0;
 }
 
-/* Context chips sit above the composer as a small, readable reference tray. */
-.em-composer-tabs {
-  position: relative;
-  z-index: 1;
+/* One composer surface; reference metadata is an internal row, never a nested card. */
+.em-chat-input-shell .em-composer-tabs {
   display: flex;
+  min-width: 0;
+  padding: 0;
+  margin: 0 12px;
+  border-bottom: 1px solid var(--em-line);
+  border-radius: 0;
+  background: transparent;
+  container-type: inline-size;
+}
+.em-chat-input-shell .em-composer-tabs:empty { display: none; }
+.em-workbook-context {
+  display: flex;
+  flex: 1;
+  min-width: 0;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
-  padding-inline: 4px;
-  overflow-x: auto;
-  scrollbar-width: none;
+  gap: 8px;
+  min-height: 40px;
+  padding: 6px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--em-primary);
+  font-size: 12px;
+}
+.em-workbook-context-label {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  text-align: left;
+  color: var(--foreground);
+}
+.em-workbook-context-kind { flex-shrink: 0; color: var(--muted-foreground); font-size: 10px; }
+.em-workbook-context-file { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.em-workbook-context-range { flex-shrink: 0; max-width: 52%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--em-primary); font-size: 11px; }
+.em-chat-input-shell .em-composer-modebar { order: 2; margin: 0 12px; padding: 5px 0 7px; border-top: 1px solid var(--em-line); }
+.em-composer-modebar > div { flex-wrap: wrap; width: 100%; gap: 4px; padding: 0; }
+.em-composer-modebar .em-chat-modes { flex-shrink: 0; }
+.em-composer-modebar button { white-space: nowrap; flex-shrink: 0; }
+.em-chat-input-shell .em-input-toolbar { padding: 10px 10px 8px; }
+.em-workbook-context-action {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 26px;
+  min-width: 26px;
+  padding: 0 5px;
+  border-radius: 5px;
+  color: var(--muted-foreground);
+}
+.em-workbook-context-action:hover { background: var(--em-primary-alpha-08); color: var(--em-primary); }
+.em-workbook-context-action:focus-visible,
+.em-workbook-context-label:focus-visible { outline: 2px solid var(--em-primary); outline-offset: 1px; }
+.em-workbook-context-status { flex-shrink: 0; color: var(--muted-foreground); font-size: 10px; }
+@container (max-width: 460px) {
+  .em-workbook-context-status { display: none; }
 }
 
-.em-composer-tabs::-webkit-scrollbar {
-  display: none;
+.em-workbook-zoom {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  z-index: 10;
+  display: flex;
+  height: 36px;
+  align-items: center;
+  gap: 3px;
+  padding: 0 7px;
+  border-top: 1px solid var(--em-line);
+  border-left: 1px solid var(--em-line);
+  border-top-left-radius: 8px;
+  background: var(--em-panel-soft);
+  color: var(--muted-foreground);
 }
-
-.em-composer-tabs:empty {
-  display: none;
+.em-workbook-zoom .em-workbook-zoom-button { width: 24px; height: 24px; padding: 0; border-radius: 5px; }
+.em-workbook-zoom .em-workbook-zoom-button:hover { background: var(--em-primary-alpha-08); color: var(--em-primary); }
+.em-workbook-zoom .em-workbook-zoom-slider {
+  appearance: none;
+  width: 64px;
+  height: 3px;
+  min-height: 0;
+  padding: 0;
+  margin: 0 3px;
+  border: 0;
+  border-radius: 4px;
+  background: linear-gradient(to right, var(--em-primary) var(--zoom-progress), var(--em-line-strong) var(--zoom-progress));
+  box-shadow: none;
+  cursor: pointer;
+  accent-color: var(--em-primary);
+}
+.em-workbook-zoom-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--background);
+  border-radius: 50%;
+  background: var(--em-primary);
+  box-shadow: 0 0 0 1px var(--em-primary);
+}
+.em-workbook-zoom-slider::-moz-range-thumb {
+  width: 8px;
+  height: 8px;
+  border: 2px solid var(--background);
+  border-radius: 50%;
+  background: var(--em-primary);
+  box-shadow: 0 0 0 1px var(--em-primary);
+}
+.em-workbook-zoom .em-workbook-zoom-value {
+  width: 49px;
+  height: 24px;
+  padding: 0 3px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--foreground);
+  text-align: center;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  box-shadow: none;
+}
+.em-workbook-zoom .em-workbook-zoom-value:hover,
+.em-workbook-zoom .em-workbook-zoom-value:focus-visible { border-color: var(--em-line-strong); background: var(--background); }
+@media (max-width: 640px) {
+  .em-workbook-zoom .em-workbook-zoom-slider { display: none; }
 }
 
 .em-composer-tab {
@@ -5911,26 +6037,30 @@ body {
   border-bottom: 1px solid var(--em-line);
 }
 .em-settings-mobile-head {
-  padding: 13px 56px 9px 14px;
+  padding: 8px 64px 8px 12px;
   border-bottom: 1px solid var(--em-line);
   background: var(--em-panel-soft);
 }
 .em-settings-mobile-tabs {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 4px;
+  display: flex;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  gap: 6px;
 }
 .em-settings-mobile-tabs::-webkit-scrollbar {
   display: none;
 }
 .em-settings-mobile-tab {
   display: inline-flex;
-  flex-direction: column;
+  flex: 0 0 auto;
+  white-space: nowrap;
   align-items: center;
   gap: 3px;
   min-height: 44px;
   min-width: 0;
-  padding: 5px 2px;
+  padding: 5px 10px;
   border: 1px solid var(--em-line);
   border-radius: 10px;
   color: var(--em-muted);
@@ -7438,3 +7568,379 @@ body {
 .dark .em-chat-mode-indicator {
   background: color-mix(in srgb, var(--em-primary-light) 16%, transparent);
 }
+
+/* Composer attachment shelf: shares the outer card, never grows with every error. */
+.em-attachments { margin: 8px 12px 0; min-width: 0; font-size: 12px; }
+.em-attachment-summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted-foreground); margin-bottom: 6px; }
+.em-attachment-summary button { display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0; color: var(--em-primary); }
+.em-attachment-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(180px, 100%), 1fr)); gap: 6px; max-height: 132px; overflow: auto; }
+.em-attachment-grid[data-expanded="true"] { max-height: 180px; }
+.em-attachment-item { min-width: 0; position: relative; display: flex; align-items: center; gap: 4px; padding: 6px; border: 1px solid var(--em-line); border-radius: 8px; background: var(--em-primary-alpha-06); }
+.em-attachment-item[data-status="error"] { border-color: color-mix(in srgb, var(--em-error) 35%, var(--em-line)); }
+.em-attachment-main { min-width: 0; flex: 1; display: flex; align-items: center; gap: 8px; text-align: left; }
+.em-attachment-icon { display: grid; place-items: center; width: 36px; height: 36px; flex-shrink: 0; color: var(--em-primary); }
+.em-attachment-icon img { width: 36px; height: 36px; object-fit: contain; border-radius: 4px; }
+.em-attachment-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.em-attachment-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
+.em-attachment-meta { display: flex; align-items: center; gap: 4px; color: var(--muted-foreground); font-size: 11px; }
+.em-attachment-remove { display: grid; place-items: center; flex-shrink: 0; width: 24px; height: 28px; border-radius: 4px; color: var(--muted-foreground); }
+.em-attachment-remove:hover { background: var(--em-primary-alpha-10); color: var(--foreground); }
+.em-attachment-detail, .em-attachment-retry { color: var(--em-primary); font-size: 11px; flex-shrink: 0; }
+.em-attachment-details { max-height: 112px; overflow: auto; overflow-wrap: anywhere; padding: 8px 2px 2px; color: var(--muted-foreground); }
+.em-attachment-details p { margin: 4px 0; }
+.em-attachment-warning { display: flex; align-items: flex-start; gap: 6px; color: var(--em-gold); font-size: 11px; margin-bottom: 6px; }
+.em-attachment-warning svg { flex-shrink: 0; }
+.em-attachment-retry { margin-top: 5px; }
+
+@container (max-width: 420px) {
+  .em-workbook-context-label { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 6px; }
+  .em-workbook-context-file { grid-column: 1 / -1; grid-row: 1; }
+  .em-workbook-context-kind { grid-row: 2; }
+  .em-workbook-context-range { grid-row: 2; max-width: none; }
+}
+
+/* Phone workbooks use their own close/navigation row; keep the grid above
+   the gesture area and reserve footer space for the editable zoom value. */
+@media (max-width: 767px) {
+  .em-main:has([data-workspace-surface="excel"]) > .em-topbar {
+    display: none;
+  }
+  [data-workbook-placement="full"] {
+    padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+      env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+  }
+  [data-workbook-placement] [aria-label="功能区"] {
+    overflow-x: auto;
+    overflow-y: hidden;
+    min-width: 0;
+    scrollbar-width: thin;
+  }
+  [data-workbook-placement] [aria-label="功能区"] > * {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+  [data-workbook-placement] footer section[data-range-selector="true"] {
+    padding-right: 70px !important;
+    min-width: 0;
+  }
+  .em-workbook-zoom {
+    width: 64px;
+    justify-content: center;
+    padding: 0 4px;
+  }
+  .em-workbook-zoom .em-workbook-zoom-slider,
+  .em-workbook-zoom .em-workbook-zoom-button { display: none; }
+  .em-workbook-zoom .em-workbook-zoom-value {
+    height: 32px;
+    min-height: 32px;
+    font-size: 16px;
+  }
+  .em-sidebar-inner {
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
+  }
+  .em-sidebar-footer {
+    margin-bottom: 8px;
+  }
+}
+@media (max-width: 639px) {
+  .em-settings-close {
+    top: calc(env(safe-area-inset-top, 0px) + 8px);
+    right: 10px;
+  }
+  .em-settings-page-header {
+    padding-right: 0;
+  }
+}
+
+/* Phone primary actions stay next to the composer; less frequent controls
+   live in a labelled sheet rather than a row of indistinguishable icons. */
+.em-mobile-composer-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+.em-mobile-composer-tools .em-model-selector-trigger {
+  flex: 1 1 0;
+  width: 0;
+  min-width: 0;
+  max-width: none;
+  height: 44px;
+}
+.em-mobile-composer-tools .em-model-selector-label {
+  flex: 1;
+  min-width: 0;
+  max-width: none;
+  text-align: left;
+}
+.em-mobile-composer-options > div {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+.em-mobile-composer-options button { min-height: 44px; min-width: 44px; }
+@media (max-width: 767px) {
+  .em-topbar-toolbar { min-height: 52px; flex-wrap: nowrap; }
+  .em-topbar-leading { flex: 1 1 auto; }
+  .em-topbar-actions { flex: 0 0 auto; }
+  .em-composer-modebar > div { flex-wrap: wrap; }
+  .em-input-toolbar [data-coach-id="coach-upload-button"],
+  .em-input-toolbar [data-coach-id="coach-send-btn"],
+  .em-input-toolbar button[aria-label="停止生成"],
+  .em-input-toolbar [data-coach-id="coach-stop-btn"],
+  .em-input-toolbar [data-coach-id="coach-continue-btn"] {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .em-input-toolbar { column-gap: 8px; }
+  [data-coach-id="coach-workbook-entry"] { min-width: 44px; min-height: 44px; }
+  .em-mobile-actions-sheet {
+    position: fixed;
+    top: auto;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    width: 100%;
+    max-width: none;
+    max-height: 85dvh;
+    transform: none;
+    border-radius: 20px 20px 0 0;
+  }
+  [data-workbook-header],
+  [data-workbook-placement] [aria-label="功能区"] { height: 44px; min-height: 44px; }
+  .em-mobile-workbook-actions > button,
+  [data-workbook-placement] [aria-label="功能区"] > button {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  .em-mobile-workbook-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 44px;
+    padding: 0 10px;
+    white-space: nowrap;
+    font-size: 12px;
+    color: var(--em-primary);
+  }
+}
+
+@media (max-width: 767px) {
+  .em-mobile-actions-sheet[data-state="open"] { animation-name: overlay-card-in-mobile; }
+  .em-mobile-actions-sheet[data-state="closed"] { animation-name: overlay-card-out-mobile; }
+  .em-mobile-composer-options > div:has(> span:only-child) { display: none; }
+}
+
+/* Phone task navigation stays outside the composer and does not reset its state. */
+.em-mobile-workspace-nav {
+  display: flex;
+  flex-shrink: 0;
+  border-top: 1px solid var(--em-line);
+  background: var(--background);
+  padding: 2px max(8px, env(safe-area-inset-right)) max(2px, env(safe-area-inset-bottom))
+    max(8px, env(safe-area-inset-left));
+}
+.em-mobile-workspace-nav button {
+  flex: 1;
+  min-width: 0;
+  min-height: 48px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--muted-foreground);
+  border-radius: 10px;
+}
+.em-mobile-workspace-nav button[aria-current] {
+  color: var(--em-primary);
+  background: var(--em-primary-alpha-08);
+}
+.em-settings-detail-host {
+  min-height: 0;
+  height: 100%;
+  flex: 1;
+}
+.em-settings-detail-host[hidden] {
+  display: none;
+}
+.em-settings-phone .em-settings-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.em-settings-phone-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 56px;
+  padding: 4px 60px 4px 12px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--em-line);
+}
+.em-settings-phone-heading h2 {
+  font-size: 15px;
+  font-weight: 600;
+}
+.em-settings-phone-heading button {
+  height: 44px;
+  gap: 4px;
+}
+.em-settings-index {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 16px max(16px, env(safe-area-inset-bottom));
+}
+.em-settings-index section {
+  margin-bottom: 20px;
+}
+.em-settings-index h3 {
+  font-size: 12px;
+  color: var(--muted-foreground);
+  margin: 8px 0;
+}
+.em-settings-index button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  padding: 14px 8px;
+  border-bottom: 1px solid var(--em-line);
+}
+.em-settings-index button > span {
+  flex: 1;
+  min-width: 0;
+}
+.em-settings-index strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+}
+.em-settings-index small {
+  display: block;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.5;
+  margin-top: 4px;
+}
+.em-settings-phone .em-settings-page-header {
+  display: none;
+}
+.em-settings-phone .em-settings-scroll {
+  padding-top: 16px;
+}
+.em-mobile-example-toggle {
+  align-self: flex-start;
+  min-height: 44px;
+  font-size: 13px;
+  color: var(--em-primary);
+  text-align: left;
+}
+.em-mobile-recent-files {
+  max-height: none;
+  flex-direction: column;
+  align-items: stretch;
+}
+.em-mobile-recent-files > button {
+  max-width: none;
+  min-height: 44px;
+  width: 100%;
+  justify-content: flex-start;
+  text-align: left;
+}
+.em-mobile-sheet-dock {
+  flex-shrink: 0;
+  border-top: 1px solid var(--em-line);
+  background: var(--background);
+}
+.em-mobile-sheet-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 6px;
+}
+.em-mobile-sheet-actions > button {
+  flex: 1;
+  min-width: 0;
+  height: 48px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.em-mobile-sheet-actions > button:disabled {
+  opacity: 0.45;
+}
+.em-mobile-sheet-actions > button[aria-expanded="true"] {
+  color: var(--em-primary);
+  background: var(--em-primary-alpha-08);
+  border-radius: 8px;
+}
+.em-mobile-sheet-tool-content {
+  max-height: 28dvh;
+  overflow: auto;
+  padding: 0 8px 8px;
+  display: flex;
+  align-items: center;
+  min-height: 48px;
+}
+.em-mobile-sheet-tool-content button {
+  min-height: 40px;
+}
+@media (max-width: 767px) {
+  .em-main > .em-mobile-workspace-nav {
+    position: relative;
+    z-index: 31;
+  }
+  .em-main:has(.em-mobile-workspace-nav) [data-workbook-placement="full"] {
+    padding-bottom: 0;
+  }
+  .em-main:has(.em-mobile-workspace-nav) .em-composer-dock {
+    padding-bottom: 4px;
+  }
+  .em-sidebar-header button {
+    width: auto;
+    min-width: 56px;
+    min-height: 44px;
+  }
+  .em-settings-phone.em-settings-dialog {
+    max-width: none;
+    width: 100%;
+    height: 100dvh;
+    max-height: 100dvh;
+    inset: 0;
+    transform: none;
+    translate: none;
+    border-radius: 0;
+  }
+}
+.em-settings-body > .em-settings-detail-host {
+  min-width: 0;
+  flex: 1 1 auto;
+  width: 0;
+}
+.em-settings-phone .em-settings-body > .em-settings-detail-host {
+  width: 100%;
+  height: auto;
+}
+
+.em-mobile-format { flex:1; min-width:0; }
+.em-mobile-format > section { border-top:1px solid var(--em-line); padding:8px 0; }
+.em-mobile-format h4 { color:var(--muted-foreground); font-size:11px; margin-bottom:4px; }
+.em-mobile-format > section > div { display:flex; flex-wrap:wrap; align-items:center; gap:4px; }
+.em-mobile-format summary { padding:14px 0; font-size:13px; cursor:pointer; }
+.em-mobile-format-advanced > div { display:flex; align-items:center; justify-content:space-between; font-size:12px; min-height:48px; }
+.em-mobile-sheet-tool-content:has(.em-mobile-format) { align-items:flex-start; }

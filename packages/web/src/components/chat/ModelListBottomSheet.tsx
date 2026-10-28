@@ -61,6 +61,7 @@ function CompactRetrySheet({
   "open" | "onOpenChange" | "models" | "currentModel" | "onSelect"
 >) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const dragControls = useDragControls();
 
   const close = useCallback(() => onOpenChange(false), [onOpenChange]);
 
@@ -109,14 +110,20 @@ function CompactRetrySheet({
               exit={{ y: "100%" }}
               transition={{ type: "spring", damping: 28, stiffness: 400 }}
               drag="y"
+              dragControls={dragControls}
+              dragListener={false}
               dragConstraints={{ top: 0 }}
               dragElastic={0.12}
               onDragEnd={handleDragEnd}
               className="em-model-sheet fixed inset-x-0 bottom-0 z-[81] flex min-h-[280px] h-[min(70dvh,520px)] max-h-[78dvh] flex-col rounded-t-2xl border border-b-0 border-[var(--em-line)] bg-[var(--em-panel)] shadow-2xl overflow-hidden"
-              style={{ touchAction: "none" }}
             >
               {/* Drag handle */}
-              <div className="flex justify-center pt-2.5 pb-1 shrink-0">
+              <div
+                className="flex justify-center pt-2.5 pb-1 shrink-0"
+                style={{ touchAction: "none" }}
+                onPointerDown={(event) => dragControls.start(event)}
+                aria-hidden="true"
+              >
                 <div className="h-1 w-10 rounded-full bg-muted-foreground/20" />
               </div>
 
@@ -142,7 +149,6 @@ function CompactRetrySheet({
                 ref={scrollRef}
                 className="flex-1 min-h-0 overflow-y-auto overscroll-contain py-1 model-selector-scroll"
                 style={{ WebkitOverflowScrolling: "touch" }}
-                onPointerDownCapture={(e) => e.stopPropagation()}
               >
                 {models.map((m) => {
                   const isCurrent = m.id === currentModel;
@@ -152,14 +158,16 @@ function CompactRetrySheet({
                     <button
                       type="button"
                       key={m.id}
+                      disabled={m.unhealthy}
                       onClick={() => {
+                        if (m.unhealthy) return;
                         onSelect(m.id);
                         close();
                       }}
                       className={[
                         "w-full text-left px-4 py-2.5 min-h-[48px] flex items-center gap-3",
                         "transition-all duration-150 ease-out cursor-pointer",
-                        "active:bg-accent/70",
+                        "active:bg-accent/70 disabled:opacity-50 disabled:cursor-not-allowed",
                         isCurrent ? "bg-[var(--em-primary-alpha-06)]" : "hover:bg-accent/50",
                       ].join(" ")}
                     >
@@ -173,7 +181,12 @@ function CompactRetrySheet({
                       <span
                         className={`text-sm flex-1 min-w-0 truncate ${isCurrent ? "font-semibold" : "font-medium"}`}
                       >
-                        {m.label}
+                        <span className="block truncate">{m.label}</span>
+                        {m.profileName !== m.label && (
+                          <span className="block truncate text-xs font-normal text-muted-foreground">
+                            {m.profileName}
+                          </span>
+                        )}
                       </span>
                       {isCurrent && (
                         <span

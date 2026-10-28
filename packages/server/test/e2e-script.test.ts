@@ -1,3 +1,4 @@
+import { createTestProfile } from "./fixtures/create-model.ts";
 // M3 run_script 集成测试（06 §4.6、08 全章；14 场景 16/17；ADR 0006：
 // 真实 HTTP/WS/SQLite 文件 + MockLanguageModelV4 只替代模型输出）。
 // 假模型用可控 gate 卡住 doStream；工具调用经工具表进 QuickJS 沙箱执行。
@@ -108,7 +109,7 @@ async function boot(
   });
   servers.push(srv);
   const api = createApiClient(srv.url, srv.token);
-  await api.createModelProfile({
+  await createTestProfile(api, {
     name: "mock",
     provider: "custom-openai-compatible",
     model: "mock-script",
@@ -216,7 +217,7 @@ describe("e2e run_script", () => {
     const code = [
       'const files = ["f1.xlsx","f2.xlsx","f3.xlsx","f4.xlsx","f5.xlsx"];',
       "for (const p of files) {",
-      '  await wb.edit({ path: p, ops: [{ op: "cells.set", range: "A1", values: [["X"]] }] });',
+      '  await wb.edit({ path: p, ops: [{ op: "cells.set", range: "销售!A1", values: [["X"]] }] });',
       '  if (p === "f3.xlsx") throw new Error("boom");',
       "}",
       'return "never";',
@@ -255,7 +256,7 @@ describe("e2e run_script", () => {
     const files = ["a1.xlsx", "a2.xlsx", "a3.xlsx", "a4.xlsx", "a5.xlsx"];
     const code = [
       'for (const p of ["a1.xlsx","a2.xlsx","a3.xlsx","a4.xlsx","a5.xlsx"])',
-      '  await wb.edit({ path: p, ops: [{ op: "cells.set", range: "B2", values: [["脚本写入"]] }] });',
+      '  await wb.edit({ path: p, ops: [{ op: "cells.set", range: "销售!B2", values: [["脚本写入"]] }] });',
       'await files.writeText({ path: "notes/out.txt", content: "暂存内容-甲乙丙" });',
       'const back = await files.readText({ path: "notes/out.txt" });',
       'if (back.data.content !== "暂存内容-甲乙丙") throw new Error("overlay broken");',
@@ -305,7 +306,7 @@ describe("e2e run_script", () => {
     // 计划之后的窗口：confirm 模式审批挂起时删除 notes/，批准后 doc 先提交、
     // 文本发布 ENOENT → 走真实回滚路径。
     const code = [
-      'await wb.edit({ path: "r1.xlsx", ops: [{ op: "cells.set", range: "C1", values: [["改了"]] }] });',
+      'await wb.edit({ path: "r1.xlsx", ops: [{ op: "cells.set", range: "销售!C1", values: [["改了"]] }] });',
       'await files.writeText({ path: "notes/deep.txt", content: "脚本覆盖" });',
     ].join("\n");
     const { srv, api, sessionId, workspaceId } = await boot(
@@ -388,7 +389,7 @@ describe("e2e run_script", () => {
 
   test("取消：死循环运行中 stop → CANCELLED + turn.interrupted，无发布", async () => {
     const code = [
-      'await wb.edit({ path: "s1.xlsx", ops: [{ op: "cells.set", range: "A1", values: [["v"]] }] });',
+      'await wb.edit({ path: "s1.xlsx", ops: [{ op: "cells.set", range: "销售!A1", values: [["v"]] }] });',
       "while (true) {}",
     ].join("\n");
     const { srv, api, sessionId } = await boot([
@@ -628,7 +629,7 @@ describe("e2e run_script 发布时审批（ADR 0009 修订）", () => {
 
   test("confirm 模式批准：approval.requested 带 publishPlan，批准前两文件未动 → 批准后双发布", async () => {
     const code = [
-      'await wb.edit({ path: "p1.xlsx", ops: [{ op: "cells.set", range: "A1", values: [["P"]] }] });',
+      'await wb.edit({ path: "p1.xlsx", ops: [{ op: "cells.set", range: "销售!A1", values: [["P"]] }] });',
       'await files.writeText({ path: "new.txt", content: "line1\\nline2" });',
       'return "done";',
     ].join("\n");
@@ -682,7 +683,7 @@ describe("e2e run_script 发布时审批（ADR 0009 修订）", () => {
 
   test("confirm 模式拒绝：APPROVAL_DENIED、文件不变、tmp 无残留", async () => {
     const code = [
-      'await wb.edit({ path: "d1.xlsx", ops: [{ op: "cells.set", range: "A1", values: [["D"]] }] });',
+      'await wb.edit({ path: "d1.xlsx", ops: [{ op: "cells.set", range: "销售!A1", values: [["D"]] }] });',
       'await files.writeText({ path: "d-new.txt", content: "nope" });',
       'return "done";',
     ].join("\n");
@@ -722,7 +723,7 @@ describe("e2e run_script 发布时审批（ADR 0009 修订）", () => {
 
   test("写后读同一工作簿：SDK 抛 UNSUPPORTED_FEATURE", async () => {
     const code = [
-      'await wb.edit({ path: "w.xlsx", ops: [{ op: "cells.set", range: "A1", values: [["X"]] }] });',
+      'await wb.edit({ path: "w.xlsx", ops: [{ op: "cells.set", range: "销售!A1", values: [["X"]] }] });',
       'try { await wb.read({ path: "w.xlsx" }); return "no-error"; }',
       "catch (e) { return e.code || e.message; }",
     ].join("\n");
@@ -744,3 +745,99 @@ describe("e2e run_script 发布时审批（ADR 0009 修订）", () => {
     expect(String(res.data?.value)).toContain("UNSUPPORTED_FEATURE");
   }, 60_000);
 });
+
+test("script named creation expands the same atomic sheet operations", async () => {
+  const code =
+    'await wb.edit({create:true,path:"named-script.xlsx",sheetNames:["收款收据","核对"],ops:[{op:"cells.set",range:"收款收据!A1",values:[[5190]]}]});';
+  const { api, sessionId, workspaceId } = await boot([
+    () => toolCallOut("named-script", "run_script", JSON.stringify({ code })),
+    () => textOut("完成"),
+  ]);
+  await api.sendMessage(sessionId, AGENT, {
+    clientMessageId: "named-script",
+    text: "新建具名工作表",
+  });
+  const done = await waitLog(
+    api,
+    sessionId,
+    (items) => items.some((r) => r.type === "turn.completed"),
+    "具名工作表发布",
+  );
+  expect(scriptResult(done, "named-script")?.data).toMatchObject({
+    status: "ok",
+    result: {
+      data: {
+        published: [
+          {
+            path: "named-script.xlsx",
+            created: true,
+            sheets: [
+              { name: "收款收据", cells: 1 },
+              { name: "核对", cells: 0 },
+            ],
+          },
+        ],
+      },
+    },
+  });
+  expect(await cellValue(api, workspaceId, "named-script.xlsx", "收款收据!A1")).toBe(5190);
+}, 60_000);
+
+test("script wb.edit marks an existing pivot cache without refreshing saved results", async () => {
+  const code = [
+    'const before = await wb.read({path:"pivot-script.xlsx",mode:"objects"});',
+    'await wb.edit({path:"pivot-script.xlsx",ops:[{op:"cells.set",range:"Sheet1!E3",values:[[8]]},{op:"pivot.mark_refresh_on_load",sheet:"Sheet1",cacheId:"0"}]});',
+    "return before.data.preserved.pivotTableCount;",
+  ].join("\n");
+  const { srv, api, sessionId, workspaceId } = await boot([
+    () => toolCallOut("pivot-script", "run_script", JSON.stringify({ code })),
+    () => textOut("完成"),
+  ]);
+  const source = Buffer.from(
+    readFileSync(
+      new URL("../../modules/workbook/test/fixtures/pivot-slicer.xlsx.base64", import.meta.url),
+      "utf8",
+    ),
+    "base64",
+  );
+  writeFileSync(join(srv.workspaceRoot, "pivot-script.xlsx"), source);
+  await api.sendMessage(sessionId, AGENT, { clientMessageId: "pivot-script", text: "跑脚本" });
+  const done = await waitLog(
+    api,
+    sessionId,
+    (items) =>
+      items.some((item) => item.type === "tool.result" && item.data.toolCallId === "pivot-script"),
+    "透视缓存脚本回执",
+  );
+  expect(
+    scriptResult(done, "pivot-script")?.data,
+    JSON.stringify(scriptResult(done, "pivot-script")?.data),
+  ).toMatchObject({
+    status: "ok",
+    result: {
+      data: { value: 1, published: [{ path: "pivot-script.xlsx", kind: "workbook", rev: 1 }] },
+    },
+  });
+  expect(await cellValue(api, workspaceId, "pivot-script.xlsx", "Sheet1!E3")).toBe(8);
+  expect(await cellValue(api, workspaceId, "pivot-script.xlsx", "Sheet1!L20")).toBe(13);
+  const { importXlsx } = await import("../../modules/workbook/src/xlsx.ts");
+  const { objectsOf } = await import("../../modules/workbook/src/objects.ts");
+  await expect
+    .poll(
+      () => {
+        const snapshot = importXlsx(
+          readFileSync(join(srv.workspaceRoot, "pivot-script.xlsx")),
+          "pivot-script.xlsx",
+        ).snapshot;
+        return objectsOf(snapshot.sheets[snapshot.sheetOrder[0]!]).pivotRefreshOnLoad;
+      },
+      { timeout: 10000 },
+    )
+    .toEqual({ "0": "true" });
+  const downloaded = await api.downloadFile(workspaceId, "pivot-script.xlsx");
+  const saved = importXlsx(
+    new Uint8Array(await downloaded.arrayBuffer()),
+    "pivot-script.xlsx",
+  ).snapshot;
+  expect(objectsOf(saved.sheets[saved.sheetOrder[0]!]).pivotRefreshOnLoad).toEqual({ "0": "true" });
+}, 60000);

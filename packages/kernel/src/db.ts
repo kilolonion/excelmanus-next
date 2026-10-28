@@ -44,7 +44,7 @@ export class SchemaVersionError extends Error {
 
   constructor(unknownIds: readonly string[]) {
     super(
-      `数据库包含程序无法识别的迁移记录：${unknownIds.join("、")}，可能由更新的程序创建，拒绝启动`,
+      `数据库包含程序无法识别的迁移记录：${unknownIds.join("、")}；不可降级：当前程序无法保证执行该版本的权限及状态语义，拒绝启动。不得删除版本标记或权限事件；请使用兼容版本并核对一致性恢复点`,
     );
     this.name = "SchemaVersionError";
     this.unknownIds = unknownIds;

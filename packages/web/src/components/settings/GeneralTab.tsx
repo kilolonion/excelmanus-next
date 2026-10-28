@@ -96,10 +96,19 @@ export function GeneralTab() {
   const [proxy, setProxy] = useState("");
   const [noProxy, setNoProxy] = useState("");
   const [loadError, setLoadError] = useState("");
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: loadAttempt explicitly retries the settings request
   useEffect(() => {
-    refreshSettings().catch((error) => setLoadError(errorMessage(error, "无法读取设置")));
-  }, []);
+    let active = true;
+    setLoadError("");
+    refreshSettings().catch((error) => {
+      if (active) setLoadError(errorMessage(error, "无法读取设置"));
+    });
+    return () => {
+      active = false;
+    };
+  }, [loadAttempt]);
 
   useEffect(() => {
     setProxy(settings?.httpProxy ?? "");
@@ -147,11 +156,16 @@ export function GeneralTab() {
 
       {!settings ? (
         <div
-          role="status"
+          role={loadError ? "alert" : "status"}
           className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground"
         >
           {loadError ? (
-            <span className="text-destructive">{loadError}</span>
+            <>
+              <span className="text-destructive">{loadError}</span>
+              <Button size="sm" variant="outline" onClick={() => setLoadAttempt((n) => n + 1)}>
+                重新读取
+              </Button>
+            </>
           ) : (
             <>
               <Loader2 className="h-4 w-4 animate-spin" />

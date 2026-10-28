@@ -245,3 +245,26 @@ describe("M2b text/files with real filesystem and SQLite", () => {
     expect(existsSync(join(out, "tmp"))).toBe(false);
   });
 });
+
+test("未提交的文件批次在重启恢复时回滚已执行的部分", () => {
+  const { root, ctx } = setup();
+  const db = dbs.at(-1)!;
+  const backups = new BackupService(db);
+  writeFileSync(join(root, "a.txt"), "a");
+  writeFileSync(join(root, "b.txt"), "b");
+  const id = backups.beginFileBatch(ctx.workspaceId, root, [
+    { path: "a.txt", after: null },
+    { path: "out-a.txt", after: sha256(Buffer.from("a")) },
+    { path: "b.txt", after: null },
+    { path: "out-b.txt", after: sha256(Buffer.from("b")) },
+  ]);
+  // Only the first operation reached the filesystem before the process stopped.
+  writeFileSync(join(root, "out-a.txt"), "a");
+  rmSync(join(root, "a.txt"));
+  new BackupService(db).recoverFileBatches(ctx.workspaceId, root);
+  expect(readFileSync(join(root, "a.txt"), "utf8")).toBe("a");
+  expect(readFileSync(join(root, "b.txt"), "utf8")).toBe("b");
+  expect(existsSync(join(root, "out-a.txt"))).toBe(false);
+  expect(existsSync(join(root, "out-b.txt"))).toBe(false);
+  expect(db.prepare("SELECT * FROM file_batches WHERE id=?").get(id)).toBeUndefined();
+});

@@ -7,11 +7,17 @@ import { formatFileMention } from "@/components/chat/chat-input-insert";
 import { confirmAction } from "@/components/ui/confirm-dialog";
 import { toast } from "@/components/ui/toaster";
 import { api, errorMessage, saveBlob } from "@/lib/backend/api";
-import { fileName, samePath } from "@/lib/paths";
+import { fileName } from "@/lib/paths";
 import { attachWorkspaceFile } from "@/stores/chat-store";
-import { deleteEntries, moveEntry, uploadFiles } from "@/stores/files-store";
+import {
+  deleteEntries,
+  moveEntries,
+  moveEntry,
+  uploadFiles,
+  useFilesStore,
+} from "@/stores/files-store";
 import { useSessionStore } from "@/stores/session-store";
-import { closeTab, openWorkbook, useWorkbookStore } from "@/stores/workbook-store";
+import { closeTab, relocateWorkbook, useWorkbookStore } from "@/stores/workbook-store";
 import { isWithin, moveTarget, renameTarget } from "./file-tree-helpers";
 
 // ---------- 拖动 ----------
@@ -57,27 +63,27 @@ function openTabsWithin(path: string): string[] {
     .filter((p) => isWithin(p, path));
 }
 
-async function followMove(from: string, to: string): Promise<void> {
-  const wasActive = useWorkbookStore.getState().activePath;
-  for (const tab of openTabsWithin(from)) {
-    await closeTab(tab).catch(() => undefined);
-    if (wasActive && samePath(wasActive, tab)) {
-      const moved = to + tab.slice(from.length);
-      void openWorkbook(moved).catch(() => undefined);
-    }
-  }
+async function followMove(from: string, to: string, workspace: string | null): Promise<void> {
+  if (workspace && useWorkbookStore.getState().workspaceId === workspace)
+    relocateWorkbook(from, to);
 }
 
 // ---------- 文件操作 ----------
 
 export async function uploadInto(files: File[], directory = ""): Promise<string[]> {
   if (files.length === 0) return [];
+  const targetWorkspaceId =
+    useFilesStore.getState().workspaceId ?? useSessionStore.getState().activeWorkspaceId;
+  if (!targetWorkspaceId) {
+    toast({ tone: "error", title: "无法上传文件", description: "没有可用的工作区" });
+    return [];
+  }
   const uploaded: string[] = [];
   let failed = 0;
   let lastError: unknown = null;
   for (const file of files) {
     try {
-      uploaded.push(...(await uploadFiles([file], directory)));
+      uploaded.push(...(await uploadFiles([file], directory, targetWorkspaceId)));
     } catch (error) {
       failed += 1;
       lastError = error;
@@ -101,22 +107,17 @@ export async function uploadInto(files: File[], directory = ""): Promise<string[
 }
 
 export async function moveInto(paths: string[], folder: string): Promise<void> {
+  const workspace = useFilesStore.getState().workspaceId ?? workspaceId();
   const moves = paths.flatMap((path) => {
     const to = moveTarget(path, folder);
     return to ? [{ path, to }] : [];
   });
-  for (const { path, to } of moves) {
-    try {
-      await moveEntry(path, to);
-      await followMove(path, to);
-    } catch (error) {
-      toast({
-        tone: "error",
-        title: `无法移动 ${fileName(path)}`,
-        description: errorMessage(error),
-      });
-      return;
-    }
+  try {
+    if (moves.length) await moveEntries(moves);
+    for (const { path, to } of moves) await followMove(path, to, workspace);
+  } catch (error) {
+    toast({ tone: "error", title: "整批移动未完成", description: errorMessage(error) });
+    return;
   }
   if (moves.length > 0)
     toast({
@@ -127,6 +128,7 @@ export async function moveInto(paths: string[], folder: string): Promise<void> {
 
 /** 重命名；返回是否成功。 */
 export async function renameItem(path: string, name: string): Promise<boolean> {
+  const workspace = useFilesStore.getState().workspaceId ?? workspaceId();
   const to = renameTarget(path, name);
   if (!to) {
     if (name.trim() && name.trim() !== fileName(path))
@@ -135,7 +137,7 @@ export async function renameItem(path: string, name: string): Promise<boolean> {
   }
   try {
     await moveEntry(path, to);
-    await followMove(path, to);
+    await followMove(path, to, workspace);
     return true;
   } catch (error) {
     toast({ tone: "error", title: "重命名失败", description: errorMessage(error) });

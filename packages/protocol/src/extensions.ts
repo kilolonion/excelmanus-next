@@ -3,6 +3,7 @@
 
 import { z } from "zod";
 import { DispatchMode } from "./records.ts";
+import { RenderLayout } from "./sync.ts";
 
 // ---------- 规则（12 §3） ----------
 
@@ -253,6 +254,7 @@ export const OverrideCapabilitiesBody = z.strictObject({
   reasoning: z.boolean().nullable().optional(),
 });
 export const RemoteModelsResponse = z.object({
+  updatedAt: z.string().nullable().optional(),
   items: z.array(
     z.object({
       id: z.string(),
@@ -300,9 +302,27 @@ export const BackupEntry = z.object({
   size: z.number(),
   createdAt: z.string(),
   sessionId: z.string(),
+  /** 已有修订记录确认的来源；旧记录无法确认时省略。 */
+  sourceKind: z.enum(["user", "agent", "script"]).optional(),
 });
 export type BackupEntry = z.infer<typeof BackupEntry>;
 export const BackupListResponse = z.object({ items: z.array(BackupEntry) });
+export const BackupPreviewQuery = z.object({
+  sheetId: z.string().optional(),
+  row: z.coerce.number().int().min(0).max(1048575).default(0),
+  column: z.coerce.number().int().min(0).max(16383).default(0),
+});
+export const BackupPreviewResponse = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("spreadsheet"), sheetId: z.string(),
+    sheets: z.array(z.object({ id: z.string(), name: z.string(), rows: z.number(), columns: z.number() })),
+    row: z.number(), column: z.number(), range: z.string(), layout: RenderLayout,
+    limitations: z.array(z.string()),
+  }),
+  z.object({ kind: z.literal("text"), text: z.string(), truncated: z.boolean() }),
+  z.object({ kind: z.literal("image"), mime: z.string() }),
+  z.object({ kind: z.literal("unsupported"), reason: z.string() }),
+]);
+export type BackupPreviewResponse = z.infer<typeof BackupPreviewResponse>;
 
 // Remaining REST DTOs share one schema between clients, OpenAPI and dev validation.
 export const WorkspaceResponse = z.object({ workspace: Workspace });

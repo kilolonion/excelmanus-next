@@ -1,3 +1,4 @@
+import { createTestProfile } from "./fixtures/create-model.ts";
 // 一代功能的后端适配：计划/只读问答模式、自动会话标题、回复反馈与 JSON 导出。
 
 import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
@@ -83,7 +84,7 @@ test("计划模式拒绝写入；首轮后自动起标题；反馈与 JSON 导�
   servers.push(srv);
   copyFileSync(SAMPLE_XLSX, join(srv.workspaceRoot, "sales.xlsx"));
   const api = createApiClient(srv.url, srv.token);
-  await api.createModelProfile({
+  await createTestProfile(api, {
     name: "mock",
     provider: "custom-openai-compatible",
     model: "mock",

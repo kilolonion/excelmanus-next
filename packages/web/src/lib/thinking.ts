@@ -31,10 +31,33 @@ export function formatThinkingDuration(seconds: number): string {
   return r > 0 ? `${m}m ${r}s` : `${m}m`;
 }
 
+// Skip whitespace natively; a star run contributes only its unpaired final star.
+const PREVIEW_TOKEN = /\*+|[^\s*]/g;
+
 export function thinkingPreview(content: string, max = 48): string {
-  const oneLine = content.replace(/\*\*/g, "").replace(/\s+/g, " ").trim();
-  if (!oneLine) return "";
-  return oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine;
+  if (!Number.isFinite(max) || max < 0) {
+    const oneLine = content.replace(/\*\*/g, "").replace(/\s+/g, " ").trim();
+    if (!oneLine) return "";
+    return oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine;
+  }
+  // Stop once the clipped prefix and the need for an ellipsis are known.
+  let preview = "";
+  let previousEnd = 0;
+  let space = false;
+  PREVIEW_TOKEN.lastIndex = 0;
+  for (let match = PREVIEW_TOKEN.exec(content); match; match = PREVIEW_TOKEN.exec(content)) {
+    if (match.index > previousEnd && preview) space = true;
+    previousEnd = match.index + match[0].length;
+    const char = match[0][0] === "*" ? (match[0].length % 2 ? "*" : "") : match[0];
+    if (!char) continue;
+    if (space) {
+      preview += " ";
+      space = false;
+    }
+    preview += char;
+    if (preview.length > max) return `${preview.slice(0, max)}…`;
+  }
+  return preview;
 }
 
 export interface ThinkingSegment {
@@ -59,4 +82,32 @@ export function parseThinkingLines(content: string): ThinkingSegment[][] {
     });
     return segments;
   });
+}
+
+/** Preserve complete raw lines during appends; reparse the unfinished line for split ** markers. */
+export function createThinkingLineReader() {
+  let previous: { content: string; prefixEnd: number; prefix: ThinkingSegment[][] } | null = null;
+  return (content: string): ThinkingSegment[][] => {
+    const cached = previous && content.startsWith(previous.content) ? previous : null;
+    const prefix = cached?.prefix ?? [];
+    const start = cached?.prefixEnd ?? 0;
+    const parsed = parseThinkingLines(content.slice(start));
+    const prefixEnd = content.lastIndexOf("\n") + 1;
+    // Four adjacent stars insert a display newline but cannot freeze a raw line mid-stream.
+    const completed =
+      prefixEnd === start
+        ? 0
+        : parsed.length - 1 - (content.slice(prefixEnd).match(/\*\*\*\*/g)?.length ?? 0);
+    const frozen = parsed.slice(0, completed);
+    // Detach slices before caching: otherwise each completed line can retain an old whole input.
+    // A JSON string round-trip also preserves lone UTF-16 surrogates, unlike UTF-8 encoding.
+    for (const segments of frozen)
+      for (const segment of segments) segment.text = JSON.parse(JSON.stringify(segment.text));
+    previous = {
+      content,
+      prefixEnd,
+      prefix: frozen.length ? [...prefix, ...frozen] : prefix,
+    };
+    return prefix.length ? [...prefix, ...parsed] : parsed;
+  };
 }

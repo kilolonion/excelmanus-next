@@ -1,11 +1,11 @@
 import { FileSpreadsheet, FileText } from "lucide-react";
 import { useCallback } from "react";
-import { classifyWorkspaceFile, isWorkspaceFileHref } from "@/lib/file-kind";
+import { classifyWorkspaceFile, isWorkspaceFileReference } from "@/lib/file-kind";
 import { openWorkspaceFile } from "@/lib/open-file";
 
 /** 检测一段文本是否是工作区文件路径。 */
 export function isFilePath(text: string): boolean {
-  return isWorkspaceFileHref(text);
+  return isWorkspaceFileReference(text);
 }
 
 /** 渲染文件路径为可点击链接：一律走 openWorkspaceFile。 */
