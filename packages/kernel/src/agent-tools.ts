@@ -1,5 +1,6 @@
 import type { ToolResult } from "@excelmanus/protocol";
 import { z } from "zod";
+import { formatAgentTask, taskHandoffSchema } from "./task-handoff.ts";
 import type { AgentCoordinator, ToolDefinition } from "./tools.ts";
 
 const output = z.record(z.string(), z.unknown());
@@ -8,6 +9,7 @@ const spawnInput = z.strictObject({
   name: z.string().min(1).max(80),
   role: z.enum(["reader", "worker", "lead"]),
   task: z.string().min(1).max(8000),
+  handoff: taskHandoffSchema.optional(),
   files: z.array(z.string()).max(100).optional(),
   model: z.string().optional(),
   budget: z.record(z.string(), z.unknown()).optional(),
@@ -36,7 +38,7 @@ export function agentTools(_coordinator: AgentCoordinator): ToolDefinition[] {
     name: "agent_spawn",
     title: "派生子代理",
     description:
-      "异步派生一个受角色权限与预算限制的子代理，立即返回代理 ID；超过并发上限会排队。reader 只读，worker 可读写但不能派生，lead 可派生。files 声明子代理写入租约，路径相对工作区；已有租约冲突会拒绝。结束后运行时向派生者发送最终回复与变更摘要，父代理仍需核验任务结果。",
+      "仅在独立子任务值得分工时使用；简单任务可直接完成。handoff 可携带目标、区域、约束、交付物、验收和已有证据，不改变权限与租约。异步派生一个受角色权限与预算限制的子代理，立即返回代理 ID；超过并发上限会排队。reader 只读，worker 可读写但不能派生，lead 可派生。files 声明子代理写入租约，路径相对工作区；已有租约冲突会拒绝。结束后运行时向派生者发送最终回复与变更摘要，父代理仍需核验任务结果。",
     input: spawnInput,
     output,
     effect: "agent",
@@ -53,9 +55,10 @@ export function agentTools(_coordinator: AgentCoordinator): ToolDefinition[] {
       const out = ctx.agents.spawn({
         sessionId: ctx.sessionId,
         parentAgentId: ctx.agentId,
+        sourceTurnId: ctx.turnId,
         name: args.name,
         role: args.role,
-        task: args.task,
+        task: formatAgentTask(args.task, args.handoff),
         files: args.files,
         modelProfileId: args.model,
         budget: args.budget,

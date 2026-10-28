@@ -1,12 +1,13 @@
+import { migrateProviderConnections } from "./provider-connections.ts";
 // startServer：数据目录 → 单实例锁 → 主密钥 → SQLite+迁移 → 会话日志+投影 →
 // 启动恢复 → 运行时 → REST + 同步通道。只监听 127.0.0.1。
 
-import { mkdirSync } from "node:fs";
+import { lstatSync, mkdirSync } from "node:fs";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { nowIso } from "@excelmanus/core";
+import { nowIso, parseRange } from "@excelmanus/core";
 import { writableFilesModule } from "@excelmanus/files";
 import {
   AgentRuntime,
@@ -46,8 +47,10 @@ import { SandboxPool } from "@excelmanus/sandbox";
 import { SKILLS_MIGRATION, skillsModule } from "@excelmanus/skills";
 import {
   CHECKPOINT_MIGRATION,
+  DOC_MOVES_MIGRATION,
   DOC_OPS_MIGRATION,
   DOC_OPS_REVERTS_MIGRATION,
+  DOC_PATH_MOVES_MIGRATION,
   DOCUMENTS_MIGRATION,
   type WorkbookModule,
   workbookModule,
@@ -68,7 +71,11 @@ import {
   injectedMemoryIds,
   sessionEnv,
 } from "./extensions.ts";
+import { installFileEvents } from "./file-events.ts";
 import { interactionTools } from "./interactions.ts";
+import { contractTool } from "./contract-tools.ts";
+import { createHarnessCoordinator } from "./harness-coordinator.ts";
+import { installHarnessFacades } from "./harness-tools.ts";
 import { acquireInstanceLock } from "./lock.ts";
 import { RenderBroker } from "./render.ts";
 import { runScriptTool } from "./script.ts";
@@ -80,6 +87,7 @@ import {
   resolveProfileModel,
   SERVER_MIGRATIONS,
 } from "./store.ts";
+import { createWorkbookCaptureDriver } from "./workbook-capture.ts";
 import { attachSyncChannel } from "./ws.ts";
 
 export interface StartServerOptions {
@@ -102,12 +110,16 @@ export interface StartServerOptions {
   dev?: boolean;
   /** 前端产物目录；默认 <repo>/packages/web/dist。 */
   webDist?: string;
+  /** 默认 sandbox 的 Chromium 可执行文件；未配置时真实视图截图明确报错。 */
+  browserExecutable?: string;
   /** 内置技能目录；默认 <repo>/assets/skills（桌面打包时指向应用资源）。 */
   builtinSkillsDir?: string;
   /** 部署形态（bootstrap.shape）：local-web / desktop。 */
   shape?: string;
   /** 额外允许的 Origin（桌面版 app://excelmanus，13 §1.1）。 */
   extraOrigins?: string[];
+  /** 额外允许的 Host（反代域名部署，EXCELMANUS_EXTRA_HOSTS）。 */
+  extraHosts?: string[];
   /** 桌面版由主进程经 safeStorage 解出的主密钥（13 §1）；缺省读写 <数据目录>/master.key。 */
   masterKey?: Buffer;
   /** 打包资源位置（桌面安装包）：模型目录快照目录、沙箱 worker 产物。 */
@@ -147,6 +159,25 @@ export interface RunningServer {
   close(): Promise<void>;
 }
 
+/** Product-owned default workspace layout; never used to initialize external workspaces. */
+export function initializeManagedWorkspace(dataDir: string): string {
+  const root = join(dataDir, "workspace");
+  mkdirSync(root, { recursive: true });
+  const rootStat = lstatSync(root);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink())
+    throw new Error("默认托管工作区必须是真实目录");
+  const outputs = join(root, "outputs");
+  try {
+    mkdirSync(outputs);
+  } catch (error) {
+    if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") throw error;
+  }
+  const outputStat = lstatSync(outputs);
+  if (!outputStat.isDirectory() || outputStat.isSymbolicLink())
+    throw new Error("默认输出路径 outputs 必须是已有真实目录，不能是文件或符号链接");
+  return root;
+}
+
 export async function startServer(opts: StartServerOptions): Promise<RunningServer> {
   const log = opts.log ?? ((line: string) => process.stdout.write(`${line}\n`));
   const emit = (event: string, fields: Record<string, string | number | boolean> = {}) => {
@@ -163,8 +194,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
   };
 
   const dataDir = opts.dataDir;
-  const workspaceRoot = join(dataDir, "workspace");
-  mkdirSync(workspaceRoot, { recursive: true });
+  const workspaceRoot = initializeManagedWorkspace(dataDir);
   // 数据目录（主密钥、令牌、主库）对代理不可见，只豁免默认工作区子树（03 §13）
   registerProtectedRoot(dataDir, { exempt: workspaceRoot });
   const lock = acquireInstanceLock(dataDir);
@@ -178,6 +208,8 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
         DOC_OPS_MIGRATION,
         BACKUPS_MIGRATION,
         CHECKPOINT_MIGRATION,
+        DOC_MOVES_MIGRATION,
+        DOC_PATH_MOVES_MIGRATION,
         DOC_OPS_REVERTS_MIGRATION,
       ]),
       ...SERVER_MIGRATIONS,
@@ -187,13 +219,27 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       MCP_MIGRATION,
     ];
     const db = openDb(join(dataDir, "excelmanus.db"), migrations);
+    try {
+      migrateProviderConnections(db, masterKey);
+    } catch (error) {
+      db.close();
+      throw error;
+    }
     const backups = new BackupService(db);
     const blobs = new BlobStore(join(dataDir, "blobs"));
     const leases = new LeaseService(db);
-    const files = writableFilesModule(db, backups);
     const workbook = opts.modules
       ? opts.modules.find((m): m is WorkbookModule => m.id === "workbook" && "service" in m)
       : workbookModule(db, backups);
+    const coordinateFileMoves: NonNullable<Parameters<typeof writableFilesModule>[2]> = (
+      moves,
+      ctx,
+      execute,
+    ) =>
+      workbook
+        ? workbook.service.withFileMoves(ctx.workspaceId, ctx.workspaceRoot, moves, execute)
+        : Promise.resolve(execute(() => {}));
+    const files = writableFilesModule(db, backups, coordinateFileMoves);
     const interactionModule: CapabilityModule = { id: "interactions", tools: [] };
     const baseModules: CapabilityModule[] =
       opts.modules ?? (workbook ? [files, workbook] : [files]);
@@ -203,9 +249,32 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       isDefault: true,
     });
     const token = ensureDeviceToken(dataDir, db);
-    if (!opts.modules) backups.pruneBackups(ws.id, ws.path);
+    for (const workspace of db.prepare("SELECT id,path FROM workspaces").all()) {
+      // Historical external workspaces may have been removed; keep their records for later recovery.
+      try {
+        lstatSync(String(workspace.path));
+      } catch (error) {
+        if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT" ||
+          typeof workspace.path !== "string" || !isAbsolute(workspace.path)) throw error;
+        emit("recovery.workspace_missing", { workspaceId: String(workspace.id), reason: "ENOENT" });
+        continue;
+      }
+      const recovery=backups.recoverFileBatchesOnStartup(String(workspace.id),String(workspace.path));
+      if(recovery.deferredIdentityCount||recovery.pendingIdentityResourceCount||recovery.deferredLegacyCount)
+        emit("recovery.identity_pending",{workspaceId:String(workspace.id),...recovery});
+    }
+    if (!opts.modules) backups.pruneBackupsOnStartup(ws.id, ws.path);
 
     const bus = new SyncBus();
+    const unFileEvents = installFileEvents(
+      bus,
+      (sessionId) =>
+        (
+          db.prepare("SELECT workspace_id FROM sessions WHERE id = ?").get(sessionId) as
+            | { workspace_id: string }
+            | undefined
+        )?.workspace_id,
+    );
     const sessionLog = new SessionLog(db, {
       projections: [...kernelProjections(), ...baseModules.flatMap((m) => m.projections ?? [])],
       bus,
@@ -226,6 +295,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       toolNames: () => new Set(tools.keys()),
     });
     const specCache = new Map<string, ToolSpec[]>();
+    let harness: ReturnType<typeof createHarnessCoordinator> | undefined;
     const mcp = mcpModule(db, {
       cipher: {
         seal: (plain) => {
@@ -250,7 +320,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       onToolsChanged: (defs) => {
         // 12 §4.2：工具列表变化在下一个步骤边界生效（toolSpecsFor 每步读取）
         for (const name of [...tools.keys()]) if (name.startsWith("mcp__")) tools.delete(name);
-        for (const d of defs) if (!tools.has(d.name)) tools.set(d.name, d);
+for (const d of defs) if (!tools.has(d.name)) tools.set(d.name, harness ? harness.wrapTool(d) : d);
         specCache.clear();
       },
       onStatus: (serverId) => bus.publish({ kind: "app", data: { type: "mcp.status", serverId } }),
@@ -273,10 +343,10 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       const r = resolveProfileModel(db, masterKey, profileId, resolveDeps);
       if ("error" in r) return r;
       const vision = effectiveCapabilities(db, catalog, r.profileId).vision.value;
-      return vision === false ? { ...r, vision: false } : r;
+      return vision === null ? r : { ...r, vision };
     };
     const questions = new QuestionCoordinator(db, sessionLog);
-    interactionModule.tools = interactionTools(sessionLog, questions);
+    interactionModule.tools = interactionTools(sessionLog, questions, workbook?.service);
     const maxConcurrentSubAgents =
       opts.maxConcurrentSubAgents ?? settings.get().maxConcurrentSubAgents;
     const team = new TeamCoordinator(db, sessionLog, leases, maxConcurrentSubAgents);
@@ -287,12 +357,29 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       : [...baseModules, interactionModule, agentModule, skills, memory, rules, mcp];
     const approvals = new ApprovalCoordinator(db, sessionLog);
     for (const m of modules) for (const t of m.tools ?? []) tools.set(t.name, t);
+    tools.set("contract", contractTool(db, sessionLog));
     // run_script 属于装配层：要同时组合 workbook 与 files 两个模块（模块互不依赖）
     // 截图渲染（ADR 0010）：经同步通道交给已连接的界面客户端绘制
     const renderBroker = new RenderBroker();
+    const captureDriver = createWorkbookCaptureDriver();
     if (workbook) {
-      const renderTool = workbookRenderTool(workbook.service, (layout) =>
-        renderBroker.request(layout),
+      const renderTool = workbookRenderTool(
+        workbook.service,
+        (layout) => renderBroker.request(layout),
+        async (packet, signal) => {
+          const executablePath =
+            opts.browserExecutable ?? process.env.EXCELMANUS_BROWSER_EXECUTABLE;
+          if (!executablePath)
+            throw new Error(
+              "真实视图截图未配置 EXCELMANUS_BROWSER_EXECUTABLE；请配置默认 sandbox Chromium，或显式使用 mode=reconstructed 有损重绘",
+            );
+          return captureDriver({
+            packet,
+            signal,
+            executablePath,
+            baseUrl: `http://127.0.0.1:${port}`,
+          });
+        },
       );
       tools.set(renderTool.name, renderTool as unknown as ToolDefinition);
     }
@@ -300,13 +387,18 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       opts.sandboxWorkerUrl ? { workerUrl: opts.sandboxWorkerUrl } : {},
     );
     tools.set("run_script", runScriptTool({ sandbox, documents: workbook?.service, tools, db }));
+    if (workbook) {
+      harness = createHarnessCoordinator({ db, log: sessionLog, documents: workbook.service, tools });
+      for (const [name, tool] of tools) tools.set(name, harness.wrapTool(tool));
+      installHarnessFacades({ tools, log: sessionLog, documents: workbook.service, coordinator: harness });
+    }
     const recovered = recoverInterruptedAgents({ db, log: sessionLog, tools });
     if (recovered > 0) emit("agents.recovered", { count: recovered });
     const toolSpecsFor = (role: string): ToolSpec[] => {
       const cached = specCache.get(role);
       if (cached) return cached;
       const specs = [...tools.values()]
-        .filter((t) => (t.roles as readonly string[]).includes(role))
+.filter((t) => t.modelVisible !== false && (t.roles as readonly string[]).includes(role))
         .map((t) => ({
           name: t.name,
           description: t.description,
@@ -355,6 +447,25 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
         skills.service.readResource(uri, workspaceRootFor(sessionId)),
       workspaceRoot: workspaceRootFor,
       workspaceId: workspaceIdFor,
+      ...(workbook
+        ? {
+            validateContext: async (
+              refs: { docId: string; rev: number; range: string }[],
+              root: string,
+            ) => {
+              for (const ref of refs) {
+                const { meta, snapshot } = await workbook.service.snapshot(ref.docId, root);
+                if (meta.rev !== ref.rev) throw new Error("选区修订已变化");
+                const range = parseRange(ref.range);
+                if (
+                  range.sheet &&
+                  !Object.values(snapshot.sheets).some((sheet) => sheet.name === range.sheet)
+                )
+                  throw new Error("选区工作表不存在");
+              }
+            },
+          }
+        : {}),
       retryBaseMs: opts.retryBaseMs,
       maxConcurrentSubAgents,
       // 完成报告投递后唤醒父代理（05 §4.3）；闭包延迟绑定避免构造顺序问题。
@@ -386,6 +497,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       new Set([
         `127.0.0.1:${port}`,
         `localhost:${port}`,
+        ...(opts.extraHosts ?? []),
         ...(opts.dev ? ["127.0.0.1:5173", "localhost:5173"] : []),
       ]);
     const allowedOrigins = () =>
@@ -441,6 +553,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
             resolveDeps,
             samplesDir:
               opts.samplesDir ?? join(dirname(fileURLToPath(import.meta.url)), "../../../samples"),
+            coordinateFileMoves,
             replaceDocumentFile: (workspaceId, root, path, replace) =>
               workbook
                 ? workbook.service.replaceFile(workspaceId, root, path, replace)
@@ -492,6 +605,10 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       emit,
       docService: workbook?.service,
       render: renderBroker,
+      nativeAuthorityFor:(docId)=>{
+        const row=db.prepare("SELECT w.id,w.path FROM documents d JOIN workspaces w ON w.id=d.workspace_id WHERE d.id=?").get(docId) as {id:string;path:string}|undefined;
+        return row?{db,workspaceId:row.id,workspaceRoot:row.path}:undefined;
+      },
       workspaceRootFor: (docId) => {
         const row = db
           .prepare(
@@ -658,11 +775,13 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
           closePromise = (async () => {
             clearInterval(sweeper);
             unNotify();
+            unFileEvents();
             accounts.close();
             detach();
             server.closeAllConnections();
             await new Promise<void>((resolve) => server.close(() => resolve()));
             await runtime.shutdown();
+            await captureDriver.close();
             await mcp.service.close().catch(() => {});
             try {
               await sandbox.close();

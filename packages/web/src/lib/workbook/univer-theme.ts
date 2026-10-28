@@ -49,18 +49,22 @@ export function dropEditorThemeColor<T extends { id: string; params: unknown }>(
     p?.trigger !== "sheet.command.set-range-values"
   )
     return mutation;
-  let changed = false;
-  const cellValue: typeof p.cellValue = {};
+  let cellValue: typeof p.cellValue;
   for (const [r, row] of Object.entries(p.cellValue ?? {})) {
-    cellValue[r] = {};
+    let changedRow: typeof row | undefined;
     for (const [c, cell] of Object.entries(row ?? {})) {
       const s = cell?.s as { cl?: { rgb?: unknown } } | undefined;
       const onlyColor = s && typeof s === "object" && Object.keys(s).length === 1 && s.cl;
       if (onlyColor && THEME_TEXT.has(String(s.cl?.rgb).toLowerCase())) {
-        cellValue[r][c] = { ...cell, s: null };
-        changed = true;
-      } else cellValue[r][c] = cell;
+        cellValue ??= { ...p.cellValue };
+        changedRow ??= { ...row };
+        const cleaned = { ...cell };
+        // Omit the editor-only patch; null would erase the cell's existing format.
+        delete cleaned.s;
+        changedRow[c] = cleaned;
+        cellValue[r] = changedRow;
+      }
     }
   }
-  return changed ? { ...mutation, params: { ...p, cellValue } } : mutation;
+  return cellValue ? { ...mutation, params: { ...p, cellValue } } : mutation;
 }

@@ -1,358 +1,59 @@
-/* The host already subtracts the top bar and composer. When that space is
-   short, let the content grow in normal flow so the viewport can scroll. */
-.viewport {
-  position: relative;
-  flex: 1 1 0;
-  width: 100%;
-  max-width: 1056px;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-  margin-inline: auto;
-  overflow: auto;
-  container: welcome / size;
+/* Both empty states use the space left after the app header and composer. */
+.viewport { flex: 1 1 0; min-width: 0; min-height: 0; width: 100%; overflow: auto; container: welcome / size; scrollbar-width: thin; }
+.layout { display: flex; flex-direction: column; justify-content: center; gap: 14px; min-height: 100%; max-width: 760px; margin: auto; padding: 20px clamp(16px, 4cqw, 36px); box-sizing: border-box; color: var(--em-ink); }
+.hero { min-width: 0; padding: 0 0 8px; }
+.heroContent { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.title { margin: 0; font-size: clamp(22px, 3.8cqw, 30px); line-height: 1.3; font-weight: 650; letter-spacing: -0.035em; }
+.description { margin: 0; color: var(--em-muted); font-size: 13px; line-height: 1.5; }
+.heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; }
+.heading h2 { margin: 0; font-size: 12px; font-weight: 600; }
+.heading p { margin: 0; color: var(--em-muted); font-size: 11px; }
+.tasks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; min-width: 0; }
+.card { min-width: 0; width: 100%; padding: 12px; border: 1px solid var(--em-line); border-radius: 12px; background: var(--em-panel); color: inherit; text-align: left; cursor: pointer; transition: background 150ms, border-color 150ms; }
+.card:hover:not(:disabled) { background: var(--em-primary-alpha-04); border-color: var(--em-primary-light); }
+.card:focus-visible, .workbook:focus-visible { outline: 2px solid var(--em-primary); outline-offset: 2px; }
+.card[data-loading] { opacity: 0.65; cursor: wait; }
+.card[data-error] { border-color: var(--destructive); }
+.cardContent { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.cardHeader { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.icon { display: grid; place-items: center; width: 26px; height: 26px; flex: 0 0 26px; border-radius: 8px; color: var(--em-primary); background: var(--em-primary-alpha-08); }
+.icon svg { width: 15px; height: 15px; }
+.label { min-width: 0; font-size: 13px; font-weight: 600; line-height: 1.4; }
+.copy { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; color: var(--em-muted); font-size: 12px; line-height: 1.5; }
+.footer { display: flex; min-width: 0; }
+.file { display: flex; gap: 5px; align-items: center; min-width: 0; color: var(--em-muted); font-size: 11px; }
+.file svg { width: 12px; height: 12px; flex-shrink: 0; }
+.file img { width: 24px; height: 18px; object-fit: cover; border-radius: 3px; }
+.filename { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.error { color: var(--destructive); font-size: 12px; }
+.spinner { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.workbook { display: flex; align-items: center; gap: 8px; min-width: 0; width: 100%; padding: 6px 0; color: var(--em-primary); text-align: left; }
+.workbook strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500; }
+.workbook svg { flex-shrink: 0; }
+.workbook span { margin-left: auto; color: var(--em-muted); font-size: 12px; }
+.recent { max-height: 54px; overflow: auto; }
+@container welcome (max-width: 480px) {
+  .layout { gap: 12px; padding: 16px; }
+  .heading p, .footer:not(:has(.error)) { display: none; }
+  .card { padding: 10px; }
 }
-
-.layout {
-  position: relative;
-  display: grid;
-  grid-template-rows: auto auto auto;
-  align-content: center;
-  gap: 10px;
-  width: 100%;
-  min-height: 100%;
-  padding: 8px clamp(10px, 3cqw, 30px) 10px;
-  min-width: 0;
-  box-sizing: border-box;
-  color: var(--em-ink);
+@container welcome (max-height: 440px) {
+  .layout { gap: 10px; padding-block: 12px; }
+  .hero { padding-bottom: 0; }
+  .description, .footer:not(:has(.error)), .recent { display: none; }
+  .card { padding: 10px; }
+  .copy { -webkit-line-clamp: 1; line-clamp: 1; }
 }
-
-.hero {
-  position: relative;
-  min-width: 0;
-  min-height: 0;
-  margin-bottom: 14px;
-  padding: clamp(18px, 4cqh, 36px) clamp(16px, 3.5cqw, 40px);
-  overflow: hidden;
-  border: 1px solid var(--em-line);
-  border-radius: 22px;
-  background: linear-gradient(135deg, var(--em-panel), var(--em-panel-soft));
-  container: welcome-hero / inline-size;
+@container welcome (max-height: 320px) {
+  .layout { justify-content: flex-start; }
+  .copy, .heading p { display: none; }
 }
-
-.hero::after {
-  content: "";
-  position: absolute;
-  top: -110px;
-  right: -70px;
-  width: 220px;
-  height: 220px;
-  border: 1px solid var(--em-primary-alpha-15);
-  border-radius: 50%;
-  box-shadow: 0 0 0 22px var(--em-primary-alpha-04);
-  pointer-events: none;
+@container welcome (max-width: 300px) {
+  .tasks { grid-template-columns: 1fr; }
+  .copy { display: none; }
 }
-
-.heroContent {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 12px;
-  height: 100%;
-  min-width: 0;
-}
-
-.kicker {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--em-primary);
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 16px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.kicker::before {
-  content: "";
-  flex: 0 0 6px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--em-primary-light);
-}
-
-.title {
-  display: -webkit-box;
-  margin: 0;
-  overflow: hidden;
-  font-size: clamp(20px, 4.2cqw, 36px);
-  font-weight: 650;
-  line-height: 1.25;
-  letter-spacing: -0.035em;
-  overflow-wrap: anywhere;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-}
-
-.description {
-  display: -webkit-box;
-  margin: 0;
-  overflow: hidden;
-  color: var(--em-muted);
-  font-size: 13px;
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-}
-
-.proof {
-  display: flex;
-  gap: 6px;
-  min-width: 0;
-}
-
-.proof > span {
-  min-width: 0;
-  padding: 4px 9px;
-  overflow: hidden;
-  border: 1px solid var(--em-line);
-  border-radius: 99px;
-  color: var(--em-muted);
-  background: var(--em-panel);
-  font-size: 11px;
-  line-height: 16px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.heading {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  min-width: 0;
-  padding-inline: 2px;
-}
-
-.heading h2 {
-  flex-shrink: 0;
-  margin: 0;
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 20px;
-}
-
-.heading p {
-  margin: 0;
-  overflow: hidden;
-  color: var(--em-muted);
-  font-size: 12px;
-  line-height: 20px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.tasks {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-auto-rows: minmax(118px, auto);
-  gap: 10px;
-  min-width: 0;
-  min-height: 0;
-}
-
-.card {
-  display: block;
-  width: 100%;
-  height: 100%;
-  min-width: 0;
-  min-height: 118px;
-  margin: 0;
-  padding: 12px 14px;
-  overflow: hidden;
-  box-sizing: border-box;
-  border: 1px solid var(--em-line);
-  border-radius: 16px;
-  background: var(--em-panel);
-  color: var(--em-ink);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition:
-    border-color 160ms ease,
-    background-color 160ms ease,
-    box-shadow 160ms ease;
-  container: welcome-card / inline-size;
-}
-
-.card:hover:not(:disabled) {
-  border-color: var(--em-primary-light);
-  background: color-mix(in srgb, var(--em-primary) 3%, var(--em-panel));
-  box-shadow: 0 4px 16px var(--em-primary-alpha-06);
-}
-
-.card:focus-visible {
-  outline: 2px solid var(--em-primary);
-  outline-offset: -3px;
-}
-
-.card:disabled {
-  cursor: default;
-}
-.card[data-loading] {
-  opacity: 0.65;
-  cursor: wait;
-}
-.card[data-error] {
-  border-color: var(--destructive);
-}
-
-.cardContent {
-  display: grid;
-  grid-template-rows: 24px minmax(36px, 1fr) 24px;
-  gap: 4px;
-  width: 100%;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-}
-
-.cardHeader {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.icon {
-  display: flex;
-  flex: 0 0 24px;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 7px;
-  background: var(--em-primary-alpha-08);
-  color: var(--em-primary);
-}
-
-.icon svg {
-  width: 14px;
-  height: 14px;
-}
-.spinner {
-  animation: spin 1s linear infinite;
-}
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.label {
-  min-width: 0;
-  overflow: hidden;
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 20px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.copy {
-  display: -webkit-box;
-  align-self: start;
-  min-width: 0;
-  min-height: 0;
-  max-height: 100%;
-  overflow: hidden;
-  color: var(--em-muted);
-  font-size: 12px;
-  line-height: 18px;
-  overflow-wrap: anywhere;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-}
-
-.footer {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.file {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  min-width: 0;
-  max-width: 100%;
-  height: 24px;
-  padding: 2px 6px;
-  box-sizing: border-box;
-  border-radius: 6px;
-  background: var(--em-fill);
-  color: var(--em-muted);
-  font-size: 11px;
-  line-height: 16px;
-}
-
-.file img {
-  flex: 0 0 32px;
-  width: 32px;
-  height: 20px;
-  border-radius: 3px;
-  object-fit: cover;
-}
-.file svg {
-  flex: 0 0 12px;
-  width: 12px;
-  height: 12px;
-}
-.filename {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.error {
-  color: var(--destructive);
-  font-size: 11px;
-  line-height: 18px;
-}
-
-/* Adjust the grid once using the chat area's size, including changes caused
-   by side panels, attachments and the expanding composer. */
-@container welcome (max-width: 559px) {
-  .heading p {
-    display: none;
-  }
-  .tasks {
-    grid-template-columns: minmax(0, 1fr);
-    grid-auto-rows: minmax(104px, auto);
-  }
-}
-
-@container welcome-card (max-width: 135px) {
-  .icon {
-    display: none;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .card {
-    transition: none;
-  }
-  .spinner {
-    animation: none;
-  }
+  .card { transition: none; }
+  .spinner { animation: none; }
 }

@@ -1,6 +1,6 @@
 import type { Memory, MemoryCategory } from "@excelmanus/protocol";
 import { Brain, Check, ChevronRight, Loader2, Pencil, Plus, Search, Trash2, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { confirmAction } from "@/components/ui/confirm-dialog";
@@ -9,6 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/components/ui/toaster";
 import { api, errorMessage } from "@/lib/backend/api";
+import { createDateLabels } from "@/lib/date-labels";
 import { onAppEvent, refreshSettings, updateSettings, useAppStore } from "@/stores/app-store";
 import { GlassSelect } from "./model/form-widgets";
 
@@ -31,24 +32,23 @@ const CATEGORY_COLORS: Record<string, string> = {
 
 const CONTENT_PREVIEW_LEN = 100;
 
-function formatTimestamp(ts: string): string {
-  const d = new Date(ts);
-  if (Number.isNaN(d.getTime())) return ts;
-  return d.toLocaleString("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-function MemoryInjectionToggle() {
+export function MemoryInjectionToggle() {
   const settings = useAppStore((s) => s.settings);
   const [saving, setSaving] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: loadAttempt explicitly retries the settings request
   useEffect(() => {
-    if (!settings) void refreshSettings().catch(() => undefined);
-  }, [settings]);
+    if (settings) return;
+    let active = true;
+    setLoadError("");
+    void refreshSettings().catch((error) => {
+      if (active) setLoadError(errorMessage(error, "无法读取记忆设置"));
+    });
+    return () => {
+      active = false;
+    };
+  }, [settings, loadAttempt]);
   return (
     <section className="em-plugin-panel flex items-center justify-between gap-3 rounded-xl border p-3">
       <div className="min-w-0">
@@ -59,29 +59,61 @@ function MemoryInjectionToggle() {
           开启后，Agent 会参考记忆库中的相关条目，并在任务中记录新的跨任务信息。
         </p>
       </div>
-      <Switch
-        id="memory-injection"
-        checked={settings?.memoryInjection ?? false}
-        disabled={!settings || saving}
-        onCheckedChange={async (checked) => {
-          setSaving(true);
-          try {
-            await updateSettings({ memoryInjection: checked });
-          } catch (error) {
-            toast({ title: "保存失败", description: errorMessage(error), tone: "error" });
-          } finally {
-            setSaving(false);
-          }
-        }}
-      />
+      {!settings ? (
+        <div
+          className="flex shrink-0 flex-col items-end gap-2 text-xs"
+          role={loadError ? "alert" : "status"}
+        >
+          {loadError ? (
+            <>
+              <span className="text-destructive">{loadError}</span>
+              <Button size="sm" variant="outline" onClick={() => setLoadAttempt((n) => n + 1)}>
+                重新读取
+              </Button>
+            </>
+          ) : (
+            <span className="flex items-center gap-2 text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              正在读取记忆设置…
+            </span>
+          )}
+        </div>
+      ) : (
+        <Switch
+          id="memory-injection"
+          checked={settings.memoryInjection}
+          disabled={saving}
+          onCheckedChange={async (checked) => {
+            setSaving(true);
+            try {
+              await updateSettings({ memoryInjection: checked });
+            } catch (error) {
+              toast({ title: "保存失败", description: errorMessage(error), tone: "error" });
+            } finally {
+              setSaving(false);
+            }
+          }}
+        />
+      )}
     </section>
   );
 }
 
 export function MemoryTab() {
   const workspaces = useAppStore((s) => s.workspaces);
+  const workspaceNames = useMemo(
+    () => new Map(workspaces.map((w) => [w.id, w.name])),
+    [workspaces],
+  );
+  const formatTimestamp = createDateLabels({
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
   const [entries, setEntries] = useState<Memory[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [categoryFilter, setCategoryFilter] = useState<MemoryCategory | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -90,6 +122,9 @@ export function MemoryTab() {
   const [draft, setDraft] = useState("");
   const [draftCategory, setDraftCategory] = useState<MemoryCategory>("preference");
   const [adding, setAdding] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const readRequest = useRef(0);
+  const waitingForList = loading && entries.length === 0;
 
   const categoryCounts = useMemo(() => {
     const counts: Record<string, number> = { all: entries.length };
@@ -98,21 +133,28 @@ export function MemoryTab() {
   }, [entries]);
 
   const fetchEntries = useCallback(async (q: string) => {
+    const request = ++readRequest.current;
+    setLoadError(null);
     setLoading(true);
     try {
       const { items } = await api().listMemories(q.trim() || undefined);
+      if (request !== readRequest.current) return;
       setEntries(items);
     } catch (error) {
+      if (request !== readRequest.current) return;
       setEntries([]);
-      toast({ title: "读取记忆失败", description: errorMessage(error), tone: "error" });
+      setLoadError(errorMessage(error, "读取记忆失败"));
     } finally {
-      setLoading(false);
+      if (request === readRequest.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void fetchEntries(query), query ? 250 : 0);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      readRequest.current += 1;
+    };
   }, [fetchEntries, query]);
 
   useEffect(
@@ -123,8 +165,7 @@ export function MemoryTab() {
     [fetchEntries, query],
   );
 
-  const workspaceName = (id: string | null) =>
-    id ? (workspaces.find((w) => w.id === id)?.name ?? null) : null;
+  const workspaceName = (id: string | null) => (id ? (workspaceNames.get(id) ?? null) : null);
 
   const handleAdd = async () => {
     const content = draft.trim();
@@ -179,14 +220,19 @@ export function MemoryTab() {
     }
   };
 
-  const filteredEntries = categoryFilter
-    ? entries.filter((e) => e.category === categoryFilter)
-    : entries;
-  const groupedByCategory = filteredEntries.reduce<Record<string, Memory[]>>((acc, e) => {
-    if (!acc[e.category]) acc[e.category] = [];
-    acc[e.category].push(e);
-    return acc;
-  }, {});
+  const filteredEntries = useMemo(
+    () => (categoryFilter ? entries.filter((e) => e.category === categoryFilter) : entries),
+    [entries, categoryFilter],
+  );
+  const groupedByCategory = useMemo(
+    () =>
+      filteredEntries.reduce<Record<string, Memory[]>>((acc, e) => {
+        if (!acc[e.category]) acc[e.category] = [];
+        acc[e.category].push(e);
+        return acc;
+      }, {}),
+    [filteredEntries],
+  );
   const orderedCategories = categoryFilter
     ? [categoryFilter]
     : CATEGORIES.filter((c) => groupedByCategory[c]?.length);
@@ -204,12 +250,16 @@ export function MemoryTab() {
             <div className="min-w-0">
               <h4 className="text-sm font-medium">记忆库</h4>
               <p className="mt-0.5 text-[10px] leading-relaxed text-muted-foreground">
-                Agent 已保留 {entries.length} 条跨任务信息
+                {loadError
+                  ? "记忆列表读取失败"
+                  : waitingForList
+                    ? "正在读取记忆列表…"
+                    : `Agent 已保留 ${entries.length} 条跨任务信息`}
               </p>
             </div>
           </div>
           <span className="rounded-full bg-muted px-2 py-1 text-[10px] font-medium text-muted-foreground">
-            {filteredEntries.length} 条
+            {waitingForList ? "读取中" : loadError ? "读取失败" : `${filteredEntries.length} 条`}
           </span>
         </div>
 
@@ -248,7 +298,7 @@ export function MemoryTab() {
                 <span
                   className={`text-[10px] ${isActive ? "text-white/70" : "text-muted-foreground/60"}`}
                 >
-                  {count}
+                  {waitingForList || loadError ? "…" : count}
                 </span>
               </button>
             );
@@ -295,9 +345,16 @@ export function MemoryTab() {
             点击条目查看完整内容，或修改、清理不再准确的信息
           </p>
         </div>
-        {loading && entries.length === 0 ? (
+        {waitingForList ? (
           <div className="flex items-center justify-center py-10 text-muted-foreground">
             <Loader2 className="h-5 w-5 animate-spin" />
+          </div>
+        ) : loadError ? (
+          <div role="alert" className="flex items-center gap-2 py-4 text-xs text-destructive">
+            <span className="min-w-0 flex-1">{loadError}</span>
+            <Button size="sm" variant="outline" onClick={() => void fetchEntries(query)}>
+              重新读取
+            </Button>
           </div>
         ) : orderedCategories.length === 0 ? (
           <div className="rounded-xl border border-dashed text-center py-10">

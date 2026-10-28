@@ -18,10 +18,13 @@
     "@univerjs/presets": "1.0.2",
     "@univerjs/sheets": "1.0.2",
     "@univerjs/sheets-conditional-formatting": "1.0.2",
+    "@univerjs/sheets-table": "1.0.2",
     "fast-xml-parser": "5.11.1",
     "fflate": "0.8.3",
     "iconv-lite": "0.7.3",
     "rxjs": "7.8.2",
+    "saxes": "5.0.1",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "zod": "4.6.5"
   }
 }

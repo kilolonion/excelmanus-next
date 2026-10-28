@@ -4,11 +4,13 @@ import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react-swc";
 import { defineConfig } from "vite";
+import { createWorkbenchChunks } from "./build/workbook-chunks";
 
 const backend = `http://127.0.0.1:${process.env.EXCELMANUS_PORT ?? 8787}`;
 
 export default defineConfig({
   plugins: [tailwindcss(), react()],
+  worker: { format: "es" },
   resolve: {
     alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
   },
@@ -21,15 +23,14 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
+    // 原地部署时保留旧哈希资源，已打开的页面仍可加载其懒加载模块。
+    emptyOutDir: false,
     chunkSizeWarningLimit: 4096,
     rollupOptions: {
       output: {
-        manualChunks(id) {
-          // Univer 只随懒加载的工作簿一起下载，不进首屏。
-          if (id.includes("/node_modules/") && /@univerjs|\/rxjs\//.test(id)) return "univer";
-          if (/\/node_modules\/(?:react|react-dom|scheduler)\//.test(id)) return "react";
-          return undefined;
-        },
+        // Shared UI helpers must remain outside the lazy workbook chunk.
+        onlyExplicitManualChunks: true,
+        manualChunks: createWorkbenchChunks(),
       },
     },
   },

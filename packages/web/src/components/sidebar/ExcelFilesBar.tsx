@@ -39,6 +39,7 @@ import { toast } from "@/components/ui/toaster";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { errorMessage } from "@/lib/backend/api";
 import { WORKSPACE_FILE_INPUT_ACCEPT } from "@/lib/file-kind";
+import { FILE_SORTS, type FileSort, readFileSort, saveFileSort } from "@/lib/file-sorting";
 import { openWorkspaceFile } from "@/lib/open-file";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
@@ -51,9 +52,9 @@ import { BackupRow, FileInfoDialog } from "./FileInfoDialog";
 import styles from "./FilePanel.module.css";
 import { FlatFileListView } from "./FlatFileListView";
 import { deleteWithConfirm, listFileBackups, mentionFiles, uploadInto } from "./file-actions";
-import { flattenFiles } from "./file-tree-helpers";
 import { useSessionFileMarks } from "./session-file-marks";
 import { type CreateKind, DirChildren, type TreeContext, useFolderDrop } from "./TreeNodeItem";
+import { useFileListing } from "./use-file-listing";
 
 const VIEW_KEY = "excelmanus.files-view";
 
@@ -250,6 +251,7 @@ export function ExcelFilesBar() {
 
   const [view, setView] = useState<"list" | "tree">(readView);
   const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<FileSort>(readFileSort);
   const [showSystem, setShowSystem] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [creatingRoot, setCreatingRoot] = useState<CreateKind | null>(null);
@@ -272,13 +274,7 @@ export function ExcelFilesBar() {
     setSelected(new Set());
   }, [workspaceId]);
 
-  const allFiles = useMemo(() => flattenFiles(dirs, true), [dirs]);
-  const visibleFiles = useMemo(() => {
-    const files = showSystem ? allFiles : flattenFiles(dirs, false);
-    const q = query.trim().toLocaleLowerCase();
-    return q ? files.filter((f) => f.path.toLocaleLowerCase().includes(q)) : files;
-  }, [allFiles, dirs, showSystem, query]);
-  const hiddenCount = allFiles.length - flattenFiles(dirs, false).length;
+  const { allFiles, visibleFiles, hiddenCount } = useFileListing(dirs, showSystem, query);
   const openPaths = useMemo(() => new Set(tabs.map((t) => t.path)), [tabs]);
   const selectedEntries = useMemo(
     () => allFiles.filter((f) => selected.has(f.path)),
@@ -350,6 +346,7 @@ export function ExcelFilesBar() {
     selectMode,
     selectedPaths: selected,
     showSystem,
+    sort,
     onOpen,
     dragEntries,
     onInfo: setInfo,
@@ -529,6 +526,37 @@ export function ExcelFilesBar() {
         </div>
       </div>
 
+      <div className="flex items-center justify-between px-3 pb-2 text-xs text-muted-foreground">
+        <span>{sort === "recent" ? "打开过的表格优先" : "文件排序"}</span>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 rounded px-2 py-1 hover:bg-muted"
+              aria-label={`文件排序：${FILE_SORTS[sort]}`}
+            >
+              {FILE_SORTS[sort]}
+              <ChevronDown className="h-3 w-3" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            {(Object.keys(FILE_SORTS) as FileSort[]).map((value) => (
+              <DropdownMenuItem
+                key={value}
+                onSelect={() => {
+                  setSort(value);
+                  saveFileSort(value);
+                  scrollRef.current?.scrollTo({ top: 0 });
+                }}
+              >
+                <Check className={cn("h-3 w-3", sort !== value && "invisible")} />
+                {FILE_SORTS[value]}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+
       {selectMode && (
         <div className={styles.selection} role="region" aria-label="文件批量操作">
           <div className={styles.selectionHeader}>
@@ -614,6 +642,7 @@ export function ExcelFilesBar() {
           <FlatFileListView
             scrollRef={scrollRef}
             files={visibleFiles}
+            sort={sort}
             marks={marks}
             openPaths={openPaths}
             selectMode={selectMode}

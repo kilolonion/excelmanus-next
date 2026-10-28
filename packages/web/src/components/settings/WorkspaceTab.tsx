@@ -12,12 +12,14 @@ import {
   Star,
   Trash2,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { BackupPreviewButton } from "@/components/files/BackupPreviewButton";
 import { AddWorkspaceDialog } from "@/components/sidebar/AddWorkspaceDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { confirmAction } from "@/components/ui/confirm-dialog";
 import { toast } from "@/components/ui/toaster";
+import { createDateLabels } from "@/lib/date-labels";
 import { api, desktop, errorMessage, saveBlob } from "@/lib/backend/api";
 import { onAppEvent, removeWorkspace, setDefaultWorkspace, useAppStore } from "@/stores/app-store";
 import { GlassSelect } from "./model/form-widgets";
@@ -30,19 +32,6 @@ function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function formatTime(ts: string): string {
-  const d = new Date(ts);
-  return Number.isNaN(d.getTime())
-    ? ts
-    : d.toLocaleString("zh-CN", {
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
 }
 
 function WorkspaceList() {
@@ -181,39 +170,62 @@ function WorkspaceList() {
 }
 
 function BackupPanel() {
+  const formatTime = createDateLabels({
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
   const workspaces = useAppStore((s) => s.workspaces);
   const [workspaceId, setWorkspaceId] = useState<string>(
     () => workspaces.find((w) => w.isDefault)?.id ?? workspaces[0]?.id ?? "",
   );
   const [kind, setKind] = useState<BackupKind>("backups");
   const [items, setItems] = useState<BackupEntry[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const readScope = useRef<{ workspaceId: string; kind: BackupKind } | null>(null);
+  const readRequest = useRef(0);
 
   useEffect(() => {
     if (!workspaces.some((w) => w.id === workspaceId)) setWorkspaceId(workspaces[0]?.id ?? "");
   }, [workspaces, workspaceId]);
 
   const load = useCallback(async () => {
+    const scope = readScope.current;
+    if (!scope || scope.workspaceId !== workspaceId || scope.kind !== kind) return;
+    const request = ++readRequest.current;
+    setLoadError(null);
+    const isCurrent = () => readScope.current === scope && readRequest.current === request;
     if (!workspaceId) {
       setItems([]);
+      setLoading(false);
       return;
     }
     setLoading(true);
     try {
       const res = await api().listBackups(workspaceId, kind);
+      if (!isCurrent()) return;
       setItems([...res.items].sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
     } catch (error) {
+      if (!isCurrent()) return;
       setItems([]);
-      toast({ title: "读取失败", description: errorMessage(error), tone: "error" });
+      setLoadError(errorMessage(error, "备份列表读取失败"));
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }, [workspaceId, kind]);
 
   useEffect(() => {
+    readScope.current = { workspaceId, kind };
     void load();
-  }, [load]);
+    return () => {
+      readScope.current = null;
+      readRequest.current += 1;
+    };
+  }, [load, workspaceId, kind]);
 
   useEffect(
     () =>
@@ -317,8 +329,19 @@ function BackupPanel() {
             />
           </div>
           {loading ? (
-            <div className="flex justify-center py-8 text-muted-foreground">
+            <div
+              role="status"
+              className="flex items-center justify-center gap-2 py-8 text-xs text-muted-foreground"
+            >
               <Loader2 className="h-5 w-5 animate-spin" />
+              {kind === "backups" ? "正在读取备份…" : "正在读取回收站…"}
+            </div>
+          ) : loadError ? (
+            <div role="alert" className="flex items-center gap-2 py-4 text-xs text-destructive">
+              <span className="min-w-0 flex-1">{loadError}</span>
+              <Button size="sm" variant="outline" onClick={() => void load()}>
+                重新读取
+              </Button>
             </div>
           ) : items.length === 0 ? (
             <p className="rounded-xl border border-dashed py-6 text-center text-xs text-muted-foreground">
@@ -343,6 +366,7 @@ function BackupPanel() {
                     <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
                   ) : (
                     <div className="flex shrink-0 gap-0.5">
+                      <BackupPreviewButton workspaceId={workspaceId} entry={entry} />
                       <Button
                         variant="ghost"
                         size="icon"

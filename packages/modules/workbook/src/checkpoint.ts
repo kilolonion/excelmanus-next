@@ -1,16 +1,36 @@
 import { posix } from "node:path";
 import { indexToCol, type RangeRef, type StructuralOp } from "@excelmanus/core";
 import { FileOperationError } from "@excelmanus/kernel";
+import { arraysOf } from "@excelmanus/protocol";
 import type { ICellData, IWorkbookData, IWorksheetData } from "@univerjs/core";
-import { zipSync } from "fflate";
+import { XMLParser } from "fast-xml-parser";
+import { unzipSync, zipSync } from "fflate";
+import {
+  exportArrays,
+  isManagedArray,
+  materializeArrays,
+  validateArrays,
+} from "./array-formulas.ts";
+import { scalarValue } from "./cell-value.ts";
+import { exportNames } from "./defined-names.ts";
 import type { DocMutation } from "./engine.ts";
+import { isExternalFormula } from "./external-links.ts";
 import { exportFilterLinks } from "./filter-links.ts";
-import { exportImages, exportObjects, objectsOf } from "./objects.ts";
+import { xlsxFormula } from "./formula-compat.ts";
+import { exportImages, exportNotes, exportObjects, exportShapes, objectsOf } from "./objects.ts";
 import type { ChangeOp } from "./ops.ts";
+import { assertOutlineStructure } from "./outline-structure.ts";
+import { planPivotRefreshPatches } from "./pivot-codec.ts";
+import { patchPrintSettings, printSettingsOf } from "./print-codec.ts";
 import { exportRules } from "./rule-codec.ts";
 import { StyleWriter } from "./styles.ts";
+import { exportTables } from "./tables.ts";
+import { exportThreadedComments } from "./threaded-comments.ts";
+import { normalizeWorksheetXml, worksheetXmlView } from "./worksheet-namespace.ts";
+import { deriveWriteSetAll } from "./writeset.ts";
 import { type ImportedWorkbook, importXlsx, type XlsxPreservation } from "./xlsx.ts";
 import {
+  assertXmlDocument,
   bytesOf,
   elements,
   escapeXml,
@@ -62,6 +82,8 @@ export interface SheetChanges {
   ranges: RangeRef[];
   /** 有行列插删/移动的表：坐标已平移，整表按快照重写。 */
   structural: Set<string>;
+  /** Actual engine results, invalidated by later author writes. */
+  calculated?: Array<{ sheetId: string; r: number; c: number; f: string; v: ICellData["v"] }>;
 }
 /**
  * 汇总已提交修订的写集。引擎来源修订不算作者修改，但仍要把它的区域交给导出器，
@@ -71,16 +93,98 @@ export function pendingChanges(
   records: Array<{
     writeSet: { ranges: RangeRef[]; structural: StructuralOp[] };
     sourceKind: string;
+    mutations?: DocMutation[];
   }>,
 ): SheetChanges {
   const structural = new Set<string>();
   const ranges: RangeRef[] = [];
+  const calculated = new Map<string, NonNullable<SheetChanges["calculated"]>[number]>();
   for (const rec of records) {
     for (const s of rec.writeSet.structural)
       if (/^(?:insert|delete)(?:Rows|Cols)$|^moveRange$/.test(s.kind)) structural.add(s.sheetId);
+    // Inputs can affect formulas on other sheets; without a dependency graph,
+    // structural edits and writes with no mutation detail invalidate all evidence.
+    if (rec.writeSet.structural.length || (!rec.mutations && rec.writeSet.ranges.length))
+      calculated.clear();
     ranges.push(...rec.writeSet.ranges);
+    // Synchronous calculation is stored in the author revision's mutations, but
+    // intentionally excluded from its conflict write set. Export still needs those
+    // ranges so dependent sheets receive fresh cached values.
+    const results = (rec.mutations ?? []).filter(
+      (m) =>
+        m.id === "sheet.mutation.set-range-values" && !(m.params as { trigger?: unknown }).trigger,
+    );
+    ranges.push(...deriveWriteSetAll(results).ranges);
+    for (const mutation of rec.mutations ?? []) {
+      if (mutation.id !== "sheet.mutation.set-range-values") continue;
+      const p = mutation.params as {
+        subUnitId: string;
+        trigger?: unknown;
+        cellValue?: Record<string, Record<string, ICellData>>;
+      };
+      // A later author content write may change any formula's precedents.
+      // Style-only patches keep evidence; subsequent engine results establish it anew.
+      if (
+        p.trigger &&
+        Object.values(p.cellValue ?? {}).some((row) =>
+          Object.values(row ?? {}).some((cell) => !cell || "f" in cell || "v" in cell),
+        )
+      )
+        calculated.clear();
+      for (const [r, row] of Object.entries(p.cellValue ?? {}))
+        for (const [c, cell] of Object.entries(row ?? {})) {
+          const key = JSON.stringify([p.subUnitId, Number(r), Number(c)]);
+          // Styles do not invalidate a calculation, but a later content write does.
+          if (!cell || "f" in cell || "v" in cell) calculated.delete(key);
+          if (!p.trigger && cell?.f && cell.v != null)
+            calculated.set(key, {
+              sheetId: p.subUnitId,
+              r: Number(r),
+              c: Number(c),
+              f: cell.f,
+              v: cell.v,
+            });
+        }
+    }
   }
-  return { ranges, structural };
+  return { ranges, structural, calculated: [...calculated.values()] };
+}
+
+const protectionParser = new XMLParser({
+  ignoreAttributes: false,
+  removeNSPrefix: true,
+  parseAttributeValue: false,
+});
+/** Protection is preserved, but editing permissions are not modeled. Refuse writes conservatively. */
+export function workbookProtection(imported: ImportedWorkbook) {
+  const p = imported.preservation;
+  const sheets = Object.entries(p?.sheetParts ?? {}).flatMap(([sheetId, ref]) => {
+    const raw = p?.parts[ref.path];
+    if (!raw) return [];
+    const xml = textOf(raw);
+    if (!xml.includes("sheetProtection")) return [];
+    const parsed = protectionParser.parse(xml) as {
+      worksheet?: { sheetProtection?: { "@_sheet"?: string } | Array<{ "@_sheet"?: string }> };
+    };
+    const value = parsed.worksheet?.sheetProtection;
+    const tags = value ? (Array.isArray(value) ? value : [value]) : [];
+    const protectedSheet = tags.some((tag) =>
+      ["1", "true"].includes(String(tag["@_sheet"] ?? "").trim()),
+    );
+    return protectedSheet
+      ? [{ sheetId, sheet: imported.snapshot.sheets[sheetId]?.name ?? sheetId }]
+      : [];
+  });
+  return { readOnly: sheets.length > 0, sheets };
+}
+
+export function assertUnprotected(imported: ImportedWorkbook): void {
+  const protection = workbookProtection(imported);
+  if (protection.readOnly)
+    throw new FileOperationError(
+      "UNSUPPORTED_FEATURE",
+      `工作表受保护（${protection.sheets.map((s) => s.sheet).join("、")}）；当前仅支持只读，拒绝整个工作簿的编辑、重算写回和转换导出，不会解锁或去保护。请使用用户另行提供的可编辑副本。`,
+    );
 }
 
 export function assertWritable(
@@ -89,6 +193,7 @@ export function assertWritable(
   ops: ChangeOp[] | undefined,
   mutations: DocMutation[],
   before: IWorkbookData,
+  priorStructural: StructuralOp[] = [],
 ): void {
   if (imported.csv) {
     if (
@@ -97,6 +202,7 @@ export function assertWritable(
             (o) =>
               ![
                 "cells.set",
+                "sort",
                 "cells.clear",
                 "rows.insert",
                 "rows.delete",
@@ -105,7 +211,10 @@ export function assertWritable(
               ].includes(o.op) ||
               (o.op === "cells.clear" && o.what !== "contents"),
           )
-        : mutations.some((m) => m.id !== "sheet.mutation.set-range-values")
+        : mutations.some(
+            (m) =>
+              !["sheet.mutation.set-range-values", "sheet.mutation.reorder-range"].includes(m.id),
+          )
     )
       unsupported("CSV 不支持格式、工作表或对象操作；请另存为 xlsx");
     return;
@@ -113,9 +222,10 @@ export function assertWritable(
   const p = imported.preservation;
   if (!p) unsupported("缺少原始 OOXML 部件");
   if (Object.keys(p.parts).some((n) => /^_xmlsignatures\//i.test(n))) unsupported("_xmlsignatures");
+  assertOutlineStructure(imported.snapshot, before, ops, mutations, priorStructural);
   for (const [id, ref] of Object.entries(p.sheetParts)) {
     if (!ranges.some((r) => r.sheetId === id || r.sheetId === "*")) continue;
-    const xml = textOf(p.parts[ref.path] as Uint8Array);
+    const xml = normalizeWorksheetXml(textOf(p.parts[ref.path] as Uint8Array));
     if (!/<worksheet(?:\s|>)/.test(xml)) unsupported(ref.path);
     if (
       ops?.some(
@@ -123,6 +233,8 @@ export function assertWritable(
       )
     ) {
       assertRebuildable(xml, ref.path);
+      if (elements(xml, "pageSetup").some((e) => /\b(?:[\w.-]+:)?id\s*=/.test(e.open)))
+        unsupported("含打印机设置关系的工作表不能保真复制");
       if (
         /<(?:drawing|legacyDrawing|tableParts|conditionalFormatting|dataValidations|extLst|autoFilter|hyperlinks|oleObjects)\b/.test(
           xml,
@@ -140,23 +252,52 @@ export function assertWritable(
       : mutations.some((m) => /(?:insert|remove)-(?:row|col|sheet)|move-range/.test(m.id));
     if (
       structural &&
-      (objectsOf(before.sheets[id]).charts.length || objectsOf(before.sheets[id]).images.length)
+      (objectsOf(before.sheets[id]).charts.length ||
+        objectsOf(before.sheets[id]).images.length ||
+        objectsOf(before.sheets[id]).shapes?.length)
     )
       unsupported("图表锚点和引用不能在本次结构操作中确定性平移，请先移除图表或另存副本");
+    if (
+      (objectsOf(before.sheets[id]).threadedComments?.length ?? 0) > 0 &&
+      (structural ||
+        ops?.some((o) => o.op === "sort" || o.op === "sheet.copy") ||
+        mutations.some((m) => /reorder-range|copy-sheet/.test(m.id)))
+    )
+      unsupported("含线程批注的区域暂不支持结构移动、排序或复制工作表；请先另存副本处理");
     if (structural) {
       // 结构操作会整表按快照重写单元格：模型无法表达的单元格类型与行内扩展只能拒绝
       assertRebuildable(xml, ref.path);
       for (const row of elements(xml, "row"))
         if (
           Object.keys(xmlAttrs(row.open)).some(
-            (key) => !["r", "ht", "hidden", "customHeight", "spans"].includes(key),
+            (key) =>
+              !["r", "ht", "hidden", "customHeight", "spans", "outlineLevel", "collapsed"].includes(
+                key,
+              ),
           )
         )
           unsupported(`${ref.path}:row metadata`);
-      for (const col of elements(xml, "col"))
+      const columnStructural = ops
+        ? ops.some(
+            (o) =>
+              /^(cols)\.(insert|delete)$/.test(o.op) &&
+              "sheet" in o &&
+              (o.sheet === id || o.sheet === before.sheets[id]?.name),
+          )
+        : mutations.some((m) => /(?:insert|remove)-col|move-range/.test(m.id));
+      for (const col of columnStructural ? elements(xml, "col") : [])
         if (
           Object.keys(xmlAttrs(col.open)).some(
-            (key) => !["min", "max", "width", "customWidth", "hidden"].includes(key),
+            (key) =>
+              ![
+                "min",
+                "max",
+                "width",
+                "customWidth",
+                "hidden",
+                "outlineLevel",
+                "collapsed",
+              ].includes(key),
           )
         )
           unsupported(`${ref.path}:column metadata`);
@@ -178,9 +319,7 @@ export function assertWritable(
       unsupported(ref.path);
     if (
       structural &&
-      /<(?:definedNames|externalReferences)\b/.test(
-        textOf(p.parts["xl/workbook.xml"] as Uint8Array),
-      )
+      /<(?:definedName|externalReference)\b/.test(textOf(p.parts["xl/workbook.xml"] as Uint8Array))
     )
       unsupported("xl/workbook.xml:definedNames/externalReferences");
     if (
@@ -191,8 +330,8 @@ export function assertWritable(
     // 共享/数组公式在结构平移时无法从读模型重建；非结构写入由 renderSheet 逐格判定
     if (structural && /<f\b[^>]*\bt=["'](?:shared|array|dataTable)["']/.test(xml))
       unsupported(`${ref.path}:shared/array/dataTable formula`);
-    if (structural && /<(?:sheetPr|sheetFormatPr)\b[^>]*(?:outline|summary)/.test(xml))
-      unsupported(`${ref.path}:outline`);
+    if (structural && /<(?:rowBreaks|colBreaks)\b/.test(xml))
+      unsupported(`${ref.path}:打印分页尚无结构平移支持`);
   }
   const renames = [
     ...(ops?.filter((o) => o.op === "sheet.rename") ?? []),
@@ -208,12 +347,20 @@ export function assertWritable(
   if (
     mutations.some(
       (m) =>
-        !/^sheet\.mutation\.(?:set-range-values|set-worksheet-name|set-worksheet-hidden|set-worksheet-order|insert-sheet|remove-sheet|insert-row|remove-rows|insert-col|remove-col|add-worksheet-merge|remove-worksheet-merge|set-frozen|set-worksheet-row-count|set-worksheet-column-count|set-worksheet-row-height|set-worksheet-row-is-auto-height|set-worksheet-row-auto-height|set-row-hidden|set-row-visible|set-worksheet-col-width|set-col-hidden|set-col-visible|set\.numfmt|remove\.numfmt)$/.test(
+        m.id !== "excelmanus.mutation.set-sheet-objects" &&
+        m.id !== "excelmanus.mutation.set-sheet-tables" &&
+        m.id !== "excelmanus.mutation.set-sheet-arrays" &&
+        m.id !== "excelmanus.mutation.set-sheet-print" &&
+        m.id !== "excelmanus.mutation.set-axis-group" &&
+        !["formula.mutation.set-defined-name", "formula.mutation.remove-defined-name"].includes(
+          m.id,
+        ) &&
+        !/^sheet\.mutation\.(?:add-table|delete-table|set-sheet-table|set-table-filter|add-conditional-rule|set-conditional-rule|delete-conditional-rule|move-conditional-rule|reorder-range|set-filter-range|set-filter-criteria|remove-filter|mark-dirty-filter-change|re-calc-filter|set-range-values|set-worksheet-name|set-worksheet-hidden|set-worksheet-order|insert-sheet|remove-sheet|insert-row|remove-rows|insert-col|remove-col|add-worksheet-merge|remove-worksheet-merge|set-frozen|set-worksheet-row-count|set-worksheet-column-count|set-worksheet-row-height|set-worksheet-row-is-auto-height|set-worksheet-row-auto-height|set-row-hidden|set-row-visible|set-worksheet-col-width|set-col-hidden|set-col-visible|set\.numfmt|remove\.numfmt)$/.test(
           m.id,
         ),
     )
   )
-    unsupported("尚未支持写回的 mutation");
+    unsupported(`尚未支持写回的 mutation：${[...new Set(mutations.map((m) => m.id))].join("、")}`);
 }
 
 function rangeRef(s: {
@@ -230,15 +377,16 @@ function renderCell(
   ref: string,
   style: number,
   oldCell: ICellData | undefined,
+  calculated = false,
 ): string {
   const s = style ? ` s="${style}"` : "";
   if (cell.p && !cell.v) unsupported("单元格富文本编辑");
-  const f = cell.f ? `<f>${escapeXml(cell.f.replace(/^=/, ""))}</f>` : "";
+  const f = cell.f ? `<f>${escapeXml(xlsxFormula(cell.f).replace(/^=/, ""))}</f>` : "";
   if (cell.f) {
-    // 引擎计算值作为缓存；公式刚改而值未变，说明引擎尚未重算，不发布旧值（打开时全量重算兜底）
-    const v = cell.v;
-    const stale = cell.f !== oldCell?.f && v === oldCell?.v;
-    if (stale || v == null || v === "") return `<c r="${ref}"${s}>${f}</c>`;
+    // 有匹配的引擎结果时可写入缓存，即使新旧公式结果相同；没有计算证据时仍抑制疑似旧值。
+    const v = scalarValue(cell);
+    const stale = !calculated && cell.f !== oldCell?.f && cell.v === oldCell?.v;
+    if (stale || v == null) return `<c r="${ref}"${s}>${f}</c>`;
     if (typeof v === "boolean") return `<c r="${ref}"${s} t="b">${f}<v>${v ? 1 : 0}</v></c>`;
     if (typeof v === "number")
       return Number.isFinite(v)
@@ -268,12 +416,14 @@ function refreshCache(
   raw: string,
   cell: ICellData | undefined,
   old: ICellData | undefined,
+  calculated = false,
 ): string {
-  if (!cell?.f || cell.f !== old?.f || cell.v === old?.v || cell.v == null || cell.v === "")
+  if (isExternalFormula(cell?.f) || isExternalFormula(old?.f)) return raw;
+  if (!cell?.f || cell.f !== old?.f || (!calculated && cell.v === old?.v) || cell.v == null)
     return raw;
   const node = elements(raw, "c")[0];
   if (!node || node.open.endsWith("/>")) return raw;
-  const v = cell.v;
+  const v = scalarValue(cell);
   let t: string | undefined;
   let text: string;
   if (typeof v === "number") {
@@ -305,6 +455,7 @@ interface RenderState {
 interface RenderOptions {
   /** 该格是否出现在已提交修订的写集中；未出现的格逐字节保留原 XML。 */
   touched: (r: number, c: number) => boolean;
+  calculated: (r: number, c: number) => boolean;
   /** 有行列插删：原始行/格坐标失效，整表按快照重建。 */
   structural: boolean;
   state: RenderState;
@@ -323,7 +474,8 @@ interface ParsedSheet {
   sharedMasters: Set<string>;
   arrays: Box[];
 }
-function parseSheet(xml: string): ParsedSheet {
+function parseSheet(xml: string, normalized = false): ParsedSheet {
+  if (!normalized) xml = normalizeWorksheetXml(xml);
   const rows = new Map<number, RawRow>();
   const cells = new Map<number, Map<number, string>>();
   const sharedMasters = new Set<string>();
@@ -361,6 +513,7 @@ function rewriteKind(
   cell: ICellData | undefined,
   oldCell: ICellData | undefined,
   structural: boolean,
+  managedArray = false,
 ): "keep" | "restyle" | "encode" {
   const ref = `${indexToCol(c + 1)}${r + 1}`;
   if (raw !== undefined && !cell && !oldCell) return "keep"; // 模型未建模的空/样式格
@@ -373,13 +526,18 @@ function rewriteKind(
       : !oldCell?.f && cell.v === oldCell?.v && cell.t === oldCell?.t);
   if (node && sameContent) return "restyle";
   if (node && !structural) {
-    if (cell && Object.keys(xmlAttrs(node.open)).some((a) => !["r", "s", "t"].includes(a)))
+    if (
+      cell &&
+      Object.keys(xmlAttrs(node.open)).some(
+        (a) => !["r", "s", "t", ...(managedArray ? ["cm"] : [])].includes(a),
+      )
+    )
       unsupported(`${ref}:cell metadata`);
     if (cell && /<(?:extLst|[A-Za-z_][\w.-]*:)/.test(node.inner))
       unsupported(`${ref}:cell extension`);
     if (p.sharedMasters.has(`${r}:${c}`)) unsupported(`${ref}:共享公式主单元格`);
   }
-  if (p.arrays.some((b) => r >= b.r0 && r <= b.r1 && c >= b.c0 && c <= b.c1))
+  if (!managedArray && p.arrays.some((b) => r >= b.r0 && r <= b.r1 && c >= b.c0 && c <= b.c1))
     unsupported(`${ref}:数组公式区域`);
   return "encode";
 }
@@ -396,6 +554,9 @@ export function assertCellsWritable(
   ranges: RangeRef[],
   structural: Set<string>,
 ): void {
+  validateArrays(after, baseline);
+  after = materializeArrays(after);
+  baseline = materializeArrays(baseline);
   const p = imported.preservation;
   if (!p) return;
   for (const [id, ref] of Object.entries(p.sheetParts)) {
@@ -420,6 +581,7 @@ export function assertCellsWritable(
         data[r]?.[c],
         prev[r]?.[c],
         false,
+        isManagedArray(baseline.sheets[id], r, c),
       );
       const row = parsed.rows.get(r);
       if (kind !== "keep" && row && rowExtras(row.inner))
@@ -450,10 +612,11 @@ function rowChanged(rd: RowMeta | undefined, old: RowMeta | undefined, where: st
     if (k === "hd") changed ||= Boolean(rd?.hd) !== Boolean(old?.hd);
     else if (k === "h") changed ||= rd?.h !== old?.h;
     else if (k === "custom") {
-      const { excelmanusOutlineLevel: a, ...restA } = rd?.custom ?? {};
-      const { excelmanusOutlineLevel: b, ...restB } = old?.custom ?? {};
+      const { excelmanusOutlineLevel: a, excelmanusCollapsed: ca, ...restA } = rd?.custom ?? {};
+      const { excelmanusOutlineLevel: b, excelmanusCollapsed: cb, ...restB } = old?.custom ?? {};
       if (JSON.stringify(restA) !== JSON.stringify(restB)) unsupported(`${where}:行自定义元数据`);
       changed ||= Number(a ?? 0) !== Number(b ?? 0);
+      changed ||= Boolean(ca) !== Boolean(cb);
     } else if (JSON.stringify(rd?.[k]) !== JSON.stringify(old?.[k]))
       unsupported(`${where}:行属性 ${k}`);
   }
@@ -469,8 +632,20 @@ function renderSheet(
   opts: RenderOptions,
 ): string {
   const { structural, state } = opts;
-  const touched = structural ? () => true : opts.touched;
-  const parsed = parseSheet(xml);
+  const originalTouched = opts.touched;
+  const dynamicAt = (r: number, c: number) =>
+    [...arraysOf(old), ...arraysOf(sheet)].some(
+      (a) =>
+        a.mode === "dynamic" &&
+        r >= a.range.startRow &&
+        r <= a.range.endRow &&
+        c >= a.range.startColumn &&
+        c <= a.range.endColumn,
+    );
+  const touched = structural
+    ? () => true
+    : (r: number, c: number) => originalTouched(r, c) || dynamicAt(r, c);
+  const parsed = parseSheet(xml, true);
   const { rows: rawRows, cells: rawCells } = parsed;
   if (structural) assertRebuildable(xml, "worksheet");
   const data = cellData(sheet);
@@ -481,8 +656,26 @@ function renderSheet(
     const cell = data[r]?.[c];
     // 结构操作后原始 XML 与基线快照的坐标都已失效，按新单元格重建
     const oldCell = structural ? undefined : previous[r]?.[c];
-    const kind = rewriteKind(parsed, r, c, raw, cell, oldCell, structural);
-    if (kind === "keep") return raw as string;
+    if (!cell?.f && cell?.v == null && !cell?.p && dynamicAt(r, c) && raw) {
+      const n = elements(raw, "c")[0]!;
+      let inner = n.inner;
+      for (const tag of ["f", "v", "is"])
+        for (const child of elements(inner, tag)) inner = inner.replace(child.raw, "");
+      const oldStyle = Number(xmlAttrs(n.open).s ?? 0),
+        style = cell ? styles.index(cell, oldCell, after, oldStyle) : oldStyle;
+      return `<c r="${ref}"${style ? ` s="${style}"` : ""}>${inner}</c>`;
+    }
+    const kind = rewriteKind(
+      parsed,
+      r,
+      c,
+      raw,
+      cell,
+      oldCell,
+      structural,
+      isManagedArray(old, r, c),
+    );
+    if (kind === "keep") return refreshCache(raw as string, cell, oldCell, opts.calculated(r, c));
     const node = raw !== undefined ? elements(raw, "c")[0] : undefined;
     const rawS = node ? Number(xmlAttrs(node.open).s ?? 0) : 0;
     const styleIndex = cell ? styles.index(cell, oldCell, after, rawS) : 0;
@@ -491,12 +684,13 @@ function renderSheet(
         raw.replace(node.open, setAttribute(node.open, "s", styleIndex)),
         cell,
         oldCell,
+        opts.calculated(r, c),
       );
     // 原格带公式（含模型中无 f 的共享公式跟随格）被改成非公式：calcChain 会指向非公式格
     if (node && !cell?.f && elements(node.inner, "f").length) state.formulaSetChanged = true;
     if (!cell) return "";
     if (cell.f) state.formulaWritten = true;
-    return renderCell(cell, ref, styleIndex, oldCell);
+    return renderCell(cell, ref, styleIndex, oldCell, opts.calculated(r, c));
   };
   const rowIndexes = new Set([
     ...Object.keys(data).map(Number),
@@ -521,7 +715,7 @@ function renderSheet(
       const raw = raws.get(c);
       const encoded =
         raw !== undefined && !touched(r, c)
-          ? refreshCache(raw, data[r]?.[c], previous[r]?.[c])
+          ? refreshCache(raw, data[r]?.[c], previous[r]?.[c], opts.calculated(r, c))
           : encode(r, c, raw);
       if (encoded !== raw || structural) changed = true;
       if (!encoded) continue;
@@ -547,7 +741,7 @@ function renderSheet(
       if (rd?.h !== oldRd?.h)
         open =
           rd?.h !== undefined
-            ? setAttribute(setAttribute(open, "ht", rd.h), "customHeight", "1")
+            ? setAttribute(setAttribute(open, "ht", (rd.h * 3) / 4), "customHeight", "1")
             : removeAttribute(removeAttribute(open, "ht"), "customHeight");
       if (Boolean(rd?.hd) !== Boolean(oldRd?.hd))
         open = rd?.hd ? setAttribute(open, "hidden", "1") : removeAttribute(open, "hidden");
@@ -558,13 +752,17 @@ function renderSheet(
         open = rd?.custom?.excelmanusOutlineLevel
           ? setAttribute(open, "outlineLevel", Number(rd.custom.excelmanusOutlineLevel))
           : removeAttribute(open, "outlineLevel");
+      if (Boolean(rd?.custom?.excelmanusCollapsed) !== Boolean(oldRd?.custom?.excelmanusCollapsed))
+        open = rd?.custom?.excelmanusCollapsed
+          ? setAttribute(open, "collapsed", "1")
+          : removeAttribute(open, "collapsed");
       const spans = /^(\d+):(\d+)$/.exec(xmlAttrs(open).spans ?? "");
       if (spans && hi > 0 && (lo < Number(spans[1]) || hi > Number(spans[2])))
         open = removeAttribute(open, "spans");
       rows.push(`${open}${rendered.join("")}</row>`);
       continue;
     }
-    const open = `<row r="${r + 1}"${rd?.h !== undefined ? ` ht="${rd.h}" customHeight="1"` : ""}${rd?.hd ? ' hidden="1"' : ""}${rd?.custom?.excelmanusOutlineLevel ? ` outlineLevel="${Number(rd.custom.excelmanusOutlineLevel)}"` : ""}>`;
+    const open = `<row r="${r + 1}"${rd?.h !== undefined ? ` ht="${(rd.h * 3) / 4}" customHeight="1"` : ""}${rd?.hd ? ' hidden="1"' : ""}${rd?.custom?.excelmanusOutlineLevel ? ` outlineLevel="${Number(rd.custom.excelmanusOutlineLevel)}"` : ""}${rd?.custom?.excelmanusCollapsed ? ' collapsed="1"' : ""}>`;
     if (rendered.length || rd) rows.push(`${open}${rendered.join("")}</row>`);
   }
   xml = replaceElement(xml, "sheetData", `<sheetData>${rows.join("")}</sheetData>`);
@@ -586,20 +784,30 @@ function renderSheet(
     );
   }
   if (JSON.stringify(sheet.columnData ?? {}) !== JSON.stringify(old?.columnData ?? {})) {
-    if (structural) {
-      xml = replaceElement(
-        xml,
-        "cols",
-        `<cols>${Object.entries(sheet.columnData ?? {})
-          .map(
-            ([c, d]) =>
-              `<col min="${Number(c) + 1}" max="${Number(c) + 1}"${d.w !== undefined ? ` width="${d.w / 7}" customWidth="1"` : ""}${d.hd ? ' hidden="1"' : ""}/>`,
-          )
-          .join("")}</cols>`,
-        "sheetData",
-      );
-    } else xml = renderCols(xml, sheet, old);
+    // Row-only shifts must retain original column attributes, including unmodeled ones.
+    xml = renderCols(xml, sheet, old);
   }
+  const format = elements(xml, "sheetFormatPr")[0];
+  let formatOpen = format?.open ?? "<sheetFormatPr/>";
+  for (const [axis, attribute] of [
+    ["rowData", "outlineLevelRow"],
+    ["columnData", "outlineLevelCol"],
+  ] as const) {
+    const maxLevel = (data: Partial<IWorksheetData> | undefined) =>
+      Object.values(data?.[axis] ?? {}).reduce(
+        (max, meta) => Math.max(max, Number(meta.custom?.excelmanusOutlineLevel ?? 0)),
+        0,
+      );
+    const level = maxLevel(sheet);
+    if (structural || level !== maxLevel(old))
+      formatOpen = level
+        ? setAttribute(formatOpen, attribute, level)
+        : removeAttribute(formatOpen, attribute);
+  }
+  if (formatOpen !== (format?.open ?? "<sheetFormatPr/>"))
+    xml = format
+      ? xml.replace(format.open, formatOpen)
+      : replaceElement(xml, "sheetFormatPr", formatOpen, "cols");
   if (JSON.stringify(sheet.freeze) !== JSON.stringify(old?.freeze)) {
     const f = sheet.freeze;
     const pane =
@@ -651,14 +859,26 @@ function renderCols(
         JSON.stringify(d?.[k]) !== JSON.stringify(o?.[k])
       )
         unsupported(`第 ${c + 1} 列:列属性 ${k}`);
-    const { excelmanusOutlineLevel: level, ...rest } = d?.custom ?? {};
-    const { excelmanusOutlineLevel: oldLevel, ...oldRest } = o?.custom ?? {};
+    const {
+      excelmanusOutlineLevel: level,
+      excelmanusCollapsed: collapsed,
+      ...rest
+    } = d?.custom ?? {};
+    const {
+      excelmanusOutlineLevel: oldLevel,
+      excelmanusCollapsed: oldCollapsed,
+      ...oldRest
+    } = o?.custom ?? {};
     if (JSON.stringify(rest) !== JSON.stringify(oldRest))
       unsupported(`第 ${c + 1} 列:自定义元数据`);
     const a = { ...(per.get(c) ?? {}) };
     if (Number(level ?? 0) !== Number(oldLevel ?? 0)) {
       if (level) a.outlineLevel = String(level);
       else delete a.outlineLevel;
+    }
+    if (Boolean(collapsed) !== Boolean(oldCollapsed)) {
+      if (collapsed) a.collapsed = "1";
+      else delete a.collapsed;
     }
     if (d?.w !== o?.w) {
       if (d?.w !== undefined) {
@@ -728,8 +948,8 @@ export function remapSheetIndexes(wb: string, before: string[], after: string[])
   return wb;
 }
 
-const emptySheet = () =>
-  `<worksheet xmlns="${NS}" xmlns:r="${REL_NS}"><dimension ref="A1"/><sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetData/></worksheet>`;
+const emptySheet = (rowHeight = 24) =>
+  `<worksheet xmlns="${NS}" xmlns:r="${REL_NS}"><dimension ref="A1"/><sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="${(rowHeight * 3) / 4}"/><sheetData/></worksheet>`;
 export function minimalXlsx(snapshot: IWorkbookData): Uint8Array {
   const parts: Record<string, Uint8Array> = {
     "[Content_Types].xml": bytesOf(
@@ -742,7 +962,7 @@ export function minimalXlsx(snapshot: IWorkbookData): Uint8Array {
     "xl/_rels/workbook.xml.rels": bytesOf(`<Relationships xmlns="${PKG_NS}"/>`),
   };
   const p: XlsxPreservation = { parts, sheetParts: {}, stylesPart: "xl/styles.xml" };
-  const empty = { ...snapshot, sheets: {}, sheetOrder: [], styles: {} };
+  const empty = { ...snapshot, sheets: {}, sheetOrder: [], styles: {}, resources: [] };
   return exportXlsx(
     { snapshot: empty, preservation: p, unsupported: {}, cellCounts: {}, formulaCounts: {} },
     snapshot,
@@ -757,6 +977,9 @@ export function exportXlsx(
   /** 已提交修订写集；缺省时按快照差异判定（无写集来源的调用方，如新建文件）。 */
   changes?: SheetChanges,
 ): Uint8Array {
+  validateArrays(snapshot, baseline);
+  snapshot = materializeArrays(snapshot);
+  baseline = materializeArrays(baseline);
   const p = imported.preservation;
   if (!p) return minimalXlsx(snapshot);
   const state: RenderState = { formulaWritten: false, formulaSetChanged: false };
@@ -770,6 +993,19 @@ export function exportXlsx(
     );
   let formulaSetChanged = false;
   const parts = { ...p.parts };
+  for (const patch of planPivotRefreshPatches(p.parts, p.sheetParts, snapshot, baseline))
+    parts[patch.part] = patch.bytes;
+  const worksheetViews = new Map<
+    string,
+    { original: Uint8Array; view: ReturnType<typeof worksheetXmlView> }
+  >();
+  for (const [id, { path }] of Object.entries(p.sheetParts)) {
+    if (!snapshot.sheets[id]) continue;
+    const original = parts[path]!;
+    const view = worksheetXmlView(textOf(original));
+    worksheetViews.set(path, { original, view });
+    parts[path] = bytesOf(view.xml);
+  }
   const hadStylesPart = Boolean(p.parts[p.stylesPart]);
   const styleWriter = new StyleWriter(parts, p.stylesPart, baseline);
   const mapping = structuredClone(p.sheetParts);
@@ -801,7 +1037,18 @@ export function exportXlsx(
         sheetId: String(Math.max(0, ...Object.values(mapping).map((s) => Number(s.sheetId))) + 1),
       };
       mapping[id] = ref;
-      parts[ref.path] = bytesOf(emptySheet());
+      let initialXml = emptySheet(sheet.defaultRowHeight);
+      const print = sheet.custom?.excelmanusPrintSetup as
+        | { pageSetup?: string; pageSetUpPr?: string }
+        | undefined;
+      if (!sheet.custom?.excelmanusPrintSettings && print?.pageSetUpPr)
+        initialXml = initialXml.replace(
+          "<dimension",
+          `<sheetPr>${print.pageSetUpPr}</sheetPr><dimension`,
+        );
+      if (!sheet.custom?.excelmanusPrintSettings && print?.pageSetup)
+        initialXml = initialXml.replace("</worksheet>", `${print.pageSetup}</worksheet>`);
+      parts[ref.path] = bytesOf(initialXml);
       rels = rels.replace(
         "</Relationships>",
         `<Relationship Id="${ref.rid}" Type="${REL_NS}/worksheet" Target="${ref.path.slice(3)}"/></Relationships>`,
@@ -817,9 +1064,15 @@ export function exportXlsx(
       );
       structureChanged = true;
     }
+    const printBefore = printSettingsOf(old);
+    const printNext = printSettingsOf(sheet);
+    if (JSON.stringify(printNext) !== JSON.stringify(printBefore))
+      parts[ref.path] = bytesOf(
+        patchPrintSettings(textOf(parts[ref.path]!), printNext, printBefore),
+      );
     let tag =
       existingTags.get(ref.rid) ??
-      `<sheet name="${escapeXml(sheet.name)}" sheetId="${ref.sheetId}" r:id="${ref.rid}"/>`;
+      `<sheet xmlns:r="${REL_NS}" name="${escapeXml(sheet.name)}" sheetId="${ref.sheetId}" r:id="${ref.rid}"/>`;
     if (old?.name !== sheet.name) {
       tag = setAttribute(tag, "name", sheet.name);
       structureChanged = true;
@@ -833,6 +1086,11 @@ export function exportXlsx(
     sheetTags.push(tag);
     // 引擎重算会改写公式格的 v：单元格是否修改以写集为准，不用快照差异
     const ranges = changes?.ranges.filter((r) => r.sheetId === id || r.sheetId === "*");
+    const calculated = new Map(
+      (changes?.calculated ?? [])
+        .filter((cell) => cell.sheetId === id)
+        .map((cell) => [`${cell.r}:${cell.c}`, cell]),
+    );
     const layoutChanged = ["rowData", "columnData", "mergeData", "freeze"].some(
       (k) =>
         JSON.stringify(sheet[k as keyof IWorksheetData] ?? {}) !==
@@ -847,6 +1105,11 @@ export function exportXlsx(
     if (modified) {
       parts[ref.path] = bytesOf(
         renderSheet(textOf(parts[ref.path] as Uint8Array), sheet, old, snapshot, styleWriter, {
+          calculated: (r, c) => {
+            const cell = cellData(sheet)[r]?.[c];
+            const result = calculated.get(`${r}:${c}`);
+            return result !== undefined && result.f === cell?.f && result.v === cell?.v;
+          },
           touched: ranges
             ? (r, c) => ranges.some((x) => r >= x.r0 && r <= x.r1 && c >= x.c0 && c <= x.c1)
             : () => true,
@@ -933,16 +1196,35 @@ export function exportXlsx(
     parts["xl/_rels/workbook.xml.rels"] = bytesOf(rels);
     parts["[Content_Types].xml"] = bytesOf(types);
   }
+  exportArrays(parts, mapping, snapshot);
+  exportTables(parts, mapping, snapshot, baseline);
+  exportNames(parts, snapshot, baseline);
   exportRules(parts, mapping, snapshot, baseline, p.stylesPart);
   exportFilterLinks(parts, mapping, snapshot, baseline);
   exportObjects(parts, mapping, snapshot, baseline);
   exportImages(parts, mapping, snapshot, baseline);
+  exportShapes(parts, mapping, snapshot, baseline);
+  exportNotes(parts, mapping, snapshot, baseline);
+  exportThreadedComments(parts, mapping, snapshot, baseline);
+  // Keep extensions opaque through every codec, and leave untouched worksheet parts byte-identical.
+  for (const [path, { original, view }] of worksheetViews) {
+    const next = textOf(parts[path]!);
+    parts[path] = next === view.xml ? original : bytesOf(view.restore(next));
+  }
   const bytes = zipSync(parts);
   verifyXlsx(bytes, snapshot);
   return bytes;
 }
 
 export function verifyXlsx(bytes: Uint8Array, expected: IWorkbookData): void {
+  for (const [path, part] of Object.entries(unzipSync(bytes))) {
+    if (!/\.(?:xml|rels)$/i.test(path)) continue;
+    try {
+      assertXmlDocument(textOf(part));
+    } catch {
+      throw new FileOperationError("INTERNAL", `工作簿 XML 校验失败：${path}`);
+    }
+  }
   const actual = importXlsx(bytes, "verify.xlsx").snapshot;
   if (actual.sheetOrder.length !== expected.sheetOrder.length)
     throw new FileOperationError("INTERNAL", "工作表数量回读不一致");
@@ -950,11 +1232,32 @@ export function verifyXlsx(bytes: Uint8Array, expected: IWorkbookData): void {
     const s = expected.sheets[id];
     const a = actual.sheets[actual.sheetOrder[i] ?? ""];
     if (!s || !a || s.name !== a.name) throw new FileOperationError("INTERNAL", "工作表回读不一致");
+    const threads = (sheet: Partial<IWorksheetData>) =>
+      [...(objectsOf(sheet).threadedComments ?? [])].sort((a, b) => a.id.localeCompare(b.id));
+    if (JSON.stringify(threads(s)) !== JSON.stringify(threads(a)))
+      throw new FileOperationError("INTERNAL", "线程批注回读校验失败");
+    if (
+      JSON.stringify(objectsOf(s).pivotRefreshOnLoad ?? {}) !==
+      JSON.stringify(objectsOf(a).pivotRefreshOnLoad ?? {})
+    )
+      throw new FileOperationError("INTERNAL", "透视缓存刷新标记回读校验失败");
     let count = 0;
     for (const [r, row] of Object.entries(cellData(s)))
       for (const [c, cell] of Object.entries(row ?? {})) {
         if (count++ > 200_000) break;
         if (cell == null) continue;
+        if (
+          arraysOf(a).some(
+            (x) =>
+              x.mode === "dynamic" &&
+              Number(r) >= x.range.startRow &&
+              Number(r) <= x.range.endRow &&
+              Number(c) >= x.range.startColumn &&
+              Number(c) <= x.range.endColumn &&
+              (Number(r) !== x.range.startRow || Number(c) !== x.range.startColumn),
+          )
+        )
+          continue;
         const back = cellData(a)[Number(r)]?.[Number(c)];
         if (cell.f ? cell.f !== back?.f : cell.v != null && cell.v !== back?.v)
           throw new FileOperationError("INTERNAL", "单元格回读校验失败");

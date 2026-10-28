@@ -113,7 +113,7 @@ export function StatusFooter() {
 
         <button
           type="button"
-          onClick={() => useUIStore.getState().openSettings("model")}
+          onClick={() => useUIStore.getState().openSettings()}
           className="h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
           title="设置"
           aria-label="设置"

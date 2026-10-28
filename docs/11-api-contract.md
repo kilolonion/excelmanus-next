@@ -11,9 +11,9 @@
 - 由契约生成接口文档（OpenAPI），开发模式下可在 `/api/docs` 查看。
 - 模块（[03 §4.3](03-architecture.md#43-能力模块)）可以向契约注册自己的记录类型、主题与端点，但都在 `protocol` 包内定义，保证前端可见。
 
-### 当前实现（2026-10-11）
+### 当前实现（2026-10-12）
 
-- `protocolVersion = 3`：前后端共同支持对象层及行列分组 mutation；v3 新增 `history.rewound` 记录、`present` 载荷定型、`tool_args` 增量带 id/name；Web 在 bootstrap 与同步 hello 检查版本，不匹配停止进入工作台并提示刷新/升级。
+- `protocolVersion = 4`：供应商连接独立持久化，模型写入必须使用 `connectionId`，不再接受逐模型 URL/Key；前后端共同支持对象层及行列分组 mutation；v3 新增 `history.rewound` 记录、`present` 载荷定型、`tool_args` 增量带 id/name；Web 在 bootstrap 与同步 hello 检查版本，不匹配停止进入工作台并提示刷新/升级。
 - `http-contracts.ts` 为挂载 REST 的 schema 注册表，生成 OpenAPI 3.1；开发/测试启动校验真实路由登记完整，成功 JSON 响应按 DTO 校验。文件上传为 multipart，下载/诊断附件使用真实内容类型。
 - 文件管理路径为 `POST /workspaces/{id}/files/manage`，正文 `ops` 与 `confirmed`；渲染实际路径带工作区：`POST /workspaces/{id}/docs/{docId}/render`。
 - 诊断接口已实现；无渲染端返回错误，不生成占位成功图片。鉴权、Host/Origin 与设备令牌逻辑不变。
@@ -28,7 +28,7 @@
 
 #### 一代功能的后端适配（2026-10-11）
 
-只新增字段与端点，协议版本仍为 3。
+这些 V1 功能在 v3 中新增；当前供应商配置契约升级后协议版本为 4。
 
 - **用户改了代理读过的区域**（02 §4.7）：用户编辑（含撤销）提交后，上下文里读过该文档、读到的区域与改动重叠且之后没有重读的未关闭代理，收到 `context.notice { kind: "doc.edited", docId, path, rev, ranges, text }`，在下一步边界进入其上下文。同一次读取只提醒一次；重叠按矩形判定，不做读取之后的插删变换（写入仍由冲突检测兜底）。
 - **修订撤销**：`GET /workspaces/{id}/docs/{docId}/revs?limit=&before=` 返回 `DocRevisionsResponse`（不含公式重算的 engine 修订）；`POST /workspaces/{id}/docs/{docId}/revs/{rev}/undo` 把该修订的逆操作作为新的用户修订提交，`doc_ops.reverts` 记录被撤销的修订。之后的修订改到同一区域、任一方有表结构变化、或已撤销过时 409。
@@ -168,7 +168,8 @@
 | 启动信息 | `GET /bootstrap` | 协议版本、应用版本、形态、是否已配置模型、已启用模块、功能开关、本机数据目录 `dataDir`（需鉴权，仅供设置页展示） |
 | 同步票据 | `POST /sync/ticket` | 见 §3.1 |
 | 设置 | `GET/PATCH /settings` | 只提交修改的键；defaultDispatchMode 配置运行中消息默认策略（steer/queue/interrupt，默认 steer，即时生效）；响应附"需要重启"的键 |
-| 模型档案 | `/model-profiles` | CRUD、设为默认；`POST /{id}/test`；`POST /{id}/probe`（进度在 `app` 主题） |
+| 供应商连接 | `/provider-connections` | CRUD；`GET /{id}/models` 读共享缓存，`POST /{id}/models` 刷新；非空连接不能直接删除 |
+| 模型档案 | `/model-profiles` | 关联 `connectionId` 的 CRUD、设为默认；`POST /{id}/test`；`POST /{id}/probe`（进度在 `app` 主题） |
 | 提供商 | `GET /providers`；`POST /providers/{id}/models` | 预设列表；拉取远端模型列表 |
 | 订阅账号 | `/accounts` | 列表；`POST /accounts/{provider}/login`（授权 URL 或设备码）；`POST /accounts/{provider}/login/poll`；`POST /{id}/refresh`；`DELETE /{id}` |
 | 工作区 | `/workspaces` | 列表、添加、改名、删除登记、排序 |

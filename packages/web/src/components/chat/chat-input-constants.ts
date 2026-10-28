@@ -51,6 +51,8 @@ export const IMMEDIATE_COMMANDS = new Set(["/compact", "/resume", "/stop", "/und
 export interface MentionData {
   skills: { name: string; description: string }[];
   files: string[];
+  filesError?: boolean;
+  skillsError?: boolean;
 }
 
 export type PopoverMode =

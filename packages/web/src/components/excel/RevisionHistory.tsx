@@ -3,13 +3,15 @@
 
 import type { DocRevision } from "@excelmanus/protocol";
 import { Bot, History, Loader2, PencilLine, Undo2, Workflow } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
-import { formatTime } from "@/components/sidebar/file-tree-helpers";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createFileTimeFormatter } from "@/components/sidebar/file-tree-helpers";
+import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { toast } from "@/components/ui/toaster";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ApiError, api, errorMessage } from "@/lib/backend/api";
 import { cn } from "@/lib/utils";
+import { findSessionSummary } from "@/lib/session-list-index";
 import { useSessionStore } from "@/stores/session-store";
 import { useWorkbookStore } from "@/stores/workbook-store";
 
@@ -20,14 +22,15 @@ const SOURCE: Record<string, { label: string; icon: typeof Bot }> = {
 };
 
 function summary(r: DocRevision): string {
-  const cells = Object.values(r.changes.cellsBySheet).reduce((a, b) => a + b, 0);
   const parts = [
     ...(r.changes.ranges.length ? [r.changes.ranges.slice(0, 2).join("、")] : []),
     ...(r.changes.ranges.length > 2 ? [`等 ${r.changes.ranges.length} 处`] : []),
     ...(r.changes.structural.length ? [r.changes.structural.slice(0, 2).join("、")] : []),
     ...(r.changes.added.length ? [`新增 ${r.changes.added.join("、")}`] : []),
   ];
-  return parts.length ? parts.join(" ") : cells ? `${cells} 个单元格` : "无内容变化";
+  if (parts.length) return parts.join(" ");
+  const cells = Object.values(r.changes.cellsBySheet).reduce((a, b) => a + b, 0);
+  return cells ? `${cells} 个单元格` : "无内容变化";
 }
 
 export function RevisionHistory() {
@@ -55,7 +58,12 @@ export function RevisionHistory() {
       </Tooltip>
       <PopoverContent align="end" className="w-[340px] p-0">
         {open && doc && workspaceId && (
-          <RevisionList workspaceId={workspaceId} docId={doc.docId} headRev={doc.rev} />
+          <RevisionList
+            key={`${workspaceId}:${doc.docId}`}
+            workspaceId={workspaceId}
+            docId={doc.docId}
+            headRev={doc.rev}
+          />
         )}
       </PopoverContent>
     </Popover>
@@ -75,13 +83,30 @@ function RevisionList({
   const [error, setError] = useState<string | null>(null);
   const [undoing, setUndoing] = useState<number | null>(null);
   const sessions = useSessionStore((s) => s.sessions);
+  const rows = useMemo(
+    () =>
+      (items ?? []).map((r) => ({
+        revision: r,
+        detail: r.revertedBy !== null ? `已被第 ${r.revertedBy} 版撤销` : summary(r),
+        ranges: r.changes.ranges.join("、"),
+      })),
+    [items],
+  );
+  const formatTime = createFileTimeFormatter();
+  const active = useRef(false);
+  const readRequest = useRef(0);
 
   const load = useCallback(async () => {
+    if (!active.current) return;
+    const request = ++readRequest.current;
+    const isCurrent = () => active.current && request === readRequest.current;
     try {
       const res = await api().listDocRevisions(workspaceId, docId, { limit: 50 });
+      if (!isCurrent()) return;
       setItems(res.items);
       setError(null);
     } catch (err) {
+      if (!isCurrent()) return;
       setItems([]);
       setError(errorMessage(err, "修订历史加载失败"));
     }
@@ -90,7 +115,12 @@ function RevisionList({
   // 文档前进（自己或别人提交、撤销完成）后刷新列表
   // biome-ignore lint/correctness/useExhaustiveDependencies: headRev 只作刷新信号
   useEffect(() => {
+    active.current = true;
     void load();
+    return () => {
+      active.current = false;
+      readRequest.current += 1;
+    };
   }, [load, headRev]);
 
   const undo = async (rev: number) => {
@@ -127,20 +157,31 @@ function RevisionList({
             <Loader2 className="h-3.5 w-3.5 animate-spin" /> 正在读取…
           </div>
         ) : error ? (
-          <p role="alert" className="px-2 py-3 text-xs text-destructive">
-            {error}
-          </p>
+          <div role="alert" className="flex items-center gap-2 px-2 py-3 text-xs text-destructive">
+            <span className="min-w-0 flex-1">{error}</span>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setItems(null);
+                setError(null);
+                void load();
+              }}
+            >
+              重新读取
+            </Button>
+          </div>
         ) : items.length === 0 ? (
           <p className="px-2 py-3 text-xs text-muted-foreground">
             还没有修订。打开后的每次修改都会记在这里。
           </p>
         ) : (
           <ol className="space-y-0.5">
-            {items.map((r) => {
+            {rows.map(({ revision: r, detail, ranges }) => {
               const src = SOURCE[r.source.kind] ?? { label: r.source.kind, icon: PencilLine };
               const Icon = r.reverts ? Undo2 : src.icon;
               const reverted = r.revertedBy !== null;
-              const session = r.sessionId ? sessions.find((s) => s.id === r.sessionId) : undefined;
+              const session = findSessionSummary(sessions, r.sessionId);
               return (
                 <li key={r.rev} className={cn("em-rev-row", reverted && "is-reverted")}>
                   <span className="em-rev-icon" data-source={r.source.kind}>
@@ -161,9 +202,9 @@ function RevisionList({
                     </div>
                     <div
                       className="mt-0.5 truncate font-mono text-[10.5px] text-muted-foreground"
-                      title={r.changes.ranges.join("、")}
+                      title={ranges}
                     >
-                      {reverted ? `已被第 ${r.revertedBy} 版撤销` : summary(r)}
+                      {detail}
                     </div>
                   </div>
                   {!reverted && (

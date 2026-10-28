@@ -1,3 +1,9 @@
+import { useIsMobile } from "@/hooks/use-mobile";
+import { MobileWorkbookDock } from "./MobileWorkbookDock";
+import { ThreadedCommentsPanel } from "./ThreadedCommentsPanel";
+import { WorkbookActionMenu } from "./WorkbookActionMenu";
+import { WorkbookOutlineDialog } from "./WorkbookOutlineDialog";
+import { WorkbookPrintDialog } from "./WorkbookPrintDialog";
 // 工作台：打开的表格标签、功能区（开始 / 问 AI / 变更）、提示条与表格画布。
 // 侧边面板与全屏视图共用这一个组件；同一时刻只挂一个 Univer 实例。
 
@@ -11,13 +17,16 @@ import {
   FileSpreadsheet,
   Loader2,
   Maximize2,
+  MessageSquare,
   Minimize2,
   MousePointerSquareDashed,
+  Printer,
   RefreshCw,
   Sparkles,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "@/components/ui/toaster";
@@ -25,12 +34,12 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { errorMessage } from "@/lib/backend/api";
 import { syncConnectionId } from "@/lib/backend/channel";
 import { fileName } from "@/lib/paths";
-import { lastUserSeq } from "@/lib/session/reducer";
 import type { ChangeEntry } from "@/lib/session/types";
 import { cn } from "@/lib/utils";
 import { askAgent, referenceSelection } from "@/lib/workbook/ask";
 import { DATA_ASKS, FORMULA_ASKS } from "@/lib/workbook/ask-actions";
 import { changeDeadline } from "@/lib/workbook/change-highlights";
+import { useDocChangeCount, useRecentChanges } from "@/lib/workbook/use-overlay-data";
 import { useChatStore } from "@/stores/chat-store";
 import { downloadWorkspaceFile } from "@/stores/files-store";
 import { useUIStore } from "@/stores/ui-store";
@@ -38,6 +47,7 @@ import {
   activateTab,
   closeTab,
   markChangesSeen,
+  pinSelection,
   reloadDocument,
   setFollowAgent,
   setFullView,
@@ -88,34 +98,6 @@ function useOverlayVisibility() {
   return [visibility, setVisibility] as const;
 }
 
-/** 近期已提交、仍在闪烁期内的改动（清除只影响视觉反馈，不删改变更记录）。 */
-function useRecentChanges(): ChangeEntry[] {
-  const docId = useWorkbookStore((s) => s.doc?.docId ?? null);
-  const seenSeq = useWorkbookStore((s) => s.changesSeenSeq);
-  const session = useChatStore((s) => s.session);
-  const key = useMemo(() => {
-    if (!docId) return "[]";
-    const since = Math.max(lastUserSeq(session), seenSeq);
-    return JSON.stringify(
-      session.changes.filter((c) => c.docId === docId && c.seq > since && c.ranges.length > 0),
-    );
-  }, [docId, seenSeq, session]);
-  const changes = useMemo(() => JSON.parse(key) as ChangeEntry[], [key]);
-  const [clock, setClock] = useState(Date.now);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: clock 在到期时触发重新计算
-  const recent = useMemo(
-    () => changes.filter((c) => changeDeadline(c) > Date.now()),
-    [changes, clock],
-  );
-  useEffect(() => {
-    if (recent.length === 0) return;
-    const next = Math.min(...recent.map(changeDeadline));
-    const timer = setTimeout(() => setClock(Date.now()), Math.max(0, next - Date.now()));
-    return () => clearTimeout(timer);
-  }, [recent]);
-  return recent;
-}
-
 function IconAction({
   label,
   onClick,
@@ -159,17 +141,23 @@ function Divider() {
 /** 保存状态：文档日志已提交 ≠ xlsx 已写回，按真实阶段表达。 */
 function SaveState() {
   const doc = useWorkbookStore((s) => s.doc);
+  const activePath = useWorkbookStore((s) => s.activePath);
   const pending = useWorkbookStore(
     (s) => Object.values(s.docSync.pending).filter((p) => p.status === "pending").length,
   );
-  if (!doc || doc.checkpointError || doc.externalConflict) return null;
+  if (!doc || doc.path !== activePath || doc.checkpointError || doc.externalConflict) return null;
   const cls =
     "flex shrink-0 items-center gap-1 text-[11px] whitespace-nowrap text-muted-foreground";
   if (pending > 0)
     return (
-      <span className={cls} role="status">
+      <span
+        className={cls}
+        role="status"
+        title={`提交中 ${pending}`}
+        aria-label={`提交中 ${pending}`}
+      >
         <Loader2 className="h-3 w-3 animate-spin" />
-        提交中 {pending}
+        <span className="sr-only">提交中 {pending}</span>
       </span>
     );
   const saved = doc.checkpointRev !== undefined && doc.checkpointRev >= doc.rev;
@@ -184,7 +172,7 @@ function SaveState() {
       ) : (
         <Loader2 className="h-3 w-3 animate-spin" />
       )}
-      {saved ? "已保存" : "正在写回"}
+      <span className="sr-only">{saved ? "已保存" : "正在写回"}</span>
     </span>
   );
 }
@@ -249,9 +237,11 @@ function ActivityChip({ visible }: { visible: boolean }) {
 function ViewOptions({
   visibility,
   onChange,
+  onOutline,
 }: {
   visibility: OverlayVisibility;
   onChange: (next: OverlayVisibility) => void;
+  onOutline?: () => void;
 }) {
   const follow = useWorkbookStore((s) => s.followAgent);
   const row = (
@@ -327,6 +317,17 @@ function ViewOptions({
             visibility.changed,
             toggle("changed"),
           )}
+          <div className="border-t border-border pt-3">
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full"
+              disabled={!onOutline}
+              onClick={onOutline}
+            >
+              分组与隐藏状态（只读）
+            </Button>
+          </div>
         </div>
       </PopoverContent>
     </Popover>
@@ -390,10 +391,15 @@ function ChangeFeedback({ changes }: { changes: ChangeEntry[] }) {
 function FileTabs() {
   const tabs = useWorkbookStore((s) => s.tabs);
   const activePath = useWorkbookStore((s) => s.activePath);
-  if (tabs.length <= 1) return null;
+  const activeRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (activePath) activeRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activePath]);
+  if (tabs.length === 0)
+    return <span className="min-w-0 flex-1 px-3 text-xs text-muted-foreground">表格</span>;
   return (
     <div
-      className="flex min-h-[34px] flex-shrink-0 select-none items-stretch overflow-x-auto border-b border-[var(--em-line)] bg-[var(--em-panel-soft)] scrollbar-none"
+      className="flex min-w-0 flex-1 select-none items-stretch gap-1 overflow-x-auto px-1.5 pt-1 scrollbar-none"
       role="tablist"
       aria-label="打开的表格"
     >
@@ -402,39 +408,40 @@ function FileTabs() {
         return (
           <div
             key={tab.path}
+            ref={active ? activeRef : undefined}
             role="tab"
             aria-selected={active}
             tabIndex={0}
             onClick={() => void activateTab(tab.path)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
+              if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
                 e.preventDefault();
                 void activateTab(tab.path);
               }
             }}
             className={cn(
-              "group relative flex h-[34px] shrink-0 cursor-pointer items-center gap-1.5 border-r border-border/40 px-2.5 text-[11px] transition-colors",
+              "group relative flex h-9 min-w-[112px] max-w-[260px] flex-1 cursor-pointer items-center gap-1.5 rounded-t-lg border border-b-0 px-2.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--em-primary)]",
               active
-                ? "bg-[var(--em-panel)] text-foreground"
-                : "text-muted-foreground hover:bg-muted/40 hover:text-foreground",
+                ? "border-[var(--em-line)] bg-background font-medium text-foreground shadow-[0_-2px_0_var(--em-primary)]"
+                : "border-transparent text-muted-foreground hover:bg-[var(--em-primary-alpha-08)] hover:text-foreground",
             )}
             title={tab.path}
           >
+            <FileSpreadsheet className="h-3.5 w-3.5 shrink-0 text-[var(--em-primary)]" />
+            <span className="min-w-0 flex-1 truncate">{fileName(tab.path)}</span>
             {active && (
-              <div
-                className="absolute left-0 right-0 top-0 h-[2px]"
-                style={{ backgroundColor: "var(--em-primary)" }}
-              />
+              <>
+                <SaveState />
+                <PresenceSummary />
+              </>
             )}
-            <FileSpreadsheet className="h-3 w-3 shrink-0 text-emerald-600 dark:text-emerald-400" />
-            <span className="max-w-[120px] truncate">{fileName(tab.path)}</span>
             <button
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
                 void closeTab(tab.path);
               }}
-              className="ml-0.5 rounded p-0.5 opacity-0 transition-all hover:bg-muted hover:!opacity-100 group-hover:opacity-60"
+              className="ml-0.5 shrink-0 rounded p-0.5 text-muted-foreground opacity-60 transition-colors hover:bg-muted hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
               title="关闭"
               aria-label={`关闭 ${fileName(tab.path)}`}
             >
@@ -479,6 +486,7 @@ function AskRibbon() {
 }
 
 export function WorkbookSurface({ placement }: { placement: "panel" | "full" }) {
+  const isMobile = useIsMobile();
   const doc = useWorkbookStore((s) => s.doc);
   const loading = useWorkbookStore((s) => s.loading);
   const loadError = useWorkbookStore((s) => s.loadError);
@@ -486,17 +494,19 @@ export function WorkbookSurface({ placement }: { placement: "panel" | "full" }) 
   const pinned = useWorkbookStore(
     (s) => s.pinnedSelection !== null && s.pinnedSelection.docId === s.doc?.docId,
   );
+  const selectionRange = useWorkbookStore((s) =>
+    s.selection?.docId === s.doc?.docId ? (s.selection?.range ?? null) : null,
+  );
+  const rangeQuestion = useWorkbookStore((s) => s.rangeQuestion);
   const [tab, setTab] = useState<RibbonTab>("home");
   const [visibility, setVisibility] = useOverlayVisibility();
+  const [printOpen, setPrintOpen] = useState(false);
+  const [outlineOpen, setOutlineOpen] = useState(false);
+  const [commentsOpen, setCommentsOpen] = useState(false);
   const [sheetApi, setSheetApi] = useState<SheetApi | null>(null);
   const onApi = useCallback((api: SheetApi | null) => setSheetApi(api), []);
   const recentChanges = useRecentChanges();
-  const changedCount = useChatStore((s) => {
-    const docId = doc?.docId;
-    return docId
-      ? s.session.changes.filter((c) => c.docId === docId && c.seq > lastUserSeq(s.session)).length
-      : 0;
-  });
+  const changedCount = useDocChangeCount();
 
   const path = doc?.path ?? activePath;
   const close = () => {
@@ -523,32 +533,57 @@ export function WorkbookSurface({ placement }: { placement: "panel" | "full" }) 
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background" data-workbook-placement={placement}>
-      <FileTabs />
-      <div className="flex h-10 flex-shrink-0 items-center gap-2 border-b border-[var(--em-line)] bg-[var(--em-panel-soft)] px-3">
-        <FileSpreadsheet className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-        <h2 className="min-w-0 truncate text-[13px] font-semibold" title={path ?? undefined}>
-          {path ? fileName(path) : "表格"}
-        </h2>
-        <SaveState />
-        <span className="min-w-2 flex-1" />
-        <ActivityChip visible={visibility.activity} />
-        <PresenceSummary />
-        <IconAction
-          label={placement === "full" ? "收起到侧栏" : "展开为全屏表格"}
-          onClick={() => setFullView(placement !== "full")}
-        >
-          {placement === "full" ? (
-            <Minimize2 className="h-3.5 w-3.5" />
-          ) : (
-            <Maximize2 className="h-3.5 w-3.5" />
-          )}
-        </IconAction>
-        <IconAction label={placement === "full" ? "回到对话" : "关闭表格面板"} onClick={close}>
-          <X className="h-3.5 w-3.5" />
-        </IconAction>
+      {printOpen && sheetApi && (
+        <WorkbookPrintDialog
+          api={sheetApi}
+          name={fileName(path ?? "工作簿")}
+          onClose={() => setPrintOpen(false)}
+        />
+      )}
+      {outlineOpen && sheetApi && (
+        <WorkbookOutlineDialog api={sheetApi} onClose={() => setOutlineOpen(false)} />
+      )}
+      <div
+        className="flex h-10 min-w-0 shrink-0 items-center border-b border-[var(--em-line)] bg-[var(--em-panel-soft)]"
+        data-workbook-header
+      >
+        <FileTabs />
+        {(!isMobile || placement === "panel") && (
+          <div
+            className="flex h-full shrink-0 items-center gap-0.5 border-l border-[var(--em-line)] px-1.5"
+            role="toolbar"
+            aria-label="表格面板控制"
+          >
+            {!isMobile && (
+              <IconAction
+                label={placement === "full" ? "收起到侧栏" : "展开为全屏表格"}
+                onClick={() => setFullView(placement !== "full")}
+              >
+                {placement === "full" ? (
+                  <Minimize2 className="h-3.5 w-3.5" />
+                ) : (
+                  <Maximize2 className="h-3.5 w-3.5" />
+                )}
+              </IconAction>
+            )}
+            {isMobile ? (
+              <button type="button" className="em-mobile-workbook-back" onClick={close}>
+                <MessageSquare className="size-4" />
+                回到对话
+              </button>
+            ) : (
+              <IconAction
+                label={placement === "full" ? "回到对话" : "关闭表格面板"}
+                onClick={close}
+              >
+                <X className="h-3.5 w-3.5" />
+              </IconAction>
+            )}
+          </div>
+        )}
       </div>
 
-      {doc && (
+      {doc && !isMobile && (
         <div className="flex flex-shrink-0 flex-col border-b border-[var(--em-line)] bg-background">
           <div className="flex h-9 items-center gap-1 px-2" role="tablist" aria-label="功能区">
             {tabs.map((item) => (
@@ -575,16 +610,31 @@ export function WorkbookSurface({ placement }: { placement: "panel" | "full" }) 
               </button>
             ))}
             <div className="min-w-2 flex-1" />
+            <ActivityChip visible={visibility.activity} />
+
             <div className="flex shrink-0 items-center gap-0.5">
               <IconAction
-                label={pinned ? "选区已加到对话" : "把选区加到对话"}
+                label={pinned ? "取消固定选区引用" : "固定选区引用"}
                 pressed={pinned}
-                onClick={referenceSelection}
+                onClick={() => pinSelection(!pinned)}
               >
                 <MousePointerSquareDashed className="h-3.5 w-3.5" />
               </IconAction>
-              <ViewOptions visibility={visibility} onChange={setVisibility} />
+              <ViewOptions
+                visibility={visibility}
+                onChange={setVisibility}
+                onOutline={sheetApi ? () => setOutlineOpen(true) : undefined}
+              />
               <RevisionHistory />
+              {!/\.(csv|tsv)$/i.test(doc.path) && (
+                <IconAction
+                  label="批注面板"
+                  pressed={commentsOpen}
+                  onClick={() => setCommentsOpen((v) => !v)}
+                >
+                  <MessageSquare className="h-3.5 w-3.5" />
+                </IconAction>
+              )}
               <IconAction
                 label="与另一个表格对比"
                 onClick={() => useUIStore.getState().openCompare(doc.path)}
@@ -594,6 +644,18 @@ export function WorkbookSurface({ placement }: { placement: "panel" | "full" }) 
               <Divider />
               <IconAction label="刷新（重新读取最新内容）" onClick={refresh}>
                 <RefreshCw className="h-3.5 w-3.5" />
+              </IconAction>
+              <IconAction
+                label="导出 PDF / 打印"
+                onClick={() => {
+                  if (sheetApi)
+                    void sheetApi.wb
+                      .endEditingAsync(true)
+                      .then(() => setPrintOpen(true))
+                      .catch((e) => toast({ tone: "error", title: errorMessage(e) }));
+                }}
+              >
+                <Printer className="h-3.5 w-3.5" />
               </IconAction>
               <IconAction label="下载文件" onClick={download}>
                 <Download className="h-3.5 w-3.5" />
@@ -627,6 +689,13 @@ export function WorkbookSurface({ placement }: { placement: "panel" | "full" }) 
               onReference={referenceSelection}
             />
             {visibility.changed && <ChangeFeedback changes={recentChanges} />}
+            {commentsOpen && sheetApi && !/\.(csv|tsv)$/i.test(doc.path) && (
+              <ThreadedCommentsPanel
+                key={doc.docId}
+                api={sheetApi}
+                onClose={() => setCommentsOpen(false)}
+              />
+            )}
           </>
         ) : loading ? (
           <WorkbookLoadingState label="正在打开表格" detail={path ? fileName(path) : undefined} />
@@ -655,6 +724,69 @@ export function WorkbookSurface({ placement }: { placement: "panel" | "full" }) 
         )}
       </div>
 
+      {isMobile && doc && !rangeQuestion && (
+        <MobileWorkbookDock
+          key={doc.docId}
+          range={selectionRange}
+          onReference={referenceSelection}
+          format={
+            <>
+              <FormatToolbar mobile api={sheetApi} csv={/\.(csv|tsv)$/i.test(doc.path)} />
+              <ViewOptions
+                visibility={visibility}
+                onChange={setVisibility}
+                onOutline={sheetApi ? () => setOutlineOpen(true) : undefined}
+              />
+            </>
+          }
+          ask={<AskRibbon />}
+          changes={
+            <>
+              <ChangeNavigator />
+              <RevisionHistory />
+            </>
+          }
+          more={
+            <WorkbookActionMenu
+              actions={[
+                {
+                  label: pinned ? "取消固定选区引用" : "固定选区引用",
+                  onSelect: () => pinSelection(!pinned),
+                },
+                ...(!/\.(csv|tsv)$/i.test(doc.path)
+                  ? [
+                      {
+                        label: commentsOpen ? "关闭批注面板" : "打开批注面板",
+                        onSelect: () => setCommentsOpen((v) => !v),
+                      },
+                    ]
+                  : []),
+                {
+                  label: "与另一个表格对比",
+                  onSelect: () => useUIStore.getState().openCompare(doc.path),
+                },
+                { label: "重新读取最新内容", onSelect: refresh },
+                {
+                  label: "导出 PDF / 打印",
+                  disabled: !sheetApi,
+                  onSelect: () => {
+                    if (sheetApi)
+                      void sheetApi.wb
+                        .endEditingAsync(true)
+                        .then(() => setPrintOpen(true))
+                        .catch((e) => toast({ tone: "error", title: errorMessage(e) }));
+                  },
+                },
+                { label: "下载文件", onSelect: download },
+                {
+                  label: "打开其他表格",
+                  onSelect: () => useUIStore.getState().openWorkbookPicker("full"),
+                },
+              ]}
+            />
+          }
+        />
+      )}
       <WorkbookInteractionBar />
     </div>
   );

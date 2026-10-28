@@ -8,11 +8,13 @@ import {
   TableProperties,
   TrendingUp,
 } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { isImageFile, isSpreadsheetFile } from "@/lib/file-kind";
+import { sampleCopies } from "@/lib/sample-files";
 import { duration } from "@/lib/sidebar-motion";
 import { addComposerFiles, attachWorkspaceFile, useChatStore } from "@/stores/chat-store";
-import { uploadFiles } from "@/stores/files-store";
+import { uploadFiles, useFilesStore } from "@/stores/files-store";
 import { openWorkbook } from "@/stores/workbook-store";
 import styles from "./WelcomePage.module.css";
 import { WorkbookStart } from "./WorkbookStart";
@@ -115,9 +117,19 @@ function mimeForName(name: string): string {
  * 示例文件进入当前工作区：图片作为消息附件，其余上传后以 @路径 引用；
  * 还没有会话时（新对话）先上传到工作区，再作为工作区文件引用。返回工作区里的路径。
  */
-async function addSampleFiles(files: File[]): Promise<string[]> {
-  if (useChatStore.getState().workspaceId) return addComposerFiles(files);
+async function addSampleFiles(files: File[], isCurrent: () => boolean): Promise<string[] | null> {
+  if (!isCurrent()) return null;
+  if (useChatStore.getState().workspaceId) {
+    const previous = new Set(useChatStore.getState().attachments.map((item) => item.id));
+    const paths = await addComposerFiles(files);
+    if (!isCurrent()) return null;
+    const added = useChatStore.getState().attachments.filter((item) => !previous.has(item.id));
+    if (added.length !== files.length || added.some((item) => item.status !== "ready"))
+      throw new Error("示例文件尚未准备好");
+    return paths;
+  }
   const paths = await uploadFiles(files);
+  if (!isCurrent()) return null;
   for (const path of paths) attachWorkspaceFile(path);
   return paths;
 }
@@ -134,10 +146,19 @@ async function fetchSampleFile(ref: SampleFileRef): Promise<File | null> {
 }
 
 export function WelcomePage({ onSuggestionClick }: WelcomePageProps) {
+  const isMobile = useIsMobile();
+  const [examplesOpen, setExamplesOpen] = useState(false);
   const [loadingKey, setLoadingKey] = useState<string | null>(null);
   const [errorKey, setErrorKey] = useState<string | null>(null);
   const prefetchCache = useRef<Map<string, Promise<File | null>>>(new Map());
   const clickLockRef = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   const ensureSample = useCallback((ref: SampleFileRef) => {
     const existing = prefetchCache.current.get(ref.path);
@@ -159,6 +180,18 @@ export function WelcomePage({ onSuggestionClick }: WelcomePageProps) {
     async (suggestion: Suggestion) => {
       if (clickLockRef.current) return;
       clickLockRef.current = true;
+      const origin = useChatStore.getState();
+      const workspace = useFilesStore.getState().workspaceId;
+      const isCurrent = () => {
+        const current = useChatStore.getState();
+        return (
+          mounted.current &&
+          current.sessionId === origin.sessionId &&
+          current.workspaceId === origin.workspaceId &&
+          current.viewAgentId === origin.viewAgentId &&
+          useFilesStore.getState().workspaceId === workspace
+        );
+      };
       setLoadingKey(suggestion.text);
       setErrorKey(null);
 
@@ -172,6 +205,7 @@ export function WelcomePage({ onSuggestionClick }: WelcomePageProps) {
           (f): f is File => f !== null,
         );
 
+        if (!isCurrent()) return;
         if (files.length !== suggestion.samples.length) {
           for (const s of suggestion.samples) prefetchCache.current.delete(s.path);
           files = (await Promise.all(suggestion.samples.map((s) => ensureSample(s)))).filter(
@@ -179,23 +213,25 @@ export function WelcomePage({ onSuggestionClick }: WelcomePageProps) {
           );
         }
 
+        if (!isCurrent()) return;
         if (files.length !== suggestion.samples.length) {
           setErrorKey(suggestion.text);
           return;
         }
 
         try {
-          const paths = await addSampleFiles(files);
+          const paths = await addSampleFiles(sampleCopies(files), isCurrent);
+          if (!paths || !isCurrent()) return;
           // 表格示例直接在侧边面板打开，边看边聊
           const sheet = paths.find((p) => isSpreadsheetFile(p));
           if (sheet) void openWorkbook(sheet).catch(() => undefined);
         } catch {
-          setErrorKey(suggestion.text);
+          if (isCurrent()) setErrorKey(suggestion.text);
           return;
         }
-        onSuggestionClick(suggestion.text);
+        if (isCurrent()) onSuggestionClick(suggestion.text);
       } finally {
-        setLoadingKey(null);
+        if (mounted.current) setLoadingKey(null);
         clickLockRef.current = false;
       }
     },
@@ -203,7 +239,7 @@ export function WelcomePage({ onSuggestionClick }: WelcomePageProps) {
   );
 
   return (
-    <div className={styles.viewport}>
+    <div className={styles.viewport} data-empty-home="blank">
       <motion.div
         className={styles.layout}
         variants={containerVariants}
@@ -212,83 +248,96 @@ export function WelcomePage({ onSuggestionClick }: WelcomePageProps) {
       >
         <motion.section className={styles.hero} variants={fadeUp} aria-labelledby="welcome-title">
           <div className={styles.heroContent}>
-            <div className={styles.kicker}>表格智能助手</div>
             <h1 id="welcome-title" className={styles.title}>
-              从一张表开始。
+              今天想完成什么？
             </h1>
-            <p className={styles.description}>打开已有 Excel，边看表，边提问，也可以直接编辑。</p>
+            <p className={styles.description}>直接描述需求，或打开一份表格。</p>
             <WorkbookStart />
           </div>
         </motion.section>
 
-        <div className={styles.heading}>
-          <h2 id="welcome-tasks-title">从一个具体任务开始</h2>
-          <p>选择示例，或在下方输入你的目标</p>
-        </div>
+        {isMobile && (
+          <button
+            type="button"
+            className="em-mobile-example-toggle"
+            aria-expanded={examplesOpen}
+            onClick={() => setExamplesOpen((v) => !v)}
+          >
+            {examplesOpen ? "收起示例" : "试用示例任务"}
+          </button>
+        )}
+        {(!isMobile || examplesOpen) && (
+          <>
+            <div className={styles.heading}>
+              <h2 id="welcome-tasks-title">从一个具体任务开始</h2>
+              <p>选择示例，或在下方输入你的目标</p>
+            </div>
 
-        <motion.div
-          className={styles.tasks}
-          role="group"
-          aria-labelledby="welcome-tasks-title"
-          variants={{
-            hidden: {},
-            show: { transition: { staggerChildren: 0.06, delayChildren: 0.1 } },
-          }}
-        >
-          {SUGGESTIONS.map((suggestion) => {
-            const { label, summary, text, icon: Icon, samples } = suggestion;
-            const isThis = loadingKey === text;
-            const isBusy = !!loadingKey;
-            const hasError = errorKey === text;
-            return (
-              <motion.button
-                key={text}
-                type="button"
-                variants={cardVariants}
-                whileTap={isBusy ? {} : { scale: 0.99 }}
-                onPointerEnter={() => prefetchSample(suggestion)}
-                onPointerDown={() => prefetchSample(suggestion)}
-                onFocus={() => prefetchSample(suggestion)}
-                onClick={() => handleClick(suggestion)}
-                disabled={isBusy}
-                aria-label={`试用示例：${label}。 ${text}${hasError ? "。示例文件加载失败，请再试一次" : ""}`}
-                aria-busy={isThis}
-                title={hasError ? "示例文件加载失败，请再试一次" : text}
-                data-loading={isThis || undefined}
-                data-error={hasError || undefined}
-                className={styles.card}
-              >
-                <span className={styles.cardContent}>
-                  <span className={styles.cardHeader}>
-                    <span className={styles.icon} aria-hidden="true">
-                      {isThis ? <Loader2 className={styles.spinner} /> : <Icon />}
-                    </span>
-                    <span className={styles.label}>{label}</span>
-                  </span>
-                  <span className={styles.copy}>{summary}</span>
-                  <span className={styles.footer}>
-                    {hasError ? (
-                      <span className={styles.error} role="status">
-                        加载失败，点击重试
-                      </span>
-                    ) : (
-                      samples?.map((sample) => (
-                        <span key={sample.name} className={styles.file}>
-                          {isImageFile(sample.name) ? (
-                            <img src={sample.path} alt="" width={32} height={24} />
-                          ) : (
-                            <Paperclip aria-hidden="true" />
-                          )}
-                          <span className={styles.filename}>{sample.name}</span>
+            <motion.div
+              className={styles.tasks}
+              role="group"
+              aria-labelledby="welcome-tasks-title"
+              variants={{
+                hidden: {},
+                show: { transition: { staggerChildren: 0.06, delayChildren: 0.1 } },
+              }}
+            >
+              {SUGGESTIONS.map((suggestion) => {
+                const { label, summary, text, icon: Icon, samples } = suggestion;
+                const isThis = loadingKey === text;
+                const isBusy = !!loadingKey;
+                const hasError = errorKey === text;
+                return (
+                  <motion.button
+                    key={text}
+                    type="button"
+                    variants={cardVariants}
+                    whileTap={isBusy ? {} : { scale: 0.99 }}
+                    onPointerEnter={() => prefetchSample(suggestion)}
+                    onPointerDown={() => prefetchSample(suggestion)}
+                    onFocus={() => prefetchSample(suggestion)}
+                    onClick={() => handleClick(suggestion)}
+                    disabled={isBusy}
+                    aria-label={`试用示例：${label}。 ${text}${hasError ? "。示例文件加载失败，请再试一次" : ""}`}
+                    aria-busy={isThis}
+                    title={hasError ? "示例文件加载失败，请再试一次" : text}
+                    data-loading={isThis || undefined}
+                    data-error={hasError || undefined}
+                    className={styles.card}
+                  >
+                    <span className={styles.cardContent}>
+                      <span className={styles.cardHeader}>
+                        <span className={styles.icon} aria-hidden="true">
+                          {isThis ? <Loader2 className={styles.spinner} /> : <Icon />}
                         </span>
-                      ))
-                    )}
-                  </span>
-                </span>
-              </motion.button>
-            );
-          })}
-        </motion.div>
+                        <span className={styles.label}>{label}</span>
+                      </span>
+                      <span className={styles.copy}>{summary}</span>
+                      <span className={styles.footer}>
+                        {hasError ? (
+                          <span className={styles.error} role="status">
+                            加载失败，点击重试
+                          </span>
+                        ) : (
+                          samples?.map((sample) => (
+                            <span key={sample.name} className={styles.file}>
+                              {isImageFile(sample.name) ? (
+                                <img src={sample.path} alt="" width={32} height={24} />
+                              ) : (
+                                <Paperclip aria-hidden="true" />
+                              )}
+                              <span className={styles.filename}>{sample.name}</span>
+                            </span>
+                          ))
+                        )}
+                      </span>
+                    </span>
+                  </motion.button>
+                );
+              })}
+            </motion.div>
+          </>
+        )}
       </motion.div>
     </div>
   );

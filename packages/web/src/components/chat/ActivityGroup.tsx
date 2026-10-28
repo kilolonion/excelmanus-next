@@ -27,17 +27,19 @@ export function ActivityGroup({
   toolIds: string[];
   defaultCollapsed: boolean;
 }) {
-  const session = useChatStore((s) => s.session);
+  const tools = useChatStore((s) => s.session.tools);
+  const approvals = useChatStore((s) => s.session.approvals);
+  const questions = useChatStore((s) => s.session.questions);
   const items = useMemo(
     () =>
       toolIds.flatMap((id) => {
-        const tool = session.tools[id];
+        const tool = tools[id];
         if (!tool) return [];
-        const approval = tool.approvalId ? session.approvals[tool.approvalId] : undefined;
-        const question = tool.questionId ? session.questions[tool.questionId] : undefined;
+        const approval = tool.approvalId ? approvals[tool.approvalId] : undefined;
+        const question = tool.questionId ? questions[tool.questionId] : undefined;
         return [{ id, tool, status: toolDisplayStatus(tool, approval, question) }];
       }),
-    [toolIds, session.tools, session.approvals, session.questions],
+    [toolIds, tools, approvals, questions],
   );
   const status = groupStatus(items.map((i) => i.status));
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
@@ -120,7 +122,7 @@ export function ActivityGroup({
         )}
       </button>
       {expanded && (
-        <div className="em-steps mt-0.5">
+        <div className="em-steps mt-0.5 ml-5">
           {items.map((item) => (
             <ToolCallCard key={item.id} toolId={item.id} />
           ))}

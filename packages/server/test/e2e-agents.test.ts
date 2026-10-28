@@ -8,6 +8,7 @@ import { importXlsx } from "@excelmanus/workbook";
 import { MockLanguageModelV4 } from "ai/test";
 import { afterAll, describe, expect, test } from "vitest";
 import { type RunningServer, startServer } from "../src/index.ts";
+import { createTestProfile } from "./fixtures/create-model.ts";
 
 const servers: RunningServer[] = [];
 const dirs: string[] = [];
@@ -98,7 +99,7 @@ describe("M3 多代理真实服务纵切", () => {
     const server = await startServer({ dataDir, resolveLanguageModel: () => model, log: () => {} });
     servers.push(server);
     const api = createApiClient(server.url, server.token);
-    await api.createModelProfile({
+    await createTestProfile(api, {
       name: "agents",
       provider: "custom-openai-compatible",
       model: "mock-agents",
@@ -174,7 +175,7 @@ describe("P0-01 / P0-11 回归：工具调用与结果之间不插入收件箱�
     const server = await startServer({ dataDir, resolveLanguageModel: () => m, log: () => {} });
     servers.push(server);
     const api = createApiClient(server.url, server.token);
-    await api.createModelProfile({
+    await createTestProfile(api, {
       name: "agents",
       provider: "custom-openai-compatible",
       model: "mock-agents",
@@ -353,7 +354,7 @@ describe("M4 多代理：并发闸门 / 完成报告 / 租约 / 用户控制", (
     });
     servers.push(server);
     const api = createApiClient(server.url, server.token);
-    await api.createModelProfile({
+    await createTestProfile(api, {
       name: "agents",
       provider: "custom-openai-compatible",
       model: "mock-agents",
@@ -582,7 +583,7 @@ describe("M4 多代理：并发闸门 / 完成报告 / 租约 / 用户控制", (
     });
     servers.push(server);
     const api = createApiClient(server.url, server.token);
-    await api.createModelProfile({
+    await createTestProfile(api, {
       name: "agents",
       provider: "custom-openai-compatible",
       model: "mock-agents",

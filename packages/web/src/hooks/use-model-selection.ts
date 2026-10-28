@@ -9,9 +9,11 @@ import { switchModel, useChatStore } from "@/stores/chat-store";
 export interface PickerModel {
   id: string;
   label: string;
+  profileName: string;
   model: string;
   /** 提供商预设 id（分组用）。 */
   provider: string;
+  connectionId?: string;
   providerLabel: string;
   /** 品牌（图标与颜色）。 */
   brand: string;
@@ -34,10 +36,15 @@ export function toPickerModel(
   });
   return {
     id: profile.id,
-    label: profile.name,
+    label: profile.model,
+    profileName: profile.name,
     model: profile.model,
     provider: profile.provider,
-    providerLabel: providerLabels.get(profile.provider) ?? getProviderDisplayName(brand),
+    connectionId: profile.connectionId,
+    providerLabel:
+      providerLabels.get(profile.connectionId) ??
+      providerLabels.get(profile.provider) ??
+      getProviderDisplayName(brand),
     brand,
     isDefault: profile.isDefault,
     unhealthy: connectivity?.value === false,
@@ -49,22 +56,29 @@ export function toPickerModel(
 export function usePickerModels(): PickerModel[] {
   const profiles = useAppStore((s) => s.profiles);
   const providers = useAppStore((s) => s.providers);
+  const connections = useAppStore((s) => s.connections);
   return useMemo(() => {
-    const labels = new Map(providers.map((p) => [p.id, p.displayName]));
+    const labels = new Map([
+      ...providers.map((p) => [p.id, p.displayName] as const),
+      ...connections.map((c) => [c.id, c.name] as const),
+    ]);
     return profiles.map((p) => toPickerModel(p, labels));
-  }, [profiles, providers]);
+  }, [profiles, providers, connections]);
 }
 
 /** 当前代理实际使用的档案：代理指定的，否则全局默认。 */
 export function useCurrentProfileId(): string | null {
   const assigned = useChatStore((s) => s.session.roster[s.viewAgentId]?.modelProfileId ?? null);
   const fallback = useAppStore((s) => defaultProfile(s)?.id ?? null);
-  return assigned ?? fallback;
+  const unresolved = useChatStore((s) => s.loading || !!s.loadError);
+  return unresolved ? null : (assigned ?? fallback);
 }
 
 /** 对话区与侧栏共用的模型选择：会话内切换当前代理的档案；没有会话时设为全局默认。 */
 export function useModelSelection() {
   const models = usePickerModels();
+  const initialLoading = useAppStore((s) => !s.profilesLoaded && !s.profilesError);
+  const initialError = useAppStore((s) => (!s.profilesLoaded ? s.profilesError : null));
   const currentModel = useCurrentProfileId();
   const [switching, setSwitching] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -86,7 +100,8 @@ export function useModelSelection() {
 
   const selectModel = useCallback(
     async (id: string) => {
-      if (pending.current) return false;
+      if (pending.current || useChatStore.getState().loading || useChatStore.getState().loadError)
+        return false;
       setSwitchError(null);
       if (id === currentModel) return true;
       pending.current = true;
@@ -109,5 +124,14 @@ export function useModelSelection() {
     [currentModel],
   );
 
-  return { currentModel, models, switching, loading, loadError, switchError, reload, selectModel };
+  return {
+    currentModel,
+    models,
+    switching,
+    loading: loading || initialLoading,
+    loadError: loadError ?? initialError,
+    switchError,
+    reload,
+    selectModel,
+  };
 }

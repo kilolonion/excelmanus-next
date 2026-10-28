@@ -1,16 +1,19 @@
 // M6 审计分支 4（代理主循环）回归：真实 HTTP + 真实 SQLite 文件 + MockLanguageModelV4
 // （只替代模型输出）。P1-14/P1-20 另用测试模块注入探针工具，走同一条运行时执行路径。
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import { type CapabilityModule, kernelProjections, SessionLog } from "@excelmanus/kernel";
 import { type ApiClient, createApiClient, type LogRecord } from "@excelmanus/protocol";
+import { importCsv, importXlsx } from "@excelmanus/workbook";
 import { MockLanguageModelV4 } from "ai/test";
 import { afterAll, describe, expect, test } from "vitest";
 import { z } from "zod";
+import { minimalXlsx } from "../../modules/workbook/src/checkpoint.ts";
 import { type RunningServer, startServer } from "../src/index.ts";
+import { createTestProfile } from "./fixtures/create-model.ts";
 
 const servers: RunningServer[] = [];
 const dirs: string[] = [];
@@ -60,7 +63,7 @@ const systemOf = (p: Prompt): string => {
 /** 每个测试一个服务；handler 拿到 prompt，计数放在闭包里（网关每步新建模型实例）。 */
 async function boot(
   handler: (prompt: Prompt) => Out | Promise<Out>,
-  opts: { modules?: CapabilityModule[] } = {},
+  opts: { modules?: CapabilityModule[]; maxConcurrentSubAgents?: number } = {},
 ): Promise<{ srv: RunningServer; api: ApiClient; dataDir: string }> {
   const dataDir = mkdtempSync(join(tmpdir(), "excelmanus-fix-agent-loop-"));
   dirs.push(dataDir);
@@ -75,10 +78,11 @@ async function boot(
         doStream: async (o) => handler([...(o.prompt as Prompt)]),
       }),
     ...(opts.modules ? { modules: opts.modules } : {}),
+    ...(opts.maxConcurrentSubAgents ? { maxConcurrentSubAgents: opts.maxConcurrentSubAgents } : {}),
   });
   servers.push(srv);
   const api = createApiClient(srv.url, srv.token);
-  await api.createModelProfile({
+  await createTestProfile(api, {
     name: "mock",
     provider: "custom-openai-compatible",
     model: "mock-loop",
@@ -109,6 +113,53 @@ const resultsOf = (items: LogRecord[], toolCallId: string) =>
   items.filter((r) => r.type === "tool.result" && r.data.toolCallId === toolCallId);
 const errCode = (r: LogRecord | undefined) =>
   (r?.data.result as { error?: { code?: string } } | undefined)?.error?.code;
+
+test("新会话系统提示明确事实、推断与因果证据边界", async () => {
+  let system = "";
+  const { api } = await boot((prompt) => {
+    system = systemOf(prompt);
+    return text("收到");
+  });
+  const { session } = await api.createSession({});
+  await api.sendMessage(session.id, "main", { clientMessageId: "evidence", text: "分析数据" });
+  await waitLog(api, session.id, (all) => all.some((r) => r.type === "turn.completed"), "完成");
+  expect(system).toContain("区分数据事实、推断与因果证据");
+  expect(system).toContain("不补造输入未提供的维度");
+  expect(system).toContain("相关关系不能单独证明因果");
+});
+
+test("批次参数校验一次反馈所有字段问题且不执行写入", async () => {
+  let step = 0;
+  const { srv, api } = await boot(() =>
+    ++step === 1
+      ? call("bad-batch", "workbook_edit", {
+          path: "invalid-batch.xlsx",
+          create: true,
+          ops: [
+            { op: "cols.width", unexpectedAxis: "cols", at: 1, count: 1, pixels: 120 },
+            { op: "freeze", sheet: "Sheet1", rows: 1 },
+          ],
+        })
+      : text("已收到完整校验反馈"),
+  );
+  const { session } = await api.createSession({});
+  await api.sendMessage(session.id, "main", { clientMessageId: "bad-batch", text: "测试批次" });
+  const items = await waitLog(
+    api,
+    session.id,
+    (all) => all.some((r) => r.type === "turn.completed"),
+    "校验完成",
+  );
+  const result = resultsOf(items, "bad-batch")[0]?.data.result as {
+    error: { code: string; field: string; hint?: string };
+  };
+  expect(result.error).toMatchObject({ code: "INVALID_ARGUMENT", field: "ops.0.sheet" });
+  expect(result.error.hint).toContain("ops.0.sheet");
+  expect(result.error.hint).toContain('Unrecognized key: "unexpectedAxis"');
+  expect(result.error.hint).toContain("ops.1.cols");
+  expect(result.error.hint).toContain("下标从 0 开始");
+  expect(existsSync(join(srv.workspaceRoot, "invalid-batch.xlsx"))).toBe(false);
+});
 
 describe("P1-04 ask_user 在停止/打断时收口", () => {
   test("stop 与 interrupt 后回答返回 idempotent，不出现第二条 tool.result、不复活旧轮", async () => {
@@ -497,4 +548,466 @@ describe("P0-01 环境通知与优先级合并", () => {
     expect(dump()).toEqual(before);
     db.close();
   }, 90_000);
+});
+
+test("malformed tool JSON is reported distinctly instead of losing the parse error as null", async () => {
+  let calls = 0;
+  const { api } = await boot(() =>
+    ++calls === 1
+      ? streamOf([
+          { type: "stream-start", warnings: [] },
+          {
+            type: "tool-call",
+            toolCallId: "broken-json",
+            toolName: "workbook_read",
+            input: '{"path":"broken.xlsx",',
+          },
+          { type: "finish", usage, finishReason: { unified: "tool-calls", raw: "tool_calls" } },
+        ])
+      : text("已看到参数格式错误"),
+  );
+  const { session } = await api.createSession({});
+  await api.sendMessage(session.id, "main", {
+    clientMessageId: "invalid-json",
+    text: "读取测试文件",
+  });
+  const done = await waitLog(
+    api,
+    session.id,
+    (items) => items.some((r) => r.type === "turn.completed"),
+    "无效 JSON 回执",
+  );
+  const result = resultsOf(done, "broken-json")[0];
+  expect(errCode(result)).toBe("INVALID_ARGUMENT");
+  expect(result?.data.result).toMatchObject({
+    error: { message: expect.stringContaining("JSON") },
+  });
+  expect(done.find((r) => r.type === "model.output")?.data.toolCalls).toEqual([
+    expect.objectContaining({ inputError: expect.stringContaining("JSON") }),
+  ]);
+  expect(calls).toBe(2);
+});
+
+test("停止流式回复保留已输出文字与思考，未完整生成的工具不执行", async () => {
+  let started = false;
+  const { api } = await boot(() => ({
+    stream: new ReadableStream<LanguageModelV4StreamPart>({
+      start(c) {
+        c.enqueue({ type: "stream-start", warnings: [] });
+        c.enqueue({ type: "reasoning-start", id: "r" });
+        c.enqueue({ type: "reasoning-delta", id: "r", delta: "已检查表格" });
+        c.enqueue({ type: "reasoning-end", id: "r" });
+        c.enqueue({ type: "text-start", id: "a" });
+        c.enqueue({ type: "text-delta", id: "a", delta: "已经输出的一半内容" });
+        c.enqueue({ type: "text-end", id: "a" });
+        c.enqueue({ type: "tool-input-start", id: "partial", toolName: "workbook_edit" });
+        c.enqueue({ type: "tool-input-delta", id: "partial", delta: '{"path":"unfinished.xlsx"' });
+        started = true;
+      },
+    }),
+  }));
+  const { session } = await api.createSession({});
+  await api.sendMessage(session.id, "main", { clientMessageId: "partial-stop", text: "测试停止" });
+  for (let i = 0; !started && i < 100; i++) await sleep(20);
+  expect(started).toBe(true);
+  await sleep(100);
+  await api.stopAgent(session.id, "main");
+  const records = await waitLog(
+    api,
+    session.id,
+    (all) => all.some((r) => r.type === "turn.interrupted"),
+    "停止保留输出",
+  );
+  const output = records.filter((r) => r.type === "model.output");
+  expect(output).toHaveLength(1);
+  expect(output[0]?.data).toMatchObject({ text: "已经输出的一半内容", reasoning: "已检查表格" });
+  expect(output[0]?.data.toolCalls).toBeUndefined();
+  expect(records.some((r) => r.type === "tool.intent")).toBe(false);
+  expect(records.some((r) => r.type === "attempt.discarded")).toBe(false);
+});
+
+test("a report consumed at a step boundary does not wake an extra empty main turn", async () => {
+  let mainCalls = 0;
+  let summaries = 0;
+  const { api } = await boot(async (p) => {
+    if (systemOf(p).includes("角色的子代理")) {
+      await sleep(150);
+      return text("只读核对完成");
+    }
+    mainCalls += 1;
+    if (mainCalls === 1)
+      return call("spawn-report", "agent_spawn", {
+        name: "核对员",
+        role: "reader",
+        task: "只读核对",
+      });
+    if (mainCalls === 2)
+      return call("wait-report", "agent_wait", { for: "any_message", timeoutSeconds: 5 });
+    summaries += 1;
+    return text(`汇总 ${summaries}`);
+  });
+  const { session } = await api.createSession({});
+  await api.sendMessage(session.id, "main", {
+    clientMessageId: "one-report",
+    text: "请分派并汇总一次",
+  });
+  await waitLog(
+    api,
+    session.id,
+    (all) => all.some((r) => r.agentId === "main" && r.type === "turn.completed"),
+    "main finished",
+  );
+  await sleep(200);
+  expect(summaries).toBe(1);
+  const { items } = await api.getSessionLog(session.id, { limit: 1000 });
+  expect(items.filter((r) => r.agentId === "main" && r.type === "turn.started")).toHaveLength(1);
+});
+
+test("explicit resume continues an interrupted agent with no pending inbox or dispatch", async () => {
+  let calls = 0;
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const { api } = await boot(async () => {
+    calls += 1;
+    if (calls === 1) await gate;
+    return text("继续后的结果");
+  });
+  const { session } = await api.createSession({});
+  await api.sendMessage(session.id, "main", { clientMessageId: "resume-empty", text: "测试继续" });
+  while (calls === 0) await sleep(10);
+  await api.stopAgent(session.id, "main");
+  release();
+  await waitLog(api, session.id, (all) => all.some((r) => r.type === "turn.interrupted"), "interrupted");
+  await sleep(100);
+  const resumed = await api.resumeAgent(session.id, "main");
+  expect(resumed).toMatchObject({ resumed: 0, started: true });
+  await waitLog(api, session.id, (all) => all.some((r) => r.type === "turn.completed"), "resumed");
+  expect(calls).toBe(2);
+});
+
+test.each(["main", "child", "child-pending"])(
+  "explicit resume after exhausted stream retries preserves a committed workbook edit (%s)",
+  async (target) => {
+    let providerRecovered = false;
+    let calls = 0;
+    let resumedPrompt: Prompt | undefined;
+    const { srv, api, dataDir } = await boot((prompt) => {
+      if (target !== "main" && !systemOf(prompt).includes("角色的子代理"))
+        return prompt.some((m) => m.role === "tool")
+          ? text("等待子代理报告")
+          : call("resume-spawn", "agent_spawn", {
+              name: "插行子代理",
+              role: "worker",
+              task: "仅在 resume.xlsx 第 2 行前插入一行，写入 applied-once",
+              files: ["resume.xlsx"],
+            });
+      calls += 1;
+      const hasResult = (id: string) =>
+        prompt.some(
+          (m) =>
+            m.role === "tool" &&
+            Array.isArray(m.content) &&
+            m.content.some((part) => part.type === "tool-result" && part.toolCallId === id),
+        );
+      if (!hasResult("resume-read"))
+        return call("resume-read", "workbook_read", {
+          path: "resume.xlsx",
+          mode: "range",
+          range: "Sheet1!A1:A3",
+        });
+      if (!hasResult("resume-edit"))
+        return call("resume-edit", "workbook_edit", {
+          path: "resume.xlsx",
+          ops: [
+            { op: "rows.insert", sheet: "Sheet1", at: 2, count: 1 },
+            { op: "cells.set", range: "Sheet1!A2", values: [["applied-once"]] },
+          ],
+        });
+      if (!providerRecovered)
+        return streamOf([
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "partial" },
+          { type: "text-delta", id: "partial", delta: "尚未完成的收尾" },
+        ]);
+      resumedPrompt = prompt;
+      return text("继续后仅补收尾");
+    });
+    const { session } = await api.createSession({});
+    const file = join(srv.workspaceRoot, "resume.xlsx");
+    writeFileSync(
+      file,
+      minimalXlsx(
+        importCsv(new TextEncoder().encode("marker\noriginal-one\ntail\n"), "resume.csv").snapshot,
+      ),
+    );
+    const { document } = await api.openDoc(session.workspaceId, { path: "resume.xlsx" });
+    await api.sendMessage(session.id, "main", {
+      clientMessageId: "resume-failed",
+      text: "在第 2 行前插入一行，写入 applied-once",
+    });
+    const failed = await waitLog(
+      api,
+      session.id,
+      (all) => all.some((r) => r.type === "turn.failed") && !srv.hasRunningAgents(),
+      "断流重试耗尽",
+    );
+    const agentId =
+      target === "main"
+        ? "main"
+        : (await api.getSession(session.id)).agents.find((a) => a.role === "worker")?.id;
+    expect(agentId).toBeDefined();
+    if (!agentId) throw new Error("缺少目标子代理");
+    expect(failed.find((r) => r.type === "turn.failed")?.data.error).toMatchObject({
+      kind: "stream_interrupted",
+    });
+    expect(failed.filter((r) => r.type === "retry.scheduled")).toHaveLength(5);
+    expect(failed.filter((r) => r.type === "attempt.discarded")).toHaveLength(6);
+    expect(resultsOf(failed, "resume-edit")).toHaveLength(1);
+    expect(resultsOf(failed, "resume-edit")[0]?.data.status).toBe("ok");
+    expect(calls).toBe(8);
+
+    const db = new DatabaseSync(join(dataDir, "excelmanus.db"), { readOnly: true });
+    try {
+      // 等待真实异步检查点；继续前后文件与修订都只能包含这一次非幂等插行。
+      const deadline = Date.now() + 5_000;
+      while (
+        (await api.getDocSnapshot(session.workspaceId, document.id)).document.checkpointRev !== 1 &&
+        Date.now() < deadline
+      )
+        await sleep(20);
+      const documentState = () =>
+        db
+          .prepare("SELECT rev, head_rev, checkpoint_rev FROM documents WHERE id = ?")
+          .get(document.id);
+      expect(documentState()).toMatchObject({ rev: 1, head_rev: 1, checkpoint_rev: 1 });
+      const committedBytes = readFileSync(file);
+      const disk = importXlsx(committedBytes, "resume.xlsx").snapshot;
+      const sheet = disk.sheets[disk.sheetOrder[0] ?? ""];
+      expect(Object.values(sheet?.cellData ?? {}).map((row) => row?.[0]?.v)).toEqual([
+        "marker",
+        "applied-once",
+        "original-one",
+        "tail",
+      ]);
+
+      providerRecovered = true;
+      if (target === "child-pending") {
+        const { dispatch } = await api.sendMessage(session.id, agentId, {
+          clientMessageId: "pending-after-failure",
+          text: "只补收尾，不要重复插行",
+          mode: "queue",
+        });
+        expect(dispatch.status).toBe("accepted");
+        expect(
+          (await api.getSession(session.id)).agents.find((a) => a.id === agentId)?.status,
+        ).toBe("failed");
+        expect(calls).toBe(8);
+      }
+      expect(await api.resumeAgent(session.id, agentId)).toMatchObject({
+        resumed: target === "child-pending" ? 1 : 0,
+        started: true,
+      });
+      const completed = (
+        await waitLog(
+          api,
+          session.id,
+          (all) =>
+            all.some((r) => r.type === "turn.completed" && r.agentId === agentId) &&
+            !srv.hasRunningAgents(),
+          "失败后继续完成",
+        )
+      ).filter((r) => r.agentId === agentId);
+      expect(calls).toBe(9);
+      expect(resumedPrompt).toContainEqual({
+        role: "tool",
+        content: expect.arrayContaining([
+          expect.objectContaining({
+            type: "tool-result",
+            toolCallId: "resume-edit",
+            output: expect.objectContaining({ value: expect.objectContaining({ status: "ok" }) }),
+          }),
+        ]),
+      });
+      expect(completed.filter((r) => r.type === "turn.started")).toHaveLength(2);
+      expect(completed.filter((r) => r.type === "turn.failed")).toHaveLength(1);
+      expect(completed.filter((r) => r.type === "turn.completed")).toHaveLength(1);
+      expect(resultsOf(completed, "resume-edit")).toHaveLength(1);
+      expect(
+        completed.filter((r) => r.type === "tool.intent" && r.data.toolName === "workbook_edit"),
+      ).toHaveLength(1);
+      expect(documentState()).toMatchObject({ rev: 1, head_rev: 1, checkpoint_rev: 1 });
+      expect(
+        db.prepare("SELECT rev, tool_call_id FROM doc_ops WHERE doc_id = ?").all(document.id),
+      ).toEqual([{ rev: 1, tool_call_id: "resume-edit" }]);
+      expect(readFileSync(file)).toEqual(committedBytes);
+      expect(await api.resumeAgent(session.id, agentId)).toMatchObject({
+        resumed: 0,
+        started: false,
+      });
+      expect(calls).toBe(9);
+    } finally {
+      db.close();
+    }
+  },
+  20_000,
+);
+
+test("failed child waits for explicit resume and repeated queued resumes start only one turn", async () => {
+  let action: "spawn-failed" | "send-inbox" | "spawn-blocker" | "idle" = "spawn-failed";
+  let childId = "";
+  let childCalls = 0;
+  let recovered = false;
+  let releaseBlocker = () => {};
+  const blockerGate = new Promise<void>((resolve) => {
+    releaseBlocker = resolve;
+  });
+  const { srv, api } = await boot(
+    async (prompt) => {
+      const system = systemOf(prompt);
+      if (system.includes("failed-gate-child")) {
+        childCalls += 1;
+        return recovered
+          ? text("恢复一次")
+          : streamOf([
+              { type: "stream-start", warnings: [] },
+              { type: "text-start", id: "partial" },
+              { type: "text-delta", id: "partial", delta: "断流" },
+            ]);
+      }
+      if (system.includes("hold-gate-child")) {
+        await blockerGate;
+        return text("释放并发名额");
+      }
+      const next = action;
+      action = "idle";
+      if (next === "spawn-failed" || next === "spawn-blocker")
+        return call(next, "agent_spawn", {
+          name: next,
+          role: "reader",
+          task: next === "spawn-failed" ? "failed-gate-child" : "hold-gate-child",
+        });
+      if (next === "send-inbox")
+        return call("ordinary-inbox", "agent_send", { to: childId, message: "普通进度消息" });
+      return text("已收到");
+    },
+    { maxConcurrentSubAgents: 1 },
+  );
+  try {
+    const { session } = await api.createSession({});
+    await api.sendMessage(session.id, "main", { clientMessageId: "spawn-failed", text: "派生" });
+    await waitLog(
+      api,
+      session.id,
+      (all) => all.some((r) => r.type === "turn.failed") && !srv.hasRunningAgents(),
+      "子代理失败并收尾",
+    );
+    childId =
+      (await api.getSession(session.id)).agents.find((a) => a.name === "spawn-failed")?.id ?? "";
+    expect(childId).not.toBe("");
+    expect(childCalls).toBe(6);
+    recovered = true;
+    action = "send-inbox";
+    await api.sendMessage(session.id, "main", {
+      clientMessageId: "send-inbox",
+      text: "给子代理发送普通进度消息",
+    });
+    const inbox = await waitLog(
+      api,
+      session.id,
+      (all) => resultsOf(all, "ordinary-inbox").length === 1 && !srv.hasRunningAgents(),
+      "普通消息不唤醒失败子代理",
+    );
+    expect(resultsOf(inbox, "ordinary-inbox")[0]?.data.status).toBe("ok");
+    expect(inbox.some((r) => r.type === "inbox.sent" && r.data.toAgentId === childId)).toBe(true);
+    expect((await api.getSession(session.id)).agents.find((a) => a.id === childId)?.status).toBe(
+      "failed",
+    );
+    expect(childCalls).toBe(6);
+
+    action = "spawn-blocker";
+    await api.sendMessage(session.id, "main", {
+      clientMessageId: "spawn-blocker",
+      text: "占用唯一并发名额",
+    });
+    await waitLog(
+      api,
+      session.id,
+      (all) =>
+        all.some((r) => r.type === "step.started" && r.agentId !== "main" && r.agentId !== childId),
+      "另一子代理占满并发",
+    );
+    for (let click = 0; click < 3; click += 1) {
+      expect(await api.resumeAgent(session.id, childId)).toMatchObject({
+        resumed: 0,
+        started: false,
+      });
+      const { agents } = await api.getSession(session.id);
+      expect(agents.find((a) => a.id === childId)?.status).toBe("queued");
+      expect(agents.filter((a) => a.role !== "main" && a.status === "running")).toHaveLength(1);
+      expect(childCalls).toBe(6);
+    }
+    releaseBlocker();
+    const completed = await waitLog(
+      api,
+      session.id,
+      (all) =>
+        all.some((r) => r.type === "turn.completed" && r.agentId === childId) &&
+        !srv.hasRunningAgents(),
+      "名额释放后仅继续一轮",
+    );
+    const child = completed.filter((r) => r.agentId === childId);
+    expect(child.filter((r) => r.type === "turn.started")).toHaveLength(2);
+    expect(child.filter((r) => r.type === "turn.completed")).toHaveLength(1);
+    expect(
+      child.filter((r) => r.type === "agent.status" && r.data.status === "queued"),
+    ).toHaveLength(1);
+    expect(childCalls).toBe(7);
+  } finally {
+    releaseBlocker();
+  }
+}, 20_000);
+
+test("target resolution failure is fail-closed before tool execution", async () => {
+  let step = 0;
+  let executed = false;
+  const probe = {
+    name: "probe_target_failure",
+    title: "目标解析",
+    description: "test",
+    input: z.strictObject({}),
+    output: z.unknown(),
+    effect: "write" as const,
+    targets: (_args: unknown, scope?: { workspaceId: string; workspaceRoot: string }) => {
+      expect(scope?.workspaceId).toBeTruthy();
+      expect(scope?.workspaceRoot).toBeTruthy();
+      throw new Error("目标参数矛盾");
+    },
+    replay: "unsafe" as const,
+    timeoutMs: 1000,
+    roles: ["main" as const],
+    execute: () => {
+      executed = true;
+      return { status: "ok" as const };
+    },
+  };
+  const { api } = await boot(
+    () => (++step === 1 ? call("bad-target", probe.name, {}) : text("收到拒绝")),
+    { modules: [{ id: "target-probe", tools: [probe] } as unknown as CapabilityModule] },
+  );
+  const { session } = await api.createSession({});
+  await api.sendMessage(session.id, "main", {
+    clientMessageId: "bad-target",
+    text: "测试目标错误",
+  });
+  const items = await waitLog(
+    api,
+    session.id,
+    (all) => all.some((r) => r.type === "turn.completed"),
+    "拒绝完成",
+  );
+  expect(executed).toBe(false);
+  expect(resultsOf(items, "bad-target")[0]?.data.result).toMatchObject({
+    status: "error",
+    error: { code: "INVALID_ARGUMENT", message: "目标参数矛盾" },
+  });
 });

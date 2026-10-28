@@ -11,6 +11,8 @@ export interface DocMutation {
 /** 本端提交的 mutation 及其依据修订：被拒绝后用来展示「你的输入」，选择保留时按原依据重发。 */
 export interface SubmittedMutation {
   mutation: DocMutation;
+  /** Full atomic command; mutation remains the representative item for conflict UI. */
+  mutations?: DocMutation[];
   baseRev: number;
 }
 
@@ -88,15 +90,15 @@ export function reduceDoc(state: DocSyncState, msg: ServerMessage): DocSyncState
       return msg.rev > state.rev ? { ...state, rev: msg.rev } : state;
     case "doc.ack": {
       const p = state.pending[msg.clientOpId];
-      if (p?.status !== "pending") return state;
-      return {
-        rev: Math.max(state.rev, msg.rev),
-        pending: { ...state.pending, [msg.clientOpId]: { status: "acked", rev: msg.rev } },
-      };
+      if (p?.status !== "pending" && !(p?.status === "rejected" && asConflict(p.conflict).code === "connection_lost")) return state;
+      // Acknowledged edits live in the document log, not the outstanding-input set.
+      const pending = { ...state.pending };
+      delete pending[msg.clientOpId];
+      return { rev: Math.max(state.rev, msg.rev), pending };
     }
     case "doc.reject": {
       const p = state.pending[msg.clientOpId];
-      if (p?.status !== "pending") return state;
+      if (p?.status !== "pending" && !(p?.status === "rejected" && asConflict(p.conflict).code === "connection_lost")) return state;
       return {
         ...state,
         pending: {
@@ -145,4 +147,16 @@ export function dropPending(state: DocSyncState, clientOpId: string): DocSyncSta
   const pending = { ...state.pending };
   delete pending[clientOpId];
   return { ...state, pending };
+}
+
+/** 已发送但未收到确认：结果未知，保留输入，禁止自动重发结构操作。 */
+export function markDisconnected(state: DocSyncState): DocSyncState {
+  const pending = { ...state.pending };
+  let changed = false;
+  for (const [id, item] of Object.entries(pending)) {
+    if (item.status !== "pending") continue;
+    pending[id] = { ...item, status: "rejected", conflict: { code: "connection_lost" } };
+    changed = true;
+  }
+  return changed ? { ...state, pending } : state;
 }

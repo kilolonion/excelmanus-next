@@ -1,4 +1,11 @@
 import { XMLParser } from "fast-xml-parser";
+import { SaxesParser } from "saxes";
+
+/** Namespace-aware XML validation, independent of the object importer. */
+export function assertXmlDocument(xml: string): void {
+  if (/<!DOCTYPE|<!ENTITY/i.test(xml)) throw new Error("XML 不允许 DTD 或实体声明");
+  new SaxesParser({ xmlns: true }).write(xml).close();
+}
 
 export const escapeXml = (s: unknown): string =>
   String(s)
@@ -15,6 +22,7 @@ export const xmlAttrs = (s: string): Record<string, string> => {
     ignoreAttributes: false,
     attributeNamePrefix: "",
     parseAttributeValue: false,
+    htmlEntities: true,
   }).parse(s.replace(/\/?\s*>$/, "/>"));
   return Object.values(parsed)[0] as Record<string, string>;
 };
@@ -28,6 +36,8 @@ interface Element {
 }
 /** Lex XML tokens, skipping comments and CDATA; retain exact byte-equivalent UTF-8 slices. */
 export function elements(xml: string, name: string): Element[] {
+  // Negative-only check: possible matches still go through the lexer (comments, CDATA, exact names).
+  if (!xml.includes(`<${name}`)) return [];
   const tokens =
     /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>|<\/?[A-Za-z_][\w:.-]*(?:"[^"]*"|'[^']*'|[^'">])*?>/g;
   const out: Element[] = [];
@@ -63,6 +73,17 @@ export function replaceElement(
   const e = elements(xml, name)[0];
   if (e) return xml.slice(0, e.start) + replacement + xml.slice(e.end);
   const order: Record<string, string[]> = {
+    drawing: [
+      "legacyDrawing",
+      "legacyDrawingHF",
+      "drawingHF",
+      "picture",
+      "oleObjects",
+      "controls",
+      "webPublishItems",
+      "tableParts",
+      "extLst",
+    ],
     autoFilter: [
       "sortState",
       "dataConsolidate",

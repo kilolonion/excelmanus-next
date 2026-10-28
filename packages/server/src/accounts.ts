@@ -18,6 +18,8 @@ const SCOPE = "openid profile email offline_access";
 const REFRESH_WINDOW_MS = 5 * 60_000;
 const ATTEMPT_TTL_MS = 15 * 60_000;
 
+export class CallbackUnavailableError extends Error {}
+
 interface TokenSet {
   accessToken: string;
   refreshToken: string;
@@ -41,6 +43,8 @@ interface Attempt {
   state?: string;
   deviceAuthId?: string;
   interval?: number;
+  nextPollAt?: number;
+  polling?: Promise<LoginAttempt>;
   expiresAt: number;
 }
 
@@ -139,7 +143,7 @@ export class AccountService {
     this.o.db.exec("BEGIN IMMEDIATE");
     try {
       this.o.db
-        .prepare("UPDATE model_profiles SET credential_id = NULL WHERE credential_id = ?")
+        .prepare("UPDATE provider_connections SET credential_id = NULL WHERE credential_id = ?")
         .run(id);
       this.o.db.prepare("DELETE FROM credentials WHERE id = ?").run(id);
       this.o.db.exec("COMMIT");
@@ -366,7 +370,7 @@ export class AccountService {
     this.attempts.set(attemptId, {
       dto,
       deviceAuthId: body.device_auth_id,
-      interval: Number(body.interval ?? 5),
+      interval: Math.max(1, Number(body.interval) || 5),
       expiresAt: Date.now() + ATTEMPT_TTL_MS,
     });
     return dto;
@@ -378,6 +382,18 @@ export class AccountService {
     const a = this.attempts.get(attemptId);
     if (!a) return undefined;
     if (a.dto.status !== "pending" || a.dto.method === "browser") return a.dto;
+    if (a.polling) return a.polling;
+    if (Date.now() < (a.nextPollAt ?? 0)) return a.dto;
+    a.nextPollAt = Date.now() + (a.interval ?? 5) * 1000;
+    a.polling = this.pollDevice(a);
+    try {
+      return await a.polling;
+    } finally {
+      a.polling = undefined;
+    }
+  }
+
+  private async pollDevice(a: Attempt): Promise<LoginAttempt> {
     const res = await this.fetch(`${this.issuer}/api/accounts/deviceauth/token`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -492,7 +508,7 @@ export class AccountService {
     return new Promise((resolve, reject) => {
       server.once("error", (e: NodeJS.ErrnoException) => {
         reject(
-          new Error(
+          new CallbackUnavailableError(
             e.code === "EADDRINUSE"
               ? `本机端口 ${CALLBACK_PORT} 被占用（可能有其他 Codex 登录在进行），请稍后重试或改用设备码登录`
               : e.message,

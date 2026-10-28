@@ -191,6 +191,40 @@ export const KERNEL_MIGRATIONS: readonly Migration[] = [
   CREATE INDEX inbox_pending_recipient ON inbox_pending(session_id, to_agent_id, status);
     `,
   },
+  {
+    id: "kernel/file-batches",
+    sql: "CREATE TABLE file_batches (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, manifest TEXT NOT NULL);",
+  },
   LEASES_MIGRATION,
   CHANGE_SUMMARIES_MIGRATION,
+  {
+    id: "kernel/turn-access-records-index",
+    sql: `
+  CREATE INDEX session_log_turn_access_records
+  ON session_log(session_id, agent_id, seq DESC, type, data)
+  WHERE type IN ('turn.started', 'turn.access.updated');
+    `,
+  },
+  {
+    // Older runtimes must not strip delivery restrictions or ignore denial fences.
+    id: "kernel/v14-security-semantics",
+    sql: `
+      CREATE INDEX session_log_harness_progress ON session_log(session_id, json_extract(data,'$.taskId'), seq, data) WHERE type='harness.progress';
+      CREATE INDEX session_log_approval_decisions ON session_log(session_id, seq, data) WHERE type='approval.decided';
+      CREATE INDEX session_log_approval_requests ON session_log(session_id, json_extract(data,'$.approvalId'), agent_id, data) WHERE type='approval.requested';
+    `,
+  },
+  {
+    // Marker only: older runtimes cannot enforce persisted TaskContract authority.
+    id: "kernel/task-contract-security-semantics",
+    sql: "SELECT 1;",
+  },
+  {
+    id: "kernel/task-contract-records-index",
+    sql: `
+      CREATE INDEX session_log_task_contract_records
+      ON session_log(session_id, seq DESC, type, data)
+      WHERE type IN (\'contract.expected\',\'contract.updated\');
+    `,
+  },
 ];

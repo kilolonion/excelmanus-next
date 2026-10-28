@@ -21,6 +21,7 @@ import { MockLanguageModelV4 } from "ai/test";
 import { afterAll, expect, test } from "vitest";
 import { WebSocket } from "ws";
 import { type RunningServer, startServer } from "../src/index.ts";
+import { createTestProfile } from "./fixtures/create-model.ts";
 
 const root = mkdtempSync(join(tmpdir(), "excelmanus-skills-"));
 let server: RunningServer | undefined;
@@ -110,7 +111,7 @@ test("任务技能在真实边界加载/读资源，缺依赖与禁用不能绕�
     new URL("../../../samples/sales.xlsx", import.meta.url),
     join(server.workspaceRoot, "sales.xlsx"),
   );
-  await api.createModelProfile({
+  await createTestProfile(api, {
     name: "test",
     provider: "custom-openai-compatible",
     model: "test",

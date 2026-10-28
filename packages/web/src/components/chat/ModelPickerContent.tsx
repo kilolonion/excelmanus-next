@@ -58,24 +58,37 @@ export function ModelPickerContent({
   const listId = useId();
   const query = search.trim().toLocaleLowerCase();
   const providerLabels = useMemo(
-    () => new Map(models.map((m) => [m.provider, m.providerLabel])),
+    () => new Map(models.map((m) => [m.connectionId ?? m.provider, m.providerLabel])),
     [models],
   );
-  const filtered = useMemo(
-    () =>
-      models.filter((model) =>
-        [model.label, model.model, model.provider, model.providerLabel, model.brand].some((value) =>
-          value.toLocaleLowerCase().includes(query),
-        ),
-      ),
-    [models, query],
-  );
-  const groups = new Map<string, PickerModel[]>();
-  for (const model of filtered) {
-    const group = groups.get(model.provider) || [];
-    group.push(model);
-    groups.set(model.provider, group);
-  }
+  const searchModels = useMemo(() => {
+    let fields: string[][] | undefined;
+    return (query: string) => {
+      if (!query) return models;
+      fields ??= models.map((model) =>
+        [
+          model.label,
+          model.profileName,
+          model.model,
+          model.provider,
+          model.providerLabel,
+          model.brand,
+        ].map((value) => value.toLocaleLowerCase()),
+      );
+      return models.filter((_, i) => fields![i].some((value) => value.includes(query)));
+    };
+  }, [models]);
+  const filtered = useMemo(() => searchModels(query), [searchModels, query]);
+  const groups = useMemo(() => {
+    const result = new Map<string, PickerModel[]>();
+    for (const model of filtered) {
+      const key = model.connectionId ?? model.provider;
+      const group = result.get(key);
+      if (group) group.push(model);
+      else result.set(key, [model]);
+    }
+    return result;
+  }, [filtered]);
 
   // Position the list when the picker opens (or its models finish loading).
   // Later selection changes must leave the user's current scroll position alone.
@@ -126,7 +139,10 @@ export function ModelPickerContent({
   const renderModel = (model: PickerModel) => {
     const selected = model.id === currentModel;
     const label = model.label;
-    const detail = [model.model !== label ? model.model : "", model.isDefault ? "默认" : ""]
+    const detail = [
+      model.profileName !== label ? model.profileName : "",
+      model.isDefault ? "默认" : "",
+    ]
       .filter(Boolean)
       .join(" · ");
     return (

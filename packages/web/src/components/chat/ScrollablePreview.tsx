@@ -60,9 +60,11 @@ export function ScrollablePreview({
     const el = innerRef.current;
     if (!el) return;
     // 使用 MutationObserver 监听子节点变化（流式追加行）
+    let frame: number | undefined;
     const scrollToBottom = () => {
-      if (!autoFollowRef.current) return;
-      requestAnimationFrame(() => {
+      if (!autoFollowRef.current || frame !== undefined) return;
+      frame = requestAnimationFrame(() => {
+        frame = undefined;
         if (autoFollowRef.current) el.scrollTop = el.scrollHeight;
       });
     };
@@ -70,7 +72,10 @@ export function ScrollablePreview({
     mo.observe(el, { childList: true, subtree: true, characterData: true });
     // 初始也滚一次
     scrollToBottom();
-    return () => mo.disconnect();
+    return () => {
+      mo.disconnect();
+      if (frame !== undefined) cancelAnimationFrame(frame);
+    };
   }, [autoScroll]);
 
   // ── Track scroll position for directional indicators ──
@@ -85,12 +90,11 @@ export function ScrollablePreview({
     if (mode === "collapsed") return;
     const el = innerRef.current;
     if (!el) return;
-    requestAnimationFrame(syncScroll);
-    el.addEventListener("scroll", syncScroll, { passive: true });
+    const frame = requestAnimationFrame(syncScroll);
     const ro = new ResizeObserver(syncScroll);
     ro.observe(el);
     return () => {
-      el.removeEventListener("scroll", syncScroll);
+      cancelAnimationFrame(frame);
       ro.disconnect();
     };
   }, [mode, syncScroll]);
@@ -111,16 +115,8 @@ export function ScrollablePreview({
     [mode, collapsedHeight, expandedHeight],
   );
 
-  // 内容不溢出：直接渲染，无任何限制
-  if (!overflows) {
-    return (
-      <div className={className}>
-        <div ref={innerRef}>{children}</div>
-      </div>
-    );
-  }
-
-  const isActive = mode !== "collapsed";
+  // 保持滚动节点位置稳定，溢出切换时观察器仍绑定同一个元素。
+  const isActive = overflows && mode !== "collapsed";
   const maxH = mode === "expanded" ? expandedHeight : collapsedHeight;
 
   return (
@@ -141,16 +137,20 @@ export function ScrollablePreview({
           onTouchStart={() => {
             autoFollowRef.current = false;
           }}
-          className={`transition-[max-height] duration-300 ease-in-out overscroll-contain ${
-            isActive ? "overflow-y-auto overflow-x-auto" : "overflow-hidden"
-          }`}
-          style={{ maxHeight: maxH, touchAction: "pan-x pan-y" }}
+          className={
+            overflows
+              ? `transition-[max-height] duration-300 ease-in-out overscroll-contain ${
+                  isActive ? "overflow-y-auto overflow-x-auto" : "overflow-hidden"
+                }`
+              : undefined
+          }
+          style={overflows ? { maxHeight: maxH, touchAction: "pan-x pan-y" } : undefined}
         >
           {children}
         </div>
 
         {/* 折叠态：底部渐变遮罩 + 点击激活滚动 */}
-        {mode === "collapsed" && (
+        {overflows && mode === "collapsed" && (
           <div
             className="absolute bottom-0 left-0 right-0 cursor-pointer group/act"
             onClick={() => setMode("scroll")}

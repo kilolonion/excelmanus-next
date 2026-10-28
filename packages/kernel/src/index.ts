@@ -1,3 +1,5 @@
+export * from "./access-facts.ts";
+export * from "./access-scope.ts";
 export * from "./agent-tools.ts";
 export * from "./agents.ts";
 export * from "./approvals.ts";
@@ -7,10 +9,28 @@ export * from "./budget.ts";
 export * from "./bus.ts";
 export * from "./change-summary.ts";
 export * from "./compaction.ts";
+export * from "./contract-identity-recovery.ts";
+export type {
+  CommittedCreatedDocument,
+  CreatedDocumentReceipt,
+  HostCreatedOutputProof,
+  HostCreatedOutputReceipt,
+} from "./created-output.ts";
+export {
+  consumeCreatedDocumentReceipt,
+  listCommittedCreatedDocuments,
+  lookupCommittedCreatedDocument,
+  lookupHostCreatedOutput,
+} from "./created-output.ts";
 export * from "./db.ts";
+export * from "./denial-fence.ts";
+export * from "./effect-gate.ts";
+export * from "./harness-state.ts";
 export * from "./leases.ts";
 export * from "./migrations.ts";
 export * from "./model-gateway.ts";
+export { numericDeliveryState } from "./numeric-delivery.ts";
+export * from "./numeric-execution-facts.ts";
 export * from "./paths.ts";
 export * from "./projections.ts";
 export * from "./prompts.ts";
@@ -18,4 +38,7 @@ export * from "./questions.ts";
 export * from "./result-pages.ts";
 export * from "./runtime.ts";
 export * from "./session-log.ts";
+export * from "./task-contract.ts";
+export * from "./tool-access.ts";
 export * from "./tools.ts";
+export * from "./turn-access.ts";

@@ -1,3 +1,11 @@
+import {
+  ConnectionListResponse,
+  ConnectionResponse,
+  type CreateProviderConnectionBody,
+  type ImportLegacyBody,
+  ImportLegacyResponse,
+  type UpdateProviderConnectionBody,
+} from "./rest.ts";
 // 契约客户端：前端/CLI/测试只通过它请求 REST。
 // 每个方法对应一个端点，响应都经对应 schema 解析。
 
@@ -10,6 +18,7 @@ import {
 import {
   AccountListResponse,
   BackupListResponse,
+  BackupPreviewResponse,
   type CreateMcpServerBody,
   type CreateMemoryBody,
   type CreateRuleBody,
@@ -45,6 +54,7 @@ import {
   WorkspaceResponse,
 } from "./extensions.ts";
 import { type ManageFilesBody, ManageFilesResponse } from "./files.ts";
+import { type QaFirstScreenMetricsBody, QaFirstScreenMetricsResponse } from "./qa-first-screen.ts";
 import { AttachmentRef } from "./records.ts";
 import {
   type ApprovalDecisionBody,
@@ -67,6 +77,8 @@ import {
   FileHistoryResponse,
   FileListResponse,
   HealthResponse,
+  type MergeDocsBody,
+  MergeDocsResponse,
   OkResponse,
   type OpenDocBody,
   OpenDocResponse,
@@ -87,6 +99,7 @@ import {
   SendMessageResponse,
   SessionDetailResponse,
   SessionExportJson,
+  SessionHistoryWindowResponse,
   type SessionListQuery,
   SessionListResponse,
   SessionLogResponse,
@@ -122,7 +135,15 @@ export class ApiError extends Error {
   }
 }
 
+export interface ApiReadOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
 export interface ApiClient {
+  reportFirstScreenMetrics(
+    body: QaFirstScreenMetricsBody,
+  ): Promise<z.infer<typeof QaFirstScreenMetricsResponse>>;
   renderDoc(
     workspaceId: string,
     docId: string,
@@ -132,14 +153,27 @@ export interface ApiClient {
   exportDiagnostics(
     body: z.infer<typeof DiagnosticExportBody>,
   ): Promise<z.infer<typeof DiagnosticExportResponse>>;
-  health(): Promise<z.infer<typeof HealthResponse>>;
-  createBrowserSession(): Promise<z.infer<typeof AuthSessionResponse>>;
+  health(options?: ApiReadOptions): Promise<z.infer<typeof HealthResponse>>;
+  createBrowserSession(options?: ApiReadOptions): Promise<z.infer<typeof AuthSessionResponse>>;
   logoutBrowserSession(): Promise<z.infer<typeof OkResponse>>;
-  bootstrap(): Promise<z.infer<typeof BootstrapResponse>>;
+  bootstrap(options?: ApiReadOptions): Promise<z.infer<typeof BootstrapResponse>>;
   createTicket(): Promise<z.infer<typeof TicketResponse>>;
 
-  listProviders(): Promise<z.infer<typeof ProviderListResponse>>;
-  listModelProfiles(): Promise<z.infer<typeof ProfileListResponse>>;
+  listProviders(options?: ApiReadOptions): Promise<z.infer<typeof ProviderListResponse>>;
+  listProviderConnections(
+    options?: ApiReadOptions,
+  ): Promise<z.infer<typeof ConnectionListResponse>>;
+  createProviderConnection(
+    body: CreateProviderConnectionBody,
+  ): Promise<z.infer<typeof ConnectionResponse>>;
+  updateProviderConnection(
+    id: string,
+    body: UpdateProviderConnectionBody,
+  ): Promise<z.infer<typeof ConnectionResponse>>;
+  deleteProviderConnection(id: string): Promise<z.infer<typeof OkResponse>>;
+  getConnectionModels(id: string): Promise<z.infer<typeof RemoteModelsResponse>>;
+  refreshConnectionModels(id: string): Promise<z.infer<typeof RemoteModelsResponse>>;
+  listModelProfiles(options?: ApiReadOptions): Promise<z.infer<typeof ProfileListResponse>>;
   createModelProfile(
     body: z.infer<typeof CreateModelProfileBody>,
   ): Promise<z.infer<typeof ProfileResponse>>;
@@ -154,13 +188,14 @@ export interface ApiClient {
 
   listSessions(
     opts?: z.infer<typeof SessionListQuery>,
+    options?: ApiReadOptions,
   ): Promise<z.infer<typeof SessionListResponse>>;
   /** idempotencyKey：重试同一次创建时传同一个键，不会建出重复会话（11 §2）。 */
   createSession(
     body: z.infer<typeof CreateSessionBody>,
     opts?: { idempotencyKey?: string },
   ): Promise<z.infer<typeof CreateSessionResponse>>;
-  getSession(id: string): Promise<z.infer<typeof SessionDetailResponse>>;
+  getSession(id: string, options?: ApiReadOptions): Promise<z.infer<typeof SessionDetailResponse>>;
   updateSession(
     id: string,
     body: z.infer<typeof UpdateSessionBody>,
@@ -169,7 +204,13 @@ export interface ApiClient {
   getSessionLog(
     id: string,
     opts?: { before?: number; limit?: number },
+    options?: ApiReadOptions,
   ): Promise<z.infer<typeof SessionLogResponse>>;
+
+  getSessionHistoryWindow(
+    id: string,
+    options?: ApiReadOptions,
+  ): Promise<z.infer<typeof SessionHistoryWindowResponse>>;
 
   sendMessage(
     sessionId: string,
@@ -216,6 +257,7 @@ export interface ApiClient {
   ): Promise<z.infer<typeof DocRevBeforeResponse>>;
   sendFeedback(sessionId: string, body: z.infer<typeof FeedbackBody>): Promise<{ ok: true }>;
   exportSessionJson(sessionId: string): Promise<z.infer<typeof SessionExportJson>>;
+  mergeDocs(workspaceId: string, body: MergeDocsBody): Promise<z.infer<typeof MergeDocsResponse>>;
   compareDocs(
     workspaceId: string,
     body: z.infer<typeof CompareDocsBody>,
@@ -241,6 +283,10 @@ export interface ApiClient {
     body: ManageFilesBody,
   ): Promise<z.infer<typeof ManageFilesResponse>>;
   listFiles(workspaceId: string, path?: string): Promise<z.infer<typeof FileListResponse>>;
+  importLegacy(
+    workspaceId: string,
+    body: z.infer<typeof ImportLegacyBody>,
+  ): Promise<z.infer<typeof ImportLegacyResponse>>;
   createFile(workspaceId: string, path: string): Promise<z.infer<typeof UploadResponse>>;
   fileHistory(workspaceId: string, path: string): Promise<z.infer<typeof FileHistoryResponse>>;
   /** multipart 单文件上传；file 为浏览器 File 或 {name, data}。 */
@@ -251,10 +297,11 @@ export interface ApiClient {
   /** 上传图片附件（POST /attachments，内容寻址去重）；返回可放进消息的附件引用。 */
   uploadAttachment(file: { name: string; data: Blob }): Promise<AttachmentRef>;
   /** 取附件内容（带令牌，调用方转 object URL 显示缩略图）。 */
+  getDocImage(workspaceId: string, docId: string, sheetId: string, imageId: string): Promise<Blob>;
   getAttachment(sha256: string): Promise<Blob>;
 
   // ---------- M5 扩展 ----------
-  getSettings(): Promise<z.infer<typeof SettingsResponse>>;
+  getSettings(options?: ApiReadOptions): Promise<z.infer<typeof SettingsResponse>>;
   updateSettings(
     body: z.infer<typeof UpdateSettingsBody>,
   ): Promise<z.infer<typeof SettingsResponse>>;
@@ -313,7 +360,7 @@ export interface ApiClient {
     agentId: string,
     body: { modelProfileId?: string; modelName?: string },
   ): Promise<{ ok: true; modelProfileId: string; name: string }>;
-  listWorkspaces(): Promise<z.infer<typeof WorkspaceListResponse>>;
+  listWorkspaces(options?: ApiReadOptions): Promise<z.infer<typeof WorkspaceListResponse>>;
   addWorkspace(path: string, name?: string): Promise<{ workspace: z.infer<typeof Workspace> }>;
   removeWorkspace(id: string): Promise<z.infer<typeof OkResponse>>;
   updateWorkspace(
@@ -341,6 +388,12 @@ export interface ApiClient {
   addSample(workspaceId: string, name: string): Promise<{ path: string }>;
   /** 带令牌的下载地址不放 URL：调用方用此方法取 Blob。 */
   downloadBackup(workspaceId: string, kind: "backups" | "trash", id: string): Promise<Blob>;
+  previewBackup(
+    workspaceId: string,
+    kind: "backups" | "trash",
+    id: string,
+    options?: { sheetId?: string; row?: number; column?: number },
+  ): Promise<BackupPreviewResponse>;
   /** 下载工作区文件（GET /workspaces/{id}/files/download?path=）。 */
   downloadFile(workspaceId: string, path: string): Promise<Blob>;
   /** 导出会话 Markdown（GET /sessions/{id}/export）。 */
@@ -360,29 +413,72 @@ export function createApiClient(
     path: string,
     body?: unknown,
     extraHeaders?: Record<string, string>,
+    options?: ApiReadOptions,
   ): Promise<z.infer<S>> {
-    const res = await fetchImpl(`${base}/api/v1${path}`, {
-      method,
-      headers: {
-        ...(token ? { authorization: `Bearer ${token}` } : {}),
-        ...(body !== undefined ? { "content-type": "application/json" } : {}),
-        ...extraHeaders,
-      },
-      credentials: token ? "omit" : "include",
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
-    const json: unknown = await res.json().catch(() => null);
-    if (!res.ok) {
-      const parsed = RestError.safeParse(json);
-      const e = parsed.success ? parsed.data.error : undefined;
-      throw new ApiError(
-        res.status,
-        e?.code ?? `http_${res.status}`,
-        e?.message ?? `HTTP ${res.status}`,
-        { details: e?.details, requestId: e?.requestId },
+    const execute = async (signal?: AbortSignal): Promise<z.infer<S>> => {
+      const res = await fetchImpl(`${base}/api/v1${path}`, {
+        method,
+        headers: {
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+          ...(body !== undefined ? { "content-type": "application/json" } : {}),
+          ...extraHeaders,
+        },
+        credentials: token ? "omit" : "include",
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+        ...(signal ? { signal } : {}),
+      });
+      const json: unknown = await res.json().catch((error: unknown) => {
+        if (signal?.aborted) throw signal.reason;
+        // Preserve legacy non-JSON error handling, but never hide cancellation.
+        if (error instanceof Error && error.name === "AbortError") throw error;
+        return null;
+      });
+      signal?.throwIfAborted();
+      if (!res.ok) {
+        const parsed = RestError.safeParse(json);
+        const e = parsed.success ? parsed.data.error : undefined;
+        throw new ApiError(
+          res.status,
+          e?.code ?? `http_${res.status}`,
+          e?.message ?? `HTTP ${res.status}`,
+          { details: e?.details, requestId: e?.requestId },
+        );
+      }
+      return schema.parse(json) as z.infer<S>;
+    };
+    if (!options?.signal && options?.timeoutMs === undefined) return execute();
+    if (
+      options.timeoutMs !== undefined &&
+      (!Number.isFinite(options.timeoutMs) || options.timeoutMs < 0)
+    ) {
+      throw new RangeError("timeoutMs must be finite and nonnegative");
+    }
+    const controller = new AbortController();
+    const cancel = () => controller.abort(new DOMException("请求已取消", "AbortError"));
+    if (options.signal?.aborted) {
+      cancel();
+      throw controller.signal.reason;
+    }
+    options.signal?.addEventListener("abort", cancel, { once: true });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    if (options.timeoutMs !== undefined) {
+      timer = setTimeout(
+        () => controller.abort(new DOMException("请求超时，请重试", "TimeoutError")),
+        options.timeoutMs,
       );
     }
-    return schema.parse(json) as z.infer<S>;
+    let rejectAborted: (() => void) | undefined;
+    const aborted = new Promise<never>((_resolve, reject) => {
+      rejectAborted = () => reject(controller.signal.reason);
+      controller.signal.addEventListener("abort", rejectAborted, { once: true });
+    });
+    try {
+      return await Promise.race([execute(controller.signal), aborted]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      options.signal?.removeEventListener("abort", cancel);
+      if (rejectAborted) controller.signal.removeEventListener("abort", rejectAborted);
+    }
   }
 
   /** 二进制下载：错误体仍按契约 RestError 解析。 */
@@ -412,7 +508,8 @@ export function createApiClient(
   };
 
   return {
-    getSettings: () => call(SettingsResponse, "GET", "/settings"),
+    getSettings: (options) =>
+      call(SettingsResponse, "GET", "/settings", undefined, undefined, options),
     updateSettings: (body) => call(SettingsResponse, "PATCH", "/settings", body),
     listRules: (sessionId) => call(RuleListResponse, "GET", `/rules${qs({ sessionId })}`),
     createRule: (body) => call(RuleResponse, "POST", "/rules", body),
@@ -453,7 +550,8 @@ export function createApiClient(
     refreshModelCatalog: () => call(ModelCatalogResponse, "POST", "/model-catalog/refresh"),
     switchAgentModel: (sessionId, agentId, body) =>
       call(SwitchAgentModelResponse, "PATCH", `/sessions/${sessionId}/agents/${agentId}`, body),
-    listWorkspaces: () => call(WorkspaceListResponse, "GET", "/workspaces"),
+    listWorkspaces: (options) =>
+      call(WorkspaceListResponse, "GET", "/workspaces", undefined, undefined, options),
     addWorkspace: (path, name) =>
       call(WorkspaceResponse, "POST", "/workspaces", {
         path,
@@ -466,6 +564,12 @@ export function createApiClient(
     revokeDevice: (id) => call(OkResponse, "POST", `/devices/${encodeURIComponent(id)}/revoke`),
     listBackups: (workspaceId, kind) =>
       call(BackupListResponse, "GET", `/workspaces/${workspaceId}/${kind}`),
+    previewBackup: (workspaceId, kind, id, options) =>
+      call(
+        BackupPreviewResponse,
+        "GET",
+        `/workspaces/${workspaceId}/${kind}/${id}/preview${qs(options ?? {})}`,
+      ),
     restoreBackup: (workspaceId, kind, id) =>
       call(RestoreBackupResponse, "POST", `/workspaces/${workspaceId}/${kind}/${id}/restore`),
     deleteBackup: (workspaceId, kind, id) =>
@@ -492,14 +596,29 @@ export function createApiClient(
       blobOf(`/workspaces/${workspaceId}/files/download${qs({ path })}`),
     exportSession: (sessionId) => blobOf(`/sessions/${sessionId}/export`),
 
-    health: () => call(HealthResponse, "GET", "/health"),
-    createBrowserSession: () => call(AuthSessionResponse, "POST", "/auth/session"),
+    health: (options) => call(HealthResponse, "GET", "/health", undefined, undefined, options),
+    createBrowserSession: (options) =>
+      call(AuthSessionResponse, "POST", "/auth/session", undefined, undefined, options),
     logoutBrowserSession: () => call(OkResponse, "POST", "/auth/logout"),
-    bootstrap: () => call(BootstrapResponse, "GET", "/bootstrap"),
+    bootstrap: (options) =>
+      call(BootstrapResponse, "GET", "/bootstrap", undefined, undefined, options),
     createTicket: () => call(TicketResponse, "POST", "/sync/ticket"),
 
-    listProviders: () => call(ProviderListResponse, "GET", "/providers"),
-    listModelProfiles: () => call(ProfileListResponse, "GET", "/model-profiles"),
+    listProviders: (options) =>
+      call(ProviderListResponse, "GET", "/providers", undefined, undefined, options),
+    listProviderConnections: (options) =>
+      call(ConnectionListResponse, "GET", "/provider-connections", undefined, undefined, options),
+    createProviderConnection: (body) =>
+      call(ConnectionResponse, "POST", "/provider-connections", body),
+    updateProviderConnection: (id, body) =>
+      call(ConnectionResponse, "PATCH", `/provider-connections/${id}`, body),
+    deleteProviderConnection: (id) => call(OkResponse, "DELETE", `/provider-connections/${id}`),
+    getConnectionModels: (id) =>
+      call(RemoteModelsResponse, "GET", `/provider-connections/${id}/models`),
+    refreshConnectionModels: (id) =>
+      call(RemoteModelsResponse, "POST", `/provider-connections/${id}/models`),
+    listModelProfiles: (options) =>
+      call(ProfileListResponse, "GET", "/model-profiles", undefined, undefined, options),
     createModelProfile: (body) => call(ProfileResponse, "POST", "/model-profiles", body),
     getModelProfile: (id) => call(ProfileResponse, "GET", `/model-profiles/${id}`),
     updateModelProfile: (id, body) => call(ProfileResponse, "PATCH", `/model-profiles/${id}`, body),
@@ -507,11 +626,14 @@ export function createApiClient(
     setDefaultModelProfile: (id) => call(ProfileResponse, "POST", `/model-profiles/${id}/default`),
     testModelProfile: (id) => call(TestProfileResponse, "POST", `/model-profiles/${id}/test`),
 
-    listSessions: (opts) =>
+    listSessions: (opts, options) =>
       call(
         SessionListResponse,
         "GET",
         `/sessions${qs({ cursor: opts?.cursor, limit: opts?.limit, q: opts?.q, workspaceId: opts?.workspaceId })}`,
+        undefined,
+        undefined,
+        options,
       ),
     createSession: (body, opts) =>
       call(
@@ -521,14 +643,27 @@ export function createApiClient(
         body,
         opts?.idempotencyKey ? { "idempotency-key": opts.idempotencyKey } : undefined,
       ),
-    getSession: (id) => call(SessionDetailResponse, "GET", `/sessions/${id}`),
+    getSession: (id, options) =>
+      call(SessionDetailResponse, "GET", `/sessions/${id}`, undefined, undefined, options),
+    getSessionHistoryWindow: (id, options) =>
+      call(
+        SessionHistoryWindowResponse,
+        "GET",
+        `/sessions/${id}/history-window`,
+        undefined,
+        undefined,
+        options,
+      ),
     updateSession: (id, body) => call(SessionDetailResponse, "PATCH", `/sessions/${id}`, body),
     deleteSession: (id) => call(OkResponse, "DELETE", `/sessions/${id}`),
-    getSessionLog: (id, opts) =>
+    getSessionLog: (id, opts, options) =>
       call(
         SessionLogResponse,
         "GET",
         `/sessions/${id}/log${qs({ before: opts?.before, limit: opts?.limit })}`,
+        undefined,
+        undefined,
+        options,
       ),
 
     sendMessage: (sessionId, agentId, body) =>
@@ -566,6 +701,8 @@ export function createApiClient(
       call(OkResponse, "POST", `/sessions/${sessionId}/feedback`, body),
     exportSessionJson: (sessionId) =>
       call(SessionExportJson, "GET", `/sessions/${sessionId}/export/json`),
+    mergeDocs: (workspaceId, body) =>
+      call(MergeDocsResponse, "POST", `/workspaces/${workspaceId}/docs/merge`, body),
     compareDocs: (workspaceId, body) =>
       call(CompareDocsResponse, "POST", `/workspaces/${workspaceId}/docs/compare`, body),
     listDocRevisions: (workspaceId, docId, opts) =>
@@ -595,8 +732,16 @@ export function createApiClient(
       call(DiagnosticTracesResponse, "GET", `/diagnostics/traces${qs({ sessionId })}`),
     exportDiagnostics: (body) =>
       call(DiagnosticExportResponse, "POST", "/diagnostics/export", body),
+    reportFirstScreenMetrics: (body) =>
+      call(QaFirstScreenMetricsResponse, "POST", "/qa/first-screen-metrics", body),
     listFiles: (workspaceId, path) =>
       call(FileListResponse, "GET", `/workspaces/${workspaceId}/files${qs({ path })}`),
+    getDocImage: (workspaceId, docId, sheetId, imageId) =>
+      blobOf(
+        `/workspaces/${workspaceId}/docs/${docId}/images/${encodeURIComponent(imageId)}?sheetId=${encodeURIComponent(sheetId)}`,
+      ),
+    importLegacy: (workspaceId, body) =>
+      call(ImportLegacyResponse, "POST", `/workspaces/${workspaceId}/files/import-legacy`, body),
     createFile: (workspaceId, path) =>
       call(UploadResponse, "POST", `/workspaces/${workspaceId}/files/new`, { path }),
     fileHistory: (workspaceId, path) =>

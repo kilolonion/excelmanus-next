@@ -3,6 +3,7 @@ import { writableFilesModule } from "@excelmanus/files";
 import {
   type BackupService,
   createReadTable,
+  runWithHostNativeAccess,
   type DatabaseSync,
   type SyncBus,
   type ToolContext,
@@ -18,9 +19,12 @@ export function fileManagementRoutes(
   backups: BackupService,
   bus: SyncBus,
   fail: FailFn,
+  coordinateFiles?: Parameters<typeof writableFilesModule>[2],
 ): Hono {
   const app = new Hono();
-  const tool = writableFilesModule(db, backups).tools!.find((item) => item.name === "files")!;
+  const tool = writableFilesModule(db, backups, coordinateFiles).tools!.find(
+    (item) => item.name === "files",
+  )!;
   app.post("/workspaces/:id/files/manage", async (c) => {
     const workspace = getWorkspace(db, c.req.param("id"));
     if (!workspace) return fail(c, 404, "not_found", "工作区不存在");
@@ -47,7 +51,10 @@ export function fileManagementRoutes(
       }),
       destructiveApproved: confirmed === true,
     };
-    const result = await tool.execute({ ops }, context);
+    // This route is behind the authenticated native HTTP boundary. It is not
+    // callable as a task tool, and native identity cannot replace an active task.
+    const result = await runWithHostNativeAccess({db,workspaceId:workspace.id,workspaceRoot:workspace.path,operationId:callId},
+      () => tool.execute({ ops }, context));
     if (result.status !== "ok") {
       const code = result.error?.code;
       if (code === "OUT_OF_WORKSPACE" || code === "APPROVAL_DENIED")
@@ -65,7 +72,14 @@ export function fileManagementRoutes(
           : "文件操作失败，未自动重试",
       );
     }
-    bus.publish({ kind: "app", data: { type: "files.changed", workspaceId: workspace.id } });
+    bus.publish({
+      kind: "app",
+      data: {
+        type: "files.changed",
+        workspaceId: workspace.id,
+        moves: (result.changes as { moves?: unknown } | undefined)?.moves ?? [],
+      },
+    });
     return c.json({
       ok: true,
       paths: (result.changes as { paths?: string[] } | undefined)?.paths ?? [],

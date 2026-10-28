@@ -13,15 +13,23 @@ import {
   Square,
 } from "lucide-react";
 import type React from "react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { FileTypeIcon } from "@/components/ui/file-type-icon";
 import { toast } from "@/components/ui/toaster";
 import { errorMessage } from "@/lib/backend/api";
 import { isSpreadsheetFile, workspaceFileOpenHint } from "@/lib/file-kind";
+import { type FileSort, sortFiles } from "@/lib/file-sorting";
 import { openWorkspaceFile } from "@/lib/open-file";
 import { joinPath, normalizePath } from "@/lib/paths";
 import { cn } from "@/lib/utils";
-import { createEmptyFile, createFolder, toggleDir, useFilesStore } from "@/stores/files-store";
+import {
+  createEmptyFile,
+  createFolder,
+  loadDir,
+  toggleDir,
+  useFilesStore,
+} from "@/stores/files-store";
 import { FileRowMenu } from "./FileRowMenu";
 import { SessionMarkBadge } from "./FlatFileListView";
 import {
@@ -34,7 +42,7 @@ import {
   startFileDrag,
   uploadInto,
 } from "./file-actions";
-import { isSystemEntry, sortEntries } from "./file-tree-helpers";
+import { isSystemEntry } from "./file-tree-helpers";
 import { InlineCreateInput, InlineRenameInput } from "./InlineInputs";
 import type { SessionFileMark } from "./session-file-marks";
 
@@ -44,6 +52,7 @@ export interface TreeContext {
   selectMode: boolean;
   selectedPaths: Set<string>;
   showSystem: boolean;
+  sort?: FileSort;
   onOpen: (entry: FileEntry, full?: boolean) => void;
   dragEntries: (entry: FileEntry) => FileEntry[];
   onInfo: (entry: FileEntry) => void;
@@ -122,19 +131,29 @@ export function DirChildren({
   const loading = useFilesStore((s) => s.loading[path] ?? false);
   const error = useFilesStore((s) => s.errors[path]);
   const [visible, setVisible] = useState(100);
-  const entries = sortEntries((items ?? []).filter((e) => ctx.showSystem || !isSystemEntry(e)));
+  const sort = ctx.sort ?? "recent";
+  const sortMarks = sort === "session" ? ctx.marks : undefined;
+  const showSystem = ctx.showSystem;
+  const listed = useMemo(
+    () => (items ?? []).filter((entry) => showSystem || !isSystemEntry(entry)),
+    [items, showSystem],
+  );
+  const entries = useMemo(() => sortFiles(listed, sort, sortMarks), [listed, sort, sortMarks]);
   const indent = depth * 12 + 4 + 16;
 
   const create = async (name: string) => {
     const kind = creating;
+    const workspaceId = useFilesStore.getState().workspaceId;
     onCreated?.();
     try {
       if (kind === "file") {
         const created = await createEmptyFile(joinPath(path, name.trim()));
+        if (useFilesStore.getState().workspaceId !== workspaceId) return;
         if (path) toggleDir(path, true);
         if (isSpreadsheetFile(created)) openWorkspaceFile(created);
       } else {
         await createFolder(joinPath(path, name.trim()));
+        if (useFilesStore.getState().workspaceId !== workspaceId) return;
         if (path) toggleDir(path, true);
       }
     } catch (err) {
@@ -172,13 +191,21 @@ export function DirChildren({
           <Loader2 className="h-3 w-3 animate-spin" /> 加载中…
         </div>
       )}
-      {error && (
+      {error && !loading && (
         <div
           role="alert"
           className="py-1.5 text-[11px] text-destructive"
           style={{ paddingLeft: `${indent}px` }}
         >
-          {error}
+          <span>{error}</span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="ml-1 h-6 px-2 text-xs"
+            onClick={() => void loadDir(path, true)}
+          >
+            重试
+          </Button>
         </div>
       )}
       {items && entries.length === 0 && depth > 0 && !creating && (

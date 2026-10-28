@@ -68,7 +68,16 @@ export function SlidePanel({
                 ? "inset-x-0 bottom-0 top-0 rounded-none"
                 : "top-0 right-0 bottom-0 rounded-none"
             }`}
-            style={isMobile ? undefined : { width: `min(${width}px, 90vw)` }}
+            style={
+              isMobile
+                ? {
+                    paddingTop: "env(safe-area-inset-top, 0px)",
+                    paddingBottom: "env(safe-area-inset-bottom, 0px)",
+                    paddingLeft: "env(safe-area-inset-left, 0px)",
+                    paddingRight: "env(safe-area-inset-right, 0px)",
+                  }
+                : { width: `min(${width}px, 90vw)` }
+            }
           >
             {/* Header */}
             <div className="em-slide-panel-header flex items-center gap-2.5 px-5 py-3 border-b border-border/60 flex-shrink-0 relative">
@@ -90,6 +99,7 @@ export function SlidePanel({
                 size="icon"
                 className="h-8 w-8 rounded-lg flex-shrink-0"
                 onClick={onClose}
+                aria-label={`关闭${title}`}
               >
                 <X className="h-4 w-4" />
               </Button>

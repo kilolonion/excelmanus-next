@@ -3,9 +3,10 @@
 import type { FileEntry } from "@excelmanus/protocol";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
 import { AtSign, Check, Folder, FolderOpen } from "lucide-react";
-import { type RefObject, useMemo, useState } from "react";
+import { type RefObject, useCallback, useMemo, useState } from "react";
 import { FileTypeIcon } from "@/components/ui/file-type-icon";
 import { workspaceFileOpenHint } from "@/lib/file-kind";
+import { type FileSort, sortFiles } from "@/lib/file-sorting";
 import { dirName, normalizePath } from "@/lib/paths";
 import { cn } from "@/lib/utils";
 import styles from "./FilePanel.module.css";
@@ -17,6 +18,7 @@ import { SESSION_MARK_LABEL, type SessionFileMark } from "./session-file-marks";
 export interface FlatFileListViewProps {
   scrollRef?: RefObject<HTMLDivElement | null>;
   files: FileEntry[];
+  sort?: FileSort;
   marks: Map<string, SessionFileMark>;
   openPaths: Set<string>;
   selectMode: boolean;
@@ -60,29 +62,19 @@ export function FlatFileListView(props: FlatFileListViewProps) {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [draggingPath, setDraggingPath] = useState<string | null>(null);
 
-  // 本会话改动过的排前面，其余按最近修改时间、再按名称
-  const flatFiles = useMemo(
-    () =>
-      [...files].sort((a, b) => {
-        const ma = marks.has(normalizePath(a.path)) ? 1 : 0;
-        const mb = marks.has(normalizePath(b.path)) ? 1 : 0;
-        if (ma !== mb) return mb - ma;
-        const ta = a.modifiedAt ?? "";
-        const tb = b.modifiedAt ?? "";
-        if (ta !== tb) return tb.localeCompare(ta);
-        return a.name.localeCompare(b.name, "zh-CN", { numeric: true });
-      }),
-    [files, marks],
-  );
+  const sort = props.sort ?? "recent";
+  const sortMarks = sort === "session" ? marks : undefined;
+  const flatFiles = useMemo(() => sortFiles(files, sort, sortMarks), [files, sort, sortMarks]);
 
-  const pinnedIndex = flatFiles.findIndex(
-    (file) => file.path === (menuPath ?? renaming ?? draggingPath),
-  );
+  const pinnedPath = menuPath ?? renaming ?? draggingPath;
+  const pinnedIndex =
+    pinnedPath === null ? -1 : flatFiles.findIndex((file) => file.path === pinnedPath);
   const estimatedRowSize = 64;
+  const getItemKey = useCallback((index: number) => flatFiles[index]?.path ?? index, [flatFiles]);
   const virtualizer = useVirtualizer({
     count: flatFiles.length,
     getScrollElement: () => props.scrollRef?.current ?? null,
-    getItemKey: (index) => flatFiles[index]?.path ?? index,
+    getItemKey,
     estimateSize: () => estimatedRowSize,
     overscan: 5,
     enabled: !!props.scrollRef,
@@ -93,13 +85,36 @@ export function FlatFileListView(props: FlatFileListViewProps) {
         : [...new Set([...indices, pinnedIndex])].sort((a, b) => a - b);
     },
   });
-  // 侧栏展开动画期间滚动容器可能还没有尺寸，虚拟化没有范围时先渲染完整列表。
+  // 测量完成前仅预绘可见区，避免侧栏展开时先挂载整份文件列表。
   const virtualRows = props.scrollRef ? virtualizer.getVirtualItems() : [];
+  const fallbackCount = props.scrollRef
+    ? Math.ceil(
+        (props.scrollRef.current?.clientHeight ||
+          (typeof window === "undefined" ? 768 : window.innerHeight)) / estimatedRowSize,
+      ) + 10
+    : flatFiles.length;
+  const fallbackStart = props.scrollRef
+    ? Math.max(
+        0,
+        Math.min(
+          Math.floor((props.scrollRef.current?.scrollTop ?? 0) / estimatedRowSize) - 5,
+          flatFiles.length - fallbackCount,
+        ),
+      )
+    : 0;
+  const fallbackIndices = virtualRows.length
+    ? []
+    : Array.from(
+        { length: Math.max(0, Math.min(fallbackCount, flatFiles.length - fallbackStart)) },
+        (_, i) => fallbackStart + i,
+      );
+  if (!virtualRows.length && pinnedIndex >= 0 && !fallbackIndices.includes(pinnedIndex))
+    fallbackIndices.push(pinnedIndex);
   const rows =
     virtualRows.length > 0
       ? virtualRows
-      : flatFiles.map((file, index) => ({
-          key: file.path,
+      : fallbackIndices.map((index) => ({
+          key: flatFiles[index]?.path ?? index,
           index,
           start: index * estimatedRowSize,
         }));

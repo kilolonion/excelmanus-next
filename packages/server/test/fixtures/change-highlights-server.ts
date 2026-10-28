@@ -1,3 +1,4 @@
+import { createTestProfile } from "./create-model.ts";
 // 改动高亮验收：真实 HTTP/WS/SQLite/工作簿工具，只有模型服务输出由夹具替代。
 import { copyFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -56,6 +57,6 @@ const { items } = await api.listWorkspaces();
 const workspace = items.find((w) => w.isDefault);
 if (!workspace) throw new Error("default workspace missing");
 copyFileSync(resolve("samples/sales.xlsx"), resolve(workspace.path, "sales.xlsx"));
-await api.createModelProfile({ name: "高亮验收模型", provider: "custom-openai-compatible", model: "change-highlights", baseUrl: "https://mock.invalid/v1", apiKey: "fixture-only" });
+await createTestProfile(api, { name: "高亮验收模型", provider: "custom-openai-compatible", model: "change-highlights", baseUrl: "https://mock.invalid/v1", apiKey: "fixture-only" });
 const { session } = await api.createSession({ title: "改动高亮验收", permissionMode: "standard" });
 process.stdout.write(`${JSON.stringify({ url: server.url, sessionId: session.id })}\n`);

@@ -36,36 +36,104 @@ function requireWorkspace(): string {
   return id;
 }
 
-export async function loadDir(path = ""): Promise<FileEntry[]> {
-  const workspaceId = requireWorkspace();
-  set((s) => ({ loading: { ...s.loading, [path]: true } }));
-  try {
-    const res = await api().listFiles(workspaceId, path);
-    if (get().workspaceId !== workspaceId) return [];
-    set((s) => {
-      const errors = { ...s.errors };
-      delete errors[path];
-      return {
-        dirs: { ...s.dirs, [path]: res.items },
-        loading: { ...s.loading, [path]: false },
-        errors,
-        version: s.version + 1,
-      };
-    });
-    return res.items;
-  } catch (error) {
-    set((s) => ({
-      loading: { ...s.loading, [path]: false },
-      errors: { ...s.errors, [path]: errorMessage(error, "文件列表加载失败") },
-    }));
-    return [];
+interface DirectoryRead {
+  workspaceId: string;
+  dirty: boolean;
+  promise: Promise<FileEntry[]>;
+}
+const reads = new Map<string, DirectoryRead>();
+
+/** Compare the FileEntry contract without allocating two serialized directory copies. */
+function sameEntries(previous: FileEntry[] | undefined, next: FileEntry[]): boolean {
+  if (!previous || previous.length !== next.length) return false;
+  for (let i = 0; i < next.length; i++) {
+    const a = previous[i];
+    const b = next[i];
+    if (
+      a.name !== b.name ||
+      a.path !== b.path ||
+      a.kind !== b.kind ||
+      a.size !== b.size ||
+      a.modifiedAt !== b.modifiedAt ||
+      a.openedAt !== b.openedAt
+    )
+      return false;
   }
+  return true;
+}
+
+export function loadDir(path = "", refresh = false): Promise<FileEntry[]> {
+  const workspaceId = requireWorkspace();
+  const pending = reads.get(path);
+  if (pending?.workspaceId === workspaceId) {
+    if (refresh) pending.dirty = true;
+    return pending.promise;
+  }
+  const read: DirectoryRead = { workspaceId, dirty: false, promise: Promise.resolve([]) };
+  reads.set(path, read);
+  const current = () => reads.get(path) === read && get().workspaceId === workspaceId;
+  set((s) => {
+    const errors = { ...s.errors };
+    delete errors[path];
+    return { loading: { ...s.loading, [path]: true }, errors };
+  });
+  read.promise = (async () => {
+    try {
+      do {
+        read.dirty = false;
+        try {
+          const res = await api().listFiles(workspaceId, path);
+          if (!current()) return [];
+          // A change arrived after this request started. Read again before publishing.
+          if (read.dirty) continue;
+          set((s) => {
+            const errors = { ...s.errors };
+            delete errors[path];
+            const changed = !sameEntries(s.dirs[path], res.items);
+            return {
+              dirs: changed ? { ...s.dirs, [path]: res.items } : s.dirs,
+              loading: { ...s.loading, [path]: false },
+              errors,
+              version: s.version + (changed ? 1 : 0),
+            };
+          });
+          return res.items;
+        } catch (error) {
+          if (!current()) return [];
+          if (read.dirty) continue;
+          set((s) => ({
+            loading: { ...s.loading, [path]: false },
+            errors: { ...s.errors, [path]: errorMessage(error, "文件列表加载失败") },
+          }));
+          return [];
+        }
+      } while (current());
+      return [];
+    } finally {
+      if (reads.get(path) === read) reads.delete(path);
+    }
+  })();
+  return read.promise;
 }
 
 /** 刷新所有已加载过的目录（文件变化通知或用户手动刷新）。 */
-export async function refreshFiles(): Promise<void> {
-  const loaded = Object.keys(get().dirs);
-  await Promise.all((loaded.length > 0 ? loaded : [""]).map((p) => loadDir(p)));
+export async function refreshFiles({
+  loadedOnly = false,
+}: {
+  loadedOnly?: boolean;
+} = {}): Promise<void> {
+  const state = get();
+  if (!state.workspaceId) return;
+  // Failed and first-time pending directories have no dirs entry yet.
+  const paths = new Set([
+    ...(!loadedOnly ? [""] : []),
+    ...Object.keys(state.dirs),
+    ...Object.keys(state.errors),
+    ...[...reads]
+      .filter(([, read]) => read.workspaceId === state.workspaceId)
+      .map(([path]) => path),
+  ]);
+  await Promise.all([...paths].map((path) => loadDir(path, true)));
 }
 
 export function toggleDir(path: string, open?: boolean): void {
@@ -78,13 +146,24 @@ export function toggleDir(path: string, open?: boolean): void {
 }
 
 /** 有限深度的广度遍历，供 @ 提及与"打开工作簿"对话框使用。 */
-export async function listAllFiles(limit = 2000, maxDepth = 6): Promise<FileEntry[]> {
+export async function listAllFiles(
+  limit = 2000,
+  maxDepth = 6,
+  isActive = () => true,
+): Promise<FileEntry[]> {
+  const workspaceId = requireWorkspace();
   const out: FileEntry[] = [];
   const queue: { path: string; depth: number }[] = [{ path: "", depth: 0 }];
-  while (queue.length > 0 && out.length < limit) {
-    const next = queue.shift();
-    if (!next) break;
-    const items = get().dirs[next.path] ?? (await loadDir(next.path));
+  let cursor = 0;
+  while (cursor < queue.length && out.length < limit) {
+    const next = queue[cursor++];
+    if (!isActive() || get().workspaceId !== workspaceId) return [];
+    const state = get();
+    const cached = state.dirs[next.path];
+    const items = cached && !state.errors[next.path] ? cached : await loadDir(next.path);
+    if (!isActive() || get().workspaceId !== workspaceId) return [];
+    const error = get().errors[next.path];
+    if (error) throw new Error(error);
     for (const item of items) {
       if (item.kind === "dir") {
         if (next.depth + 1 < maxDepth) queue.push({ path: item.path, depth: next.depth + 1 });
@@ -97,8 +176,11 @@ export async function listAllFiles(limit = 2000, maxDepth = 6): Promise<FileEntr
   return out;
 }
 
-export async function uploadFiles(files: File[], directory = ""): Promise<string[]> {
-  const workspaceId = requireWorkspace();
+export async function uploadFiles(
+  files: File[],
+  directory = "",
+  workspaceId = requireWorkspace(),
+): Promise<string[]> {
   const paths: string[] = [];
   for (const file of files) {
     const res = await api().uploadFile(workspaceId, {
@@ -108,7 +190,8 @@ export async function uploadFiles(files: File[], directory = ""): Promise<string
     });
     paths.push(res.path);
   }
-  await loadDir(directory);
+  if ((get().workspaceId ?? useSessionStore.getState().activeWorkspaceId) === workspaceId)
+    await loadDir(directory, true);
   return paths;
 }
 
@@ -116,11 +199,12 @@ async function manage(
   ops: Parameters<ReturnType<typeof api>["manageFiles"]>[1]["ops"],
   confirmed = false,
 ): Promise<string[]> {
-  const res = await api().manageFiles(requireWorkspace(), {
+  const workspaceId = requireWorkspace();
+  const res = await api().manageFiles(workspaceId, {
     ops,
     ...(confirmed ? { confirmed: true } : {}),
   });
-  await refreshFiles();
+  if (get().workspaceId === workspaceId) await refreshFiles();
   return res.paths;
 }
 
@@ -129,10 +213,13 @@ export const createFolder = (path: string) => manage([{ op: "mkdir", path }]);
 /** 新建空文件（.xlsx/.csv/.txt/.md）；没写扩展名时按 .xlsx 处理。返回实际路径。 */
 export async function createEmptyFile(path: string): Promise<string> {
   const target = /\.[a-z0-9]+$/i.test(path) ? path : `${path}.xlsx`;
-  const res = await api().createFile(requireWorkspace(), target);
-  await refreshFiles();
+  const workspaceId = requireWorkspace();
+  const res = await api().createFile(workspaceId, target);
+  if (get().workspaceId === workspaceId) await refreshFiles();
   return res.path;
 }
+export const moveEntries = (moves: Array<{ path: string; to: string }>) =>
+  manage(moves.map((move) => ({ op: "move" as const, ...move })));
 export const moveEntry = (path: string, to: string) => manage([{ op: "move", path, to }]);
 export const copyEntry = (path: string, to: string) => manage([{ op: "copy", path, to }]);
 /** 删除进回收站（可在设置 → 工作区与备份里恢复）。 */
@@ -154,6 +241,7 @@ export async function fetchWorkspaceFile(path: string): Promise<Blob> {
 
 useSessionStore.subscribe((state, prev) => {
   if (state.activeWorkspaceId === prev.activeWorkspaceId) return;
+  reads.clear();
   set({
     workspaceId: state.activeWorkspaceId,
     dirs: {},

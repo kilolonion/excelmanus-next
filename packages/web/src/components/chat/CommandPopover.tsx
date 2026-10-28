@@ -1,7 +1,7 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { AtSign, ChevronRight, Cpu, Sparkles, Terminal } from "lucide-react";
 import type React from "react";
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { PopoverMode } from "./chat-input-constants";
 
 export interface PopoverItem {
@@ -41,10 +41,14 @@ export function CommandPopover({
 }: CommandPopoverProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const virtual = popoverItems.length > 100;
+  const getItemKey = useCallback(
+    (index: number) => popoverItems[index].command || index,
+    [popoverItems],
+  );
   const virtualizer = useVirtualizer({
     count: popoverItems.length,
     getScrollElement: () => scrollRef.current,
-    getItemKey: (index) => popoverItems[index].command || index,
+    getItemKey,
     estimateSize: () => 40,
     overscan: 4,
     enabled: virtual && !!popover,

@@ -48,7 +48,7 @@ import { unzipSync, zipSync } from "fflate";
 import { minimalXlsx } from "../src/checkpoint.ts";
 import { objectsOf } from "../src/objects.ts";
 import {
-  CHECKPOINT_MIGRATION,
+  CHECKPOINT_MIGRATION, DOC_MOVES_MIGRATION,
   DOC_OPS_MIGRATION,
   DOC_OPS_REVERTS_MIGRATION,
   DOCUMENTS_MIGRATION,
@@ -62,7 +62,7 @@ test("原生八类图表随 actor 修订保存、重新导入，更新和删除�
     DOCUMENTS_MIGRATION,
     DOC_OPS_MIGRATION,
     BACKUPS_MIGRATION,
-    CHECKPOINT_MIGRATION,
+    CHECKPOINT_MIGRATION, DOC_MOVES_MIGRATION,
     DOC_OPS_REVERTS_MIGRATION,
   ]);
   const service = new DocumentService(db);
@@ -222,7 +222,7 @@ test("条件格式与数据验证经真实 actor 写入、回读、修改和预�
     DOCUMENTS_MIGRATION,
     DOC_OPS_MIGRATION,
     BACKUPS_MIGRATION,
-    CHECKPOINT_MIGRATION,
+    CHECKPOINT_MIGRATION, DOC_MOVES_MIGRATION,
     DOC_OPS_REVERTS_MIGRATION,
   ]);
   const service = new DocumentService(db);

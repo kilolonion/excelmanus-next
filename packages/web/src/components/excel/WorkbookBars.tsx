@@ -21,16 +21,19 @@ import {
   partyOf,
 } from "@/lib/workbook/conflict";
 import { type DocConflict, latestDocConflict } from "@/lib/workbook/doc-sync";
+import { resolveDraftInput } from "@/lib/workbook/edit-session";
 import { useChatStore } from "@/stores/chat-store";
 import {
   dismissDocConflict,
+  dismissRecoveredDraft,
+  retainCurrentInputDraft,
   reloadDocument,
   resolveExternal,
   resubmitRejected,
   setDraftConflict,
   useWorkbookStore,
 } from "@/stores/workbook-store";
-import type { SheetApi } from "./FormatToolbar";
+import { focusGrid, type SheetApi } from "./FormatToolbar";
 
 const SHOWN_CELLS = 3;
 
@@ -212,6 +215,32 @@ function OfflineBar({ conflict }: { conflict: DocConflict }) {
   );
 }
 
+/** 回包前断线不能断言失败，也不能重发可能已执行的插行等操作。 */
+function UncertainBar({ conflict }: { conflict: DocConflict }) {
+  const [busy, setBusy] = useState(false);
+  const [checked, setChecked] = useState(false);
+  const sheets = useWorkbookStore((s) => s.doc?.snapshot.sheets) as Record<string, { name?: string }> | undefined;
+  const cells = conflictCells(conflict, (id) => sheets?.[id]?.name);
+  const refresh = async () => {
+    setBusy(true);
+    try { await reloadDocument(); setChecked(true); }
+    catch (error) { toast({ title: errorMessage(error, "连接仍未恢复，请稍后核对"), tone: "error" }); }
+    finally { setBusy(false); }
+  };
+  return <Bar tone="warn" icon={<WifiOff className="h-3.5 w-3.5" />}>
+    <div className="flex flex-wrap items-center gap-2">
+      <strong>保存结果待确认</strong>
+      <span>发送后连接中断，服务器可能已经保存。请先刷新核对，避免重复操作。</span>
+      <BarButton onClick={() => void refresh()} disabled={busy}>{busy ? "读取中…" : "刷新核对"}</BarButton>
+      {checked && <BarButton onClick={() => dismissDocConflict(conflict.clientOpId)}>已核对，关闭提示</BarButton>}
+    </div>
+    {cells.slice(0, SHOWN_CELLS).map((cell) => <div key={cell.sheetId + ":" + cell.address} className="flex items-center gap-2">
+      <span>{cell.address}</span><ValueChip label="原输入" value={cell.mine} />
+    </div>)}
+    {!cells.length && <span>本次修改包含 {(conflict.submitted?.mutations ?? (conflict.submitted ? [conflict.submitted.mutation] : [])).length} 个步骤，请对照修订历史核对。</span>}
+  </Bar>;
+}
+
 /** 不能二选一的拒绝：结构冲突、写回不支持的格式等，只说明原因。 */
 function FailedBar({ conflict }: { conflict: DocConflict }) {
   const regions = conflictRegions(conflict);
@@ -239,17 +268,24 @@ export function SubmitConflictBar({ api }: { api: SheetApi | null }) {
   const conflict = useMemo(() => latestDocConflict(docSync), [docSync]);
   if (!conflict) return null;
   if (conflict.code === "offline") return <OfflineBar conflict={conflict} />;
+  if (conflict.code === "connection_lost") return <UncertainBar key={conflict.clientOpId} conflict={conflict} />;
   if (canKeepMine(conflict)) return <ChoiceBar conflict={conflict} api={api} />;
   return <FailedBar conflict={conflict} />;
 }
 
 /** 正在输入的单元格被对方改写：草稿还在，选择是否把它写回去。 */
 export function DraftConflictBar({ api }: { api: SheetApi | null }) {
-  const draft = useWorkbookStore((s) => s.draftConflict);
+  const [busy, setBusy] = useState(false);
+  const conflict = useWorkbookStore((s) => s.draftConflict);
+  const recovered = useWorkbookStore((s) => s.recoveredDrafts[0]);
+  const draft = conflict ?? recovered;
+  const revision = useWorkbookStore((s) => s.doc?.rev);
+  void revision;
   const sheets = useWorkbookStore((s) => s.doc?.snapshot.sheets) as
-    | Record<string, { name?: string }>
+    | Record<string, { name?: string; cellData?: Record<number, Record<number, unknown>> }>
     | undefined;
   if (!draft) return null;
+  const isRecovery = draft === recovered;
   const who = PARTY_NAME[partyOf(draft.source) ?? "unknown"];
   const sheetName = sheets?.[draft.sheetId]?.name;
   const address = formatRange({
@@ -258,23 +294,34 @@ export function DraftConflictBar({ api }: { api: SheetApi | null }) {
     endCol: draft.col + 1,
     endRow: draft.row + 1,
   });
-  const keepMine = () => {
-    const range = api?.wb.getSheetBySheetId(draft.sheetId)?.getRange(draft.row, draft.col);
-    setDraftConflict(null);
-    // 以普通编辑写回草稿：同一写入路径，服务端照常判冲突
-    void range?.setValue(draft.text);
+  const choose = (choice: "mine" | "theirs") => {
+    if (!api || busy) return;
+    retainCurrentInputDraft();
+    setBusy(true);
+    void resolveDraftInput(api.wb, draft, choice)
+      .then(() => {
+        if (useWorkbookStore.getState().draftConflict === draft) setDraftConflict(null);
+        else if (isRecovery) dismissRecoveredDraft(draft);
+        focusGrid(api);
+      })
+      .catch((error: unknown) =>
+        toast({ title: errorMessage(error, "处理失败，输入草稿仍保留"), tone: "error" }),
+      )
+      .finally(() => setBusy(false));
   };
   return (
     <Bar tone="warn">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
         <strong className="font-semibold">
-          你正在输入的 {sheetName ? `${sheetName}!` : ""}
-          {address} 被{who}改写了
+          {isRecovery ? "已恢复未提交的 " : "你正在输入的 "}{sheetName ? `${sheetName}!` : ""}
+          {address}{isRecovery ? " 输入，请核对当前值后选择" : ` 被${who}改写了`}
         </strong>
         <span className="min-w-2 flex-1" />
         <div className="flex shrink-0 items-center gap-1.5">
-          <BarButton onClick={() => setDraftConflict(null)}>采用{who}的</BarButton>
-          <BarButton primary disabled={!api} onClick={keepMine}>
+          <BarButton disabled={!api || busy} onClick={() => choose("theirs")}>
+            {isRecovery ? "放弃这份草稿" : `采用${who}的`}
+          </BarButton>
+          <BarButton primary disabled={!api || busy} onClick={() => choose("mine")}>
             写回我的输入
           </BarButton>
         </div>
@@ -284,7 +331,7 @@ export function DraftConflictBar({ api }: { api: SheetApi | null }) {
           label="你的输入"
           value={draft.text ? { kind: "text", text: draft.text } : { kind: "empty" }}
         />
-        <ValueChip label={`${who}的值`} value={describeCell(draft.theirs)} />
+        <ValueChip label={isRecovery ? "当前值" : `${who}的值`} value={describeCell(isRecovery ? (api && !api.disposed ? api.wb.getSheetBySheetId(draft.sheetId)?.getSheet().getSnapshot().cellData?.[draft.row]?.[draft.col] : sheets?.[draft.sheetId]?.cellData?.[draft.row]?.[draft.col]) : draft.theirs)} />
       </div>
     </Bar>
   );
@@ -347,7 +394,7 @@ export function CheckpointErrorBar() {
   );
 }
 
-/** 用户改了代理读过的区域（02 §4.7）：代理下一步会重新读取，期间在表格上方说明。 */
+/** 用户改了代理读过的区域：提示已发送失效通知，不把通知误报成正在读取。 */
 export function AgentRereadBar() {
   const doc = useWorkbookStore((s) => s.doc);
   const notices = useChatStore((s) => s.session.docNotices);
@@ -370,11 +417,11 @@ export function AgentRereadBar() {
     <div role="status" className="em-reread-bar">
       <Eye className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
       <span className="min-w-0 truncate">
-        表格刚被你修改
+        表格已被你修改
         {ranges.length > 0 && (
           <span className="em-reread-ranges">{ranges.slice(0, 3).join("、")}</span>
         )}
-        ，{names.join("、")}正在重新读取
+        ，已通知{names.join("、")}该区域有更新
       </span>
     </div>
   );

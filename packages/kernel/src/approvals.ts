@@ -8,7 +8,11 @@ import type {
 
 export type ApprovalEffect = ProtocolApprovalEffect;
 
+import { knownApprovalEffects } from "./denial-fence.ts";
 import type { SessionLog } from "./session-log.ts";
+import { bindToolAccess, captureApprovalEffects, runWithToolAccess } from "./tool-access.ts";
+import type { EffectIntent } from "./tools.ts";
+import { turnAccessBinding } from "./turn-access.ts";
 
 export interface ApprovalSpec {
   toolCallId: string;
@@ -16,6 +20,9 @@ export interface ApprovalSpec {
   args: unknown;
   targets: string[];
   effect: ApprovalEffect;
+  /** Host-only context and pure tool effect mapping, not model-supplied authority. */
+  workspaceRoot?: string;
+  effects?: EffectIntent[];
   /** 运行时恢复所需的 step 上下文。 */
   turnId?: string;
   stepId?: string;
@@ -33,9 +40,11 @@ export interface ApprovalRow {
   reason: string | null;
 }
 
+export type ApprovalDecisionCause = "user" | "cancelled" | "timeout" | "system";
 export interface ApprovalResolution {
   decision: ApprovalDecision;
   reason?: string;
+  cause?: ApprovalDecisionCause;
 }
 
 /** 权限表（04 §5.1）。interactive 是代理向用户提问本身，不再套审批。 */
@@ -128,6 +137,39 @@ export class ApprovalCoordinator {
 
   request(sessionId: string, agentId: string, spec: ApprovalSpec): ApprovalRow {
     const id = newId("apr");
+    const binding = spec.turnId
+      ? turnAccessBinding(this.db, sessionId, agentId, spec.turnId)
+      : undefined;
+    // Rebuild every effect from host declarations. Ignore any accidental identity fields.
+    const effects = (
+      spec.effects ?? knownApprovalEffects(spec.toolName, spec.args, spec.targets, spec.effect)
+    ).map(({ kind, path, to }) => ({ kind, path, ...(to !== undefined ? { to } : {}) }));
+    const captureKnown =
+      spec.effects !== undefined || ["files", "write", "edit"].includes(spec.toolName);
+    const workspaceRoot = spec.workspaceRoot;
+    const captured =
+      captureKnown && workspaceRoot && spec.turnId
+        ? runWithToolAccess(
+            bindToolAccess({
+              db: this.db,
+              log: this.log,
+              workspaceRoot,
+              sessionId,
+              agentId,
+              turnId: spec.turnId,
+              toolCallId: spec.toolCallId,
+            }),
+            () => captureApprovalEffects(effects, workspaceRoot),
+          )
+        : effects;
+    const persisted = {
+      ...spec,
+      effects: captured,
+      originAgentId: binding?.originAgentId ?? agentId,
+      ...((binding?.originTurnId ?? spec.turnId)
+        ? { originTurnId: binding?.originTurnId ?? spec.turnId }
+        : {}),
+    };
     this.log.append(sessionId, agentId, [
       {
         type: "approval.requested",
@@ -138,7 +180,7 @@ export class ApprovalCoordinator {
           args: spec.args,
           targets: spec.targets,
           effect: spec.effect,
-          spec: { ...spec, approvalId: id },
+          spec: { ...persisted, approvalId: id },
         },
       },
     ]);
@@ -152,6 +194,7 @@ export class ApprovalCoordinator {
     decision: ApprovalDecision,
     reason?: string,
     remember = false,
+    cause: ApprovalDecisionCause = "user",
   ): { row: ApprovalRow; idempotent: boolean } {
     const row = this.get(id);
     if (!row) throw new Error("审批不存在");
@@ -162,6 +205,7 @@ export class ApprovalCoordinator {
         data: {
           approvalId: id,
           decision,
+          cause,
           ...(reason !== undefined ? { reason } : {}),
           ...(remember ? { remember: true } : {}),
         },
@@ -172,7 +216,7 @@ export class ApprovalCoordinator {
     if (waiters) {
       this.waiters.delete(id);
       for (const resolve of waiters)
-        resolve({ decision, ...(reason !== undefined ? { reason } : {}) });
+        resolve({ decision, cause, ...(reason !== undefined ? { reason } : {}) });
     }
     return { row: updated, idempotent: false };
   }
@@ -198,7 +242,11 @@ export class ApprovalCoordinator {
             id,
             current.filter((r) => r !== resolve),
           );
-          resolve({ decision: "denied", reason: "代理已停止" });
+          resolve({
+            decision: "denied",
+            cause: signal.reason?.name === "TimeoutError" ? "timeout" : "cancelled",
+            reason: "代理已停止",
+          });
         };
         signal.addEventListener("abort", abort, { once: true });
       }

@@ -2,7 +2,7 @@
 // 全屏视图打开时面板不挂载：同一时刻只有一个 Univer 实例。
 
 import { motion } from "framer-motion";
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useIsDesktop, useIsMediumScreen, useIsMobile, useIsTablet } from "@/hooks/use-mobile";
 import { useResizablePanel } from "@/hooks/use-resizable-panel";
 import {
@@ -10,8 +10,9 @@ import {
   panelSlideVariantsMedium,
   panelSlideVariantsMobile,
 } from "@/lib/sidebar-motion";
+import { useUIStore } from "@/stores/ui-store";
 import { setPanelOpen, useWorkbookStore } from "@/stores/workbook-store";
-import { WorkbookSurface } from "./WorkbookSurface";
+import { DeferredWorkbook } from "./DeferredWorkbook";
 
 export function ExcelSidePanel() {
   const isMobile = useIsMobile();
@@ -19,35 +20,53 @@ export function ExcelSidePanel() {
   const isDesktop = useIsDesktop();
   const isMediumScreen = useIsMediumScreen();
   const open = useWorkbookStore((s) => s.panelOpen && !s.fullView);
+  const sidebarOpen = useUIStore((s) => s.sidebarOpen);
   const {
     panelWidth: resizableWidth,
     isFloatingByResize,
     handleProps,
     isDragging,
-  } = useResizablePanel(isDesktop);
+  } = useResizablePanel(!isMobile, open);
 
   // 非手机尺寸下作为布局列，让顶栏、对话区和输入框同步缩窄；手机或桌面端拖宽超过半屏时用浮层
-  const floating = isMobile || isFloatingByResize;
-  const width = isMobile ? undefined : isDesktop ? resizableWidth : isTablet ? 420 : 600;
+  const floating = isMobile || isFloatingByResize || isTablet || (!isDesktop && sidebarOpen);
+  const width = isMobile ? undefined : resizableWidth;
 
-  const touchRef = useRef<{ startY: number; startTime: number } | null>(null);
+  const touchRef = useRef<{ id: number; startX: number; startY: number; startTime: number } | null>(
+    null,
+  );
   const onTouchStart = useCallback(
     (e: React.TouchEvent) => {
-      if (!isMobile) return;
-      touchRef.current = { startY: e.touches[0]?.clientY ?? 0, startTime: Date.now() };
+      touchRef.current = null;
+      if (!isMobile || e.touches.length !== 1) return;
+      const t = e.touches[0];
+      touchRef.current = {
+        id: t.identifier,
+        startX: t.clientX,
+        startY: t.clientY,
+        startTime: Date.now(),
+      };
     },
     [isMobile],
   );
   const onTouchEnd = useCallback(
     (e: React.TouchEvent) => {
-      if (!isMobile || !touchRef.current) return;
-      const dy = (e.changedTouches[0]?.clientY ?? 0) - touchRef.current.startY;
-      const dt = Date.now() - touchRef.current.startTime;
+      const start = touchRef.current;
       touchRef.current = null;
-      if (dy > 50 && dt < 400) setPanelOpen(false);
+      const t = e.changedTouches[0];
+      if (!isMobile || !start || e.touches.length || t?.identifier !== start.id) return;
+      const dy = t.clientY - start.startY;
+      const dx = Math.abs(t.clientX - start.startX);
+      const dt = Date.now() - start.startTime;
+      if (dy > 50 && dy > dx && dt < 400) setPanelOpen(false);
     },
     [isMobile],
   );
+
+  const onTouchCancel = useCallback(() => {
+    touchRef.current = null;
+  }, []);
+  useEffect(onTouchCancel, [isMobile, open, onTouchCancel]);
 
   if (!open) return null;
   const variants = isMobile
@@ -58,7 +77,7 @@ export function ExcelSidePanel() {
 
   return (
     <>
-      {isDesktop && isFloatingByResize && (
+      {!isMobile && floating && (
         <div
           className="fixed inset-0 z-39 bg-black/20 transition-opacity"
           onClick={() => setPanelOpen(false)}
@@ -77,15 +96,26 @@ export function ExcelSidePanel() {
               : "fixed inset-y-0 right-0 z-40 flex flex-col border-l border-border bg-background shadow-2xl"
             : "relative flex h-full flex-shrink-0 flex-col border-l border-border bg-background"
         }
-        style={{ ...(isMobile ? {} : { width }), ...(isDragging ? { transition: "none" } : {}) }}
+        style={{
+          ...(isMobile
+            ? {
+                paddingTop: "env(safe-area-inset-top, 0px)",
+                paddingBottom: "env(safe-area-inset-bottom, 0px)",
+                paddingLeft: "env(safe-area-inset-left, 0px)",
+                paddingRight: "env(safe-area-inset-right, 0px)",
+              }
+            : { width }),
+          ...(isDragging ? { transition: "none" } : {}),
+        }}
       >
-        {isDesktop && (
+        {!isMobile && (
           <div
             {...handleProps}
-            className={`group/handle absolute bottom-0 left-0 top-0 z-10 w-1 cursor-col-resize transition-colors ${
-              isDragging
-                ? "bg-[var(--em-primary)]"
-                : "bg-transparent hover:bg-[var(--em-primary)]/60"
+            role="separator"
+            aria-label="调整表格面板宽度"
+            aria-orientation="vertical"
+            className={`group/handle absolute bottom-0 left-0 top-0 z-10 w-2 cursor-col-resize transition-colors ${
+              isDragging ? "bg-[var(--em-primary)]" : "bg-border/50 hover:bg-[var(--em-primary)]/60"
             }`}
             title="拖拽调整宽度 · 双击恢复默认"
           >
@@ -101,13 +131,14 @@ export function ExcelSidePanel() {
             className="flex flex-shrink-0 justify-center py-1.5"
             onTouchStart={onTouchStart}
             onTouchEnd={onTouchEnd}
+            onTouchCancel={onTouchCancel}
             aria-label="下滑关闭表格面板"
           >
             <div className="h-1 w-10 rounded-full bg-muted-foreground/30" />
           </div>
         )}
         <div className="min-h-0 flex-1">
-          <WorkbookSurface placement="panel" />
+          <DeferredWorkbook placement="panel" />
         </div>
       </motion.aside>
     </>

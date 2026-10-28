@@ -193,8 +193,17 @@ export function evaluateLicenses(
   return violations;
 }
 
+// pnpm 10.11 misreads URL tarball versions (xlsx@undefined). Use the pinned
+// invoking CLI, rather than accidentally picking an older global pnpm on PATH.
+export function licenseCommand(execPath: string | undefined, prod: boolean) {
+  const args = ["licenses", "list", "--json", ...(prod ? ["--prod"] : [])];
+  return execPath && /(?:^|[\\/])pnpm\.(?:c?js|mjs)$/.test(execPath)
+    ? { command: process.execPath, args: [execPath, ...args] }
+    : { command: "pnpm", args };
+}
 function listLicenses(rootDir: string, prod: boolean): LicenseReport {
-  const output = execFileSync("pnpm", ["licenses", "list", "--json", ...(prod ? ["--prod"] : [])], {
+  const invocation = licenseCommand(process.env.npm_execpath, prod);
+  const output = execFileSync(invocation.command, invocation.args, {
     cwd: rootDir,
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,

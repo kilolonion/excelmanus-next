@@ -242,6 +242,25 @@ const MemoryInput = z.discriminatedUnion("action", [
   }),
   z.strictObject({ action: z.literal("delete"), id: z.string().min(1) }),
 ]);
+// Some compatible model adapters inspect only root properties. Keep the advertised
+// shape flat; the discriminated union above remains the strict execution validator.
+const MemoryModelInput = z.strictObject({
+  action: z
+    .enum(["save", "search", "delete"])
+    .describe("必填：save 保存、search 检索、delete 删除"),
+  content: MemoryInput.options[0].shape.content
+    .optional()
+    .describe("action=save 时必填：要长期记住的一句话"),
+  category: MemoryInput.options[0].shape.category
+    .optional()
+    .describe("action=save 时必填：preference/domain/file/lesson"),
+  scope: MemoryInput.options[0].shape.scope,
+  query: MemoryInput.options[1].shape.query.optional().describe("action=search 时必填：检索关键词"),
+  limit: MemoryInput.options[1].shape.limit,
+  id: MemoryInput.options[2].shape.id.optional().describe("action=delete 时必填：已存在记忆的 id"),
+});
+const MemoryJsonSchema = z.toJSONSchema(MemoryModelInput);
+
 type MemoryArgs = z.infer<typeof MemoryInput>;
 
 const err = (code: string, message: string): ToolResult => ({
@@ -254,8 +273,9 @@ export function memoryTool(service: MemoryService, log: SessionLog): ToolDefinit
     name: "memory",
     title: "记忆",
     description:
-      "跨会话的长期记忆。save 保存一条用户偏好、业务口径、文件说明或经验（用户会看到“已记住”并可撤销）；search 按关键词检索已有记忆；delete 删除一条（按 id）。只保存以后仍有用的稳定信息，不保存一次性任务细节。",
+      "跨会话的长期记忆。action 必填；save 需要 content 与 category，search 需要 query，delete 需要 id。save 保存一条用户偏好、业务口径、文件说明或经验（用户会看到“已记住”并可撤销）；search 按关键词检索已有记忆；delete 删除一条（按 id）。只保存以后仍有用的稳定信息，不保存一次性任务细节。",
     input: MemoryInput,
+    inputJsonSchema: MemoryJsonSchema,
     output: z.record(z.string(), z.unknown()),
     effect: "state",
     targets: () => [],

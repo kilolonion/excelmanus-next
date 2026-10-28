@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useModelSelection } from "@/hooks/use-model-selection";
 import { getProviderColor, getProviderDisplayName } from "@/lib/provider-brand";
+import { useChatStore } from "@/stores/chat-store";
 import { useUIStore } from "@/stores/ui-store";
 import { ModelPickerContent } from "./ModelPickerContent";
 import styles from "./ModelPickerContent.module.css";
@@ -55,8 +56,15 @@ export function TopModelSelector() {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const isMobile = useIsMobile();
 
+  const sessionLoading = useChatStore((s) => s.loading);
+  const sessionError = useChatStore((s) => !!s.loadError);
   const active = models.find((model) => model.id === currentModel);
-  const displayName = active?.label ?? "选择模型";
+  const displayName =
+    sessionLoading || (loading && !models.length)
+      ? "正在加载模型"
+      : sessionError || (loadError && !models.length)
+        ? "模型待确认"
+        : (active?.label ?? "选择模型");
   const pickerProps = {
     models,
     currentModel,
@@ -73,10 +81,12 @@ export function TopModelSelector() {
   const trigger = (
     <Button
       ref={triggerRef}
+      disabled={sessionLoading || sessionError}
       variant="ghost"
       className="em-model-selector-trigger gap-1.5 px-2.5 h-8 rounded-full border border-[var(--em-line)] bg-card/80 text-[12px] font-medium text-muted-foreground group shrink-0 shadow-sm hover:border-[var(--em-line-strong)] data-[state=open]:bg-[var(--em-primary-alpha-06)] data-[state=open]:border-[var(--em-primary-alpha-25)]"
       data-coach-id="coach-model-selector"
       aria-label={`选择模型：${displayName}`}
+      title={active ? `${displayName} · ${active.profileName}` : displayName}
       aria-haspopup={isMobile ? "dialog" : undefined}
       aria-expanded={isMobile ? open : undefined}
       onClick={isMobile ? () => setOpen(true) : undefined}
@@ -98,7 +108,7 @@ export function TopModelSelector() {
           {displayName}
         </motion.span>
       </AnimatePresence>
-      {switching ? (
+      {switching || sessionLoading ? (
         <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
       ) : (
         <ChevronDown className="h-3.5 w-3.5 text-muted-foreground transition-transform duration-200 group-data-[state=open]:rotate-180" />

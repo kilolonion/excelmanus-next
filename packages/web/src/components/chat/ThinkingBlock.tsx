@@ -1,7 +1,20 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { Brain, ChevronDown } from "lucide-react";
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { formatThinkingDuration, parseThinkingLines, thinkingPreview } from "@/lib/thinking";
+import { Brain, ChevronRight } from "lucide-react";
+import {
+  Fragment,
+  type ReactNode,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import {
+  createThinkingLineReader,
+  formatThinkingDuration,
+  type ThinkingSegment,
+  thinkingPreview,
+} from "@/lib/thinking";
 import { cn } from "@/lib/utils";
 
 interface ThinkingBlockProps {
@@ -39,6 +52,8 @@ export function ThinkingBlock({
   const contentRef = useRef<HTMLDivElement>(null);
   // 流式内容默认跟随底部；一旦用户向上查看历史内容，就由用户接管滚动位置。
   const autoFollowRef = useRef(true);
+  const lineReader = useRef<ReturnType<typeof createThinkingLineReader> | null>(null);
+  const lineNodes = useRef<WeakMap<ThinkingSegment[], ReactNode> | null>(null);
 
   useEffect(() => {
     if (!isActive) return;
@@ -54,51 +69,75 @@ export function ThinkingBlock({
   }, [isActive]);
 
   useLayoutEffect(() => {
-    if (isActive && autoFollowRef.current && contentRef.current) {
-      contentRef.current.scrollTop = contentRef.current.scrollHeight;
-    }
+    if (!isActive || !autoFollowRef.current) return;
+    const frame = requestAnimationFrame(() => {
+      const el = contentRef.current;
+      if (autoFollowRef.current && el) el.scrollTop = el.scrollHeight;
+    });
+    return () => cancelAnimationFrame(frame);
   }, [content, isActive]);
 
   const seconds = isActive ? elapsed : duration != null ? Math.round(duration) : 0;
   const durationStr = formatThinkingDuration(seconds);
   const heading = title ?? (isActive ? "思考中" : "思考完成");
   const showBody = (isActive || expanded) && !!content;
-  const preview = !isActive && !expanded ? thinkingPreview(content) : "";
+  const preview = useMemo(
+    () => (!isActive && !expanded ? thinkingPreview(content) : ""),
+    [content, isActive, expanded],
+  );
+
+  const body = useMemo(() => {
+    if (!showBody) {
+      lineReader.current = null;
+      lineNodes.current = null;
+      return null;
+    }
+    const read = (lineReader.current ??= createThinkingLineReader());
+    const nodes = (lineNodes.current ??= new WeakMap<ThinkingSegment[], ReactNode>());
+    return read(content).map((segments, lineIndex) => {
+      const cached = nodes.get(segments);
+      if (cached !== undefined) return cached;
+      const node = (
+        <Fragment key={lineIndex}>
+          {lineIndex > 0 && "\n"}
+          {segments.map((seg, segIndex) =>
+            seg.bold ? (
+              <strong key={segIndex} className="font-semibold text-foreground">
+                {seg.text}
+              </strong>
+            ) : (
+              seg.text
+            ),
+          )}
+        </Fragment>
+      );
+      nodes.set(segments, node);
+      return node;
+    });
+  }, [content, showBody]);
 
   return (
-    <div className="my-2 rounded-2xl border border-[var(--em-hairline)] bg-background overflow-hidden">
+    <div className="my-1 min-w-0">
       <button
         type="button"
         onClick={() => !isActive && setExpanded((v) => !v)}
         disabled={isActive}
         aria-expanded={isActive || expanded}
         aria-label={isActive ? heading : expanded ? "收起思考" : "展开思考"}
-        className={cn(
-          "flex w-full items-center gap-2 px-3 sm:px-3.5 py-2.5 text-left",
-          !isActive && "hover:bg-[var(--em-fill)] transition-colors",
-          isActive && "cursor-default",
-        )}
+        className={cn("em-step-row", isActive && "cursor-default")}
       >
-        <Brain
-          className={cn(
-            "h-4 w-4 flex-shrink-0",
-            isActive
-              ? "text-muted-foreground animate-tool-running-pulse"
-              : "text-[var(--em-primary)]",
-          )}
-        />
-        <span className="text-[13px] font-medium text-foreground whitespace-nowrap shrink-0">
-          {heading}
+        <span className="em-step-icon">
+          <Brain
+            className={cn(
+              "h-3.5 w-3.5 flex-shrink-0",
+              isActive
+                ? "text-muted-foreground animate-tool-running-pulse"
+                : "text-muted-foreground",
+            )}
+          />
         </span>
-        <span
-          className={cn(
-            "text-[11px] font-medium px-1.5 py-px rounded-full whitespace-nowrap shrink-0",
-            isActive
-              ? "bg-[var(--em-fill)] text-[var(--em-text-secondary)]"
-              : "bg-[var(--em-primary-alpha-10)] text-[var(--em-primary)]",
-          )}
-        >
-          {isActive ? "进行中" : "已完成"}
+        <span className="text-[13px] leading-5 text-foreground/85 whitespace-nowrap shrink-0">
+          {heading}
         </span>
         {preview && (
           <span className="hidden sm:inline min-w-0 truncate text-[12px] text-muted-foreground">
@@ -109,14 +148,7 @@ export function ThinkingBlock({
           {durationStr && (
             <span className="text-[11px] tabular-nums text-muted-foreground">{durationStr}</span>
           )}
-          {!isActive && (
-            <ChevronDown
-              className={cn(
-                "h-4 w-4 text-muted-foreground/60 transition-transform",
-                expanded && "rotate-180",
-              )}
-            />
-          )}
+          {!isActive && <ChevronRight className="em-step-chevron h-3.5 w-3.5" />}
         </span>
       </button>
 
@@ -148,7 +180,7 @@ export function ThinkingBlock({
                 autoFollowRef.current = false;
               }}
               className={cn(
-                "px-3 sm:px-3.5 pb-3 text-[12px] text-[var(--em-text-secondary)] whitespace-pre-wrap leading-relaxed break-words",
+                "ml-1.5 border-l border-[var(--em-hairline)] pl-3.5 py-1 text-[12px] text-[var(--em-text-secondary)] whitespace-pre-wrap leading-relaxed break-words",
                 "max-h-48 overflow-y-auto overscroll-contain",
                 isActive && "scrollbar-none",
               )}
@@ -162,20 +194,7 @@ export function ThinkingBlock({
                   : undefined
               }
             >
-              {parseThinkingLines(content).map((segments, lineIndex) => (
-                <Fragment key={lineIndex}>
-                  {lineIndex > 0 && "\n"}
-                  {segments.map((seg, segIndex) =>
-                    seg.bold ? (
-                      <strong key={segIndex} className="font-semibold text-foreground">
-                        {seg.text}
-                      </strong>
-                    ) : (
-                      seg.text
-                    ),
-                  )}
-                </Fragment>
-              ))}
+              {body}
             </div>
           </motion.div>
         )}

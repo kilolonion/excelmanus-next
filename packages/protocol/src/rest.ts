@@ -112,8 +112,43 @@ export const ProviderPreset = z.object({
 });
 export type ProviderPreset = z.infer<typeof ProviderPreset>;
 
+export const ProviderConnection = z.object({
+  id: z.string(),
+  name: z.string(),
+  provider: z.string(),
+  baseUrl: z.string().optional(),
+  hasCredential: z.boolean(),
+  apiKeyMasked: z.string().nullable(),
+  accountId: z.string().nullable(),
+  extraHeaders: z.record(z.string(), z.string()).optional(),
+  modelCount: z.int().nonnegative(),
+  modelsUpdatedAt: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type ProviderConnection = z.infer<typeof ProviderConnection>;
+export const CreateProviderConnectionBody = z.strictObject({
+  name: z.string().trim().min(1),
+  provider: z.string().min(1),
+  baseUrl: z.string().optional(),
+  apiKey: z.string().optional(),
+  extraHeaders: z.record(z.string(), z.string()).optional(),
+  accountId: z.string().optional(),
+});
+export type CreateProviderConnectionBody = z.infer<typeof CreateProviderConnectionBody>;
+export const UpdateProviderConnectionBody = z.strictObject({
+  name: z.string().trim().min(1).optional(),
+  baseUrl: z.string().nullable().optional(),
+  apiKey: z.string().optional(),
+  extraHeaders: z.record(z.string(), z.string()).nullable().optional(),
+});
+export type UpdateProviderConnectionBody = z.infer<typeof UpdateProviderConnectionBody>;
+export const ConnectionResponse = z.object({ connection: ProviderConnection });
+export const ConnectionListResponse = z.object({ items: z.array(ProviderConnection) });
+
 export const ModelProfile = z.object({
   id: z.string(),
+  connectionId: z.string(),
   name: z.string(),
   provider: z.string(),
   model: z.string(),
@@ -149,35 +184,32 @@ export const ModelProfile = z.object({
 export type ModelProfile = z.infer<typeof ModelProfile>;
 
 export const CreateModelProfileBody = z.strictObject({
-  name: z.string().min(1),
-  provider: z.string().min(1),
-  model: z.string().min(1),
-  baseUrl: z.string().optional(),
-  apiKey: z.string().optional(),
+  capabilityOverrides: z
+    .object({
+      tools: z.boolean().nullable().optional(),
+      vision: z.boolean().nullable().optional(),
+      reasoning: z.boolean().nullable().optional(),
+    })
+    .optional(),
+  name: z.string().min(1).optional(),
+  connectionId: z.string().min(1),
+  model: z.string().trim().min(1),
   contextWindow: z.int().positive().optional(),
   maxOutputTokens: z.int().positive().optional(),
   reasoning: ReasoningLevel.optional(),
   providerOptions: JsonObject.optional(),
-  extraHeaders: z.record(z.string(), z.string()).optional(),
   maxConcurrency: z.int().positive().max(64).optional(),
-  accountId: z.string().optional(),
   isDefault: z.boolean().optional(),
 });
 export type CreateModelProfileBody = z.infer<typeof CreateModelProfileBody>;
-
 export const UpdateModelProfileBody = z.strictObject({
   name: z.string().min(1).optional(),
-  provider: z.string().min(1).optional(),
-  model: z.string().min(1).optional(),
-  baseUrl: z.string().nullable().optional(),
-  /** 省略=不变；空字符串=清除凭据；其他值=替换凭据。 */
-  apiKey: z.string().optional(),
+  connectionId: z.string().min(1).optional(),
+  model: z.string().trim().min(1).optional(),
   contextWindow: z.int().positive().nullable().optional(),
   maxOutputTokens: z.int().positive().nullable().optional(),
   reasoning: ReasoningLevel.nullable().optional(),
   providerOptions: JsonObject.nullable().optional(),
-  /** 值为掩码的键保留原值。 */
-  extraHeaders: z.record(z.string(), z.string()).nullable().optional(),
   maxConcurrency: z.int().positive().max(64).nullable().optional(),
 });
 export type UpdateModelProfileBody = z.infer<typeof UpdateModelProfileBody>;
@@ -275,6 +307,22 @@ export const SessionLogResponse = z.object({
   items: z.array(LogRecord),
 });
 
+export const SessionHistoryWindowResponse = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("complete"),
+    detail: SessionDetailResponse,
+    items: z.array(LogRecord).max(2048),
+    headSeq: z.int().nonnegative(),
+    hasMore: z.boolean(),
+    before: z.int().positive().optional(),
+  }),
+  z.object({
+    kind: z.literal("overflow"),
+    headSeq: z.int().nonnegative(),
+    reason: z.enum(["records", "bytes", "metadata"]),
+  }),
+]);
+
 export const Dispatch = z.object({
   id: z.string(),
   sessionId: z.string(),
@@ -285,18 +333,25 @@ export const Dispatch = z.object({
 });
 export type Dispatch = z.infer<typeof Dispatch>;
 
-export const SendMessageBody = z.strictObject({
-  clientMessageId: z.string().min(1).max(128),
-  replacesDispatchId: z.string().min(1).optional(),
-  text: z.string().min(1),
-  mode: DispatchMode.optional(),
-  /** 只读问答 / 计划模式：这条消息引起的轮次里代理不能写入。 */
-  chatMode: ChatMode.optional(),
-  /** 随消息携带的选区引用（04 §7.3），渲染进该轮用户消息前的 <context> 块。 */
-  context: z.array(ContextRef).optional(),
-  /** 已经 POST /attachments 上传的图片（04 §4：受理前校验已上传）。 */
-  attachments: z.array(AttachmentRef).max(8).optional(),
-});
+export const SendMessageBody = z
+  .strictObject({
+    clientMessageId: z.string().min(1).max(128),
+    replacesDispatchId: z.string().min(1).optional(),
+    text: z.string(),
+    mode: DispatchMode.optional(),
+    /** 只读问答 / 计划模式：这条消息引起的轮次里代理不能写入。 */
+    chatMode: ChatMode.optional(),
+    /** 随消息携带的选区引用（04 §7.3），渲染进该轮用户消息前的 <context> 块。 */
+    context: z.array(ContextRef).optional(),
+    /** 已经 POST /attachments 上传的图片（04 §4：受理前校验已上传）。 */
+    attachments: z.array(AttachmentRef).max(8).optional(),
+    /** Opaque host receipts from authenticated file uploads; paths in text grant no access. */
+    inputUploadIds: z.array(z.string().min(1).max(128)).max(64).optional(),
+  })
+  .refine((body) => body.text.trim().length > 0 || (body.attachments?.length ?? 0) > 0, {
+    message: "请输入文字或添加图片附件",
+    path: ["text"],
+  });
 export type SendMessageBody = z.infer<typeof SendMessageBody>;
 
 export const SendMessageResponse = z.object({
@@ -554,6 +609,29 @@ export const CompareDocsResponse = z.object({
   truncated: z.boolean(),
 });
 
+/** 将对比中勾选的内容从 source 写入 target；双方版本必须仍与预览一致。 */
+export const MergeDocsBody = z.strictObject({
+  sourceDocId: z.string().min(1),
+  targetDocId: z.string().min(1),
+  sourceRev: z.int().nonnegative(),
+  targetRev: z.int().nonnegative(),
+  cells: z
+    .array(
+      z.strictObject({
+        sheet: z.string().min(1).max(31),
+        cell: z.string().regex(/^[A-Z]{1,3}[1-9][0-9]{0,6}$/),
+      }),
+    )
+    .min(1)
+    .max(2000),
+});
+export type MergeDocsBody = z.infer<typeof MergeDocsBody>;
+export const MergeDocsResponse = z.object({
+  docId: z.string(),
+  rev: z.int().nonnegative(),
+  changes: DocChanges,
+});
+
 export const FileEntry = z.object({
   name: z.string(),
   /** 工作区相对路径（POSIX 分隔符）。 */
@@ -597,6 +675,7 @@ export const FileListResponse = z.object({
 export const UploadResponse = z.object({
   path: z.string(),
   size: z.number().nonnegative(),
+  uploadId: z.string().optional(),
 });
 
 export const RenderDocBody = z.strictObject({
@@ -625,3 +704,9 @@ export const SessionLogQuery = z.strictObject({
 
 export const ApprovalListResponse = z.object({ items: z.array(ApprovalResponse.shape.approval) });
 export const AttachmentUploadResponse = z.object({ attachment: AttachmentRef });
+
+export const ImportLegacyBody = z.strictObject({
+  source: z.string().min(1),
+  destination: z.string().min(1),
+});
+export const ImportLegacyResponse = UploadResponse.extend({ warnings: z.array(z.string()) });

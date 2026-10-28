@@ -15,7 +15,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SettingsEntityCard } from "@/components/settings/SettingsEntityCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -44,11 +44,15 @@ type SourceFilter = "all" | SkillSource;
 
 export function SkillsTab() {
   const [skills, setSkills] = useState<Skill[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [expandedSkill, setExpandedSkill] = useState<string | null>(null);
   const [skillDetails, setSkillDetails] = useState<Record<string, SkillDetail>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const listRequest = useRef(0);
+  const detailGeneration = useRef(0);
+  const waitingForList = loading && skills.length === 0;
 
   const [showImport, setShowImport] = useState(false);
   const [importMethod, setImportMethod] = useState<ImportMethod>("file");
@@ -73,41 +77,54 @@ export function SkillsTab() {
   }, [skills]);
 
   const fetchSkills = useCallback(async () => {
+    const request = ++listRequest.current;
+    setLoadError(null);
     setLoading(true);
     try {
       const { items } = await api().listSkills();
+      if (request !== listRequest.current) return;
       setSkills(items);
     } catch (error) {
-      toast({ title: "读取技能失败", description: errorMessage(error), tone: "error" });
+      if (request !== listRequest.current) return;
+      setLoadError(errorMessage(error, "读取技能失败"));
     } finally {
-      setLoading(false);
+      if (request === listRequest.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     void fetchSkills();
+    return () => {
+      listRequest.current += 1;
+      detailGeneration.current += 1;
+    };
   }, [fetchSkills]);
+
+  const fetchDetail = useCallback(async (name: string) => {
+    const generation = detailGeneration.current;
+    try {
+      const { skill } = await api().getSkill(name);
+      if (generation !== detailGeneration.current) return;
+      setSkillDetails((prev) => ({ ...prev, [name]: skill }));
+    } catch (error) {
+      if (generation !== detailGeneration.current) return;
+      toast({ title: "读取技能详情失败", description: errorMessage(error), tone: "error" });
+      setExpandedSkill((cur) => (cur === name ? null : cur));
+    }
+  }, []);
 
   useEffect(
     () =>
       onAppEvent((event) => {
         if (event.type === "skills.changed") {
+          detailGeneration.current += 1;
           setSkillDetails({});
           void fetchSkills();
+          if (expandedSkill) void fetchDetail(expandedSkill);
         }
       }),
-    [fetchSkills],
+    [fetchSkills, fetchDetail, expandedSkill],
   );
-
-  const fetchDetail = useCallback(async (name: string) => {
-    try {
-      const { skill } = await api().getSkill(name);
-      setSkillDetails((prev) => ({ ...prev, [name]: skill }));
-    } catch (error) {
-      toast({ title: "读取技能详情失败", description: errorMessage(error), tone: "error" });
-      setExpandedSkill((cur) => (cur === name ? null : cur));
-    }
-  }, []);
 
   const toggleExpand = (name: string) => {
     if (expandedSkill === name) {
@@ -201,7 +218,11 @@ export function SkillsTab() {
             <div className="min-w-0">
               <h4 className="text-sm font-medium">技能仓库</h4>
               <p className="mt-0.5 text-[10px] leading-relaxed text-muted-foreground">
-                已加载 {skills.length} 个技能包，可按来源筛选
+                {loadError
+                  ? "技能列表读取失败"
+                  : waitingForList
+                    ? "正在读取技能列表…"
+                    : `已加载 ${skills.length} 个技能包，可按来源筛选`}
               </p>
             </div>
           </div>
@@ -242,7 +263,7 @@ export function SkillsTab() {
                   <span
                     className={`text-[10px] ${isActive ? "opacity-70" : "text-muted-foreground/60"}`}
                   >
-                    {count}
+                    {waitingForList || loadError ? "…" : count}
                   </span>
                 </button>
               );
@@ -434,12 +455,19 @@ export function SkillsTab() {
             </p>
           </div>
           <span className="rounded-full bg-muted px-2 py-1 text-[10px] font-medium text-muted-foreground">
-            {filteredSkills.length} 个
+            {waitingForList ? "读取中" : loadError ? "读取失败" : `${filteredSkills.length} 个`}
           </span>
         </div>
-        {loading && skills.length === 0 ? (
+        {waitingForList ? (
           <div className="flex items-center justify-center py-10 text-muted-foreground">
             <Loader2 className="h-5 w-5 animate-spin" />
+          </div>
+        ) : loadError ? (
+          <div role="alert" className="flex items-center gap-2 py-4 text-xs text-destructive">
+            <span className="min-w-0 flex-1">{loadError}</span>
+            <Button size="sm" variant="outline" onClick={() => void fetchSkills()}>
+              重新读取
+            </Button>
           </div>
         ) : filteredSkills.length === 0 ? (
           <div className="rounded-xl border border-dashed text-center py-10">
@@ -545,13 +573,7 @@ export function SkillsTab() {
                             </span>
                           </div>
                           <pre className="text-[11px] font-mono bg-background rounded-md p-2.5 max-h-36 overflow-auto whitespace-pre-wrap break-words border border-border/50 leading-relaxed">
-                            {detail.body.slice(0, 500)}
-                            {detail.body.length > 500 && (
-                              <span className="text-muted-foreground">
-                                {" "}
-                                ...（共 {detail.body.length} 字符）
-                              </span>
-                            )}
+                            {detail.body}
                           </pre>
                         </div>
                       )}

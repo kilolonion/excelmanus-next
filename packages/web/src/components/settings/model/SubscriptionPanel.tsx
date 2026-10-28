@@ -7,7 +7,15 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { confirmAction } from "@/components/ui/confirm-dialog";
 import { toast } from "@/components/ui/toaster";
-import { api, desktop, errorMessage } from "@/lib/backend/api";
+import { ApiError, api, desktop, errorMessage } from "@/lib/backend/api";
+import {
+  clearPendingLogin,
+  loginFailure,
+  loginStorage,
+  preferredLoginMethod,
+  readPendingLogin,
+  savePendingLogin,
+} from "@/lib/subscription-login";
 import { onAppEvent, refreshProfiles, useAppStore } from "@/stores/app-store";
 import { SubscriptionAccountCard } from "./SubscriptionAccountCard";
 
@@ -38,6 +46,12 @@ function LoginProgress({ attempt, onCancel }: { attempt: LoginAttempt; onCancel:
           </p>
         </div>
       </div>
+      {attempt.method === "browser" && (
+        <p className="text-xs text-amber-700 dark:text-amber-400">
+          回调地址是
+          localhost:1455，只能回到浏览器所在的电脑。若授权后页面无法连接或这里一直等待，请取消并改用设备码；远程服务器不会自动收到这个回调。
+        </p>
+      )}
       {attempt.userCode && (
         <div className="flex flex-wrap items-center gap-2">
           <code className="select-all rounded-lg border bg-background px-3 py-2 text-lg font-semibold tracking-widest">
@@ -89,6 +103,10 @@ function LoginProgress({ attempt, onCancel }: { attempt: LoginAttempt; onCancel:
 }
 
 export function SubscriptionPanel() {
+  const primaryMethod = preferredLoginMethod(
+    typeof window === "undefined" ? "" : window.location.hostname,
+    Boolean(desktop()),
+  );
   const profiles = useAppStore((s) => s.profiles);
   const [accounts, setAccounts] = useState<Account[] | null>(null);
   const [loadError, setLoadError] = useState(false);
@@ -126,6 +144,8 @@ export function SubscriptionPanel() {
 
   const finish = useCallback(
     async (done: LoginAttempt) => {
+      clearPendingLogin(loginStorage());
+      setError("");
       setAttempt(null);
       if (done.status === "succeeded") {
         const count = done.profileIds?.length ?? 0;
@@ -156,11 +176,17 @@ export function SubscriptionPanel() {
             await finish(res.attempt);
             return;
           }
+          setError("");
           setAttempt(res.attempt);
         } catch (err) {
           if (pollToken.current !== token) return;
-          setAttempt(null);
-          setError(errorMessage(err, "登录状态查询失败"));
+          if (err instanceof ApiError && err.status === 404) {
+            clearPendingLogin(loginStorage());
+            setAttempt(null);
+          }
+          setError(
+            `${errorMessage(err, "登录状态查询失败")}。若授权页已成功，请重新检查连接状态。`,
+          );
           return;
         }
       }
@@ -168,24 +194,35 @@ export function SubscriptionPanel() {
     [finish],
   );
 
+  useEffect(() => {
+    const saved = readPendingLogin(loginStorage());
+    if (saved) {
+      setAttempt({ attemptId: saved.attemptId, method: saved.method, status: "pending" });
+      void poll(saved.attemptId, ++pollToken.current);
+    }
+  }, [poll]);
+
   async function start(method: "browser" | "device") {
     setError("");
     setStarting(method);
     const token = ++pollToken.current;
     try {
       const res = await api().startLogin(PROVIDER, method);
+      savePendingLogin(loginStorage(), res.attempt);
+      if (pollToken.current !== token) return;
       setAttempt(res.attempt);
       const url = method === "device" ? res.attempt.verificationUrl : res.attempt.authorizeUrl;
       if (url) openLink(url);
       void poll(res.attempt.attemptId, token);
     } catch (err) {
-      setError(errorMessage(err, "无法开始登录"));
+      setError(loginFailure(errorMessage(err, "无法开始登录"), method));
     } finally {
       setStarting(null);
     }
   }
 
   function cancel() {
+    clearPendingLogin(loginStorage());
     pollToken.current += 1;
     setAttempt(null);
   }
@@ -293,7 +330,20 @@ export function SubscriptionPanel() {
         )}
 
         {attempt ? (
-          <LoginProgress attempt={attempt} onCancel={cancel} />
+          <>
+            <LoginProgress attempt={attempt} onCancel={cancel} />
+            {error && (
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setError("");
+                  void poll(attempt.attemptId, ++pollToken.current);
+                }}
+              >
+                重新检查连接状态
+              </Button>
+            )}
+          </>
         ) : (
           <>
             {list.length === 0 && (
@@ -305,10 +355,10 @@ export function SubscriptionPanel() {
               size="sm"
               className="h-10 w-full gap-1.5 text-xs font-medium text-white"
               style={{ backgroundColor: "var(--em-primary)" }}
-              onClick={() => void start("browser")}
+              onClick={() => void start(primaryMethod)}
               disabled={busy}
             >
-              {starting === "browser" ? (
+              {starting === primaryMethod ? (
                 <Loader2 className="h-3 w-3 animate-spin" />
               ) : list.length ? (
                 <Plus className="h-3 w-3" />
@@ -321,6 +371,12 @@ export function SubscriptionPanel() {
                   : "登录其他 ChatGPT 账号"
                 : "使用 ChatGPT 账号登录"}
             </Button>
+            {primaryMethod === "device" && (
+              <p className="text-xs text-muted-foreground">
+                当前为远程访问，将使用设备码授权，无需本机回调端口。在 ChatGPT
+                安全设置中启用设备码授权后继续。
+              </p>
+            )}
             <div>
               <button
                 type="button"
@@ -333,17 +389,19 @@ export function SubscriptionPanel() {
               {showDevice && (
                 <div className="mt-1.5 space-y-1">
                   <p className="text-[11px] text-muted-foreground">
-                    本机浏览器无法完成跳转（例如远程访问）时，可改用设备码在任意设备上登录。
+                    {primaryMethod === "browser"
+                      ? "本机回调失败时，可改用设备码在任意设备上登录。"
+                      : "浏览器回调仍可选，但 localhost:1455 指向浏览器所在电脑；未配置回调转发时无法返回远程服务器，建议使用设备码。"}
                   </p>
                   <Button
                     size="sm"
                     variant="outline"
                     className="h-9 w-full text-xs"
-                    onClick={() => void start("device")}
+                    onClick={() => void start(primaryMethod === "browser" ? "device" : "browser")}
                     disabled={busy}
                   >
                     {starting === "device" ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-                    使用设备码登录
+                    {primaryMethod === "browser" ? "使用设备码登录" : "使用浏览器回调登录"}
                   </Button>
                 </div>
               )}

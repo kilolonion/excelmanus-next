@@ -1,12 +1,17 @@
+import { confirmAction } from "@/components/ui/confirm-dialog";
+import { toast } from "@/components/ui/toaster";
+import { isLegacySpreadsheetFile } from "@/lib/file-kind";
+import { loadWorkbookSurface } from "@/lib/workbook/load-surface";
 // 工作台：打开的工作簿标签、当前活文档（快照 + 修订）与同步状态、选区/在场/定位、跟随代理。
 // 活文档语义（03 §3.2）：文档 actor 是唯一写入者；用户编辑以 Univer mutation 经 doc.submit
 // 提交（baseRev + 冲突检测），远端修订以 doc.op 广播，本端在 Univer 中逐条回放。
 
 import { parseRange } from "@excelmanus/core";
-import type { DocKind, PresenceParticipant, ServerMessage } from "@excelmanus/protocol";
+import type { ApiClient, DocKind, PresenceParticipant, ServerMessage } from "@excelmanus/protocol";
 import { create } from "zustand";
 import { api, errorMessage } from "@/lib/backend/api";
 import {
+  onConnection,
   onSync,
   sendSync,
   subscribeTopic,
@@ -18,13 +23,28 @@ import {
   type DocSyncState,
   dropPending,
   initialDocSync,
+  markDisconnected,
   markOffline,
   reduceDoc,
   type SubmittedMutation,
   trackDocSubmit,
 } from "@/lib/workbook/doc-sync";
+import {
+  type CellDraft,
+  decodeRecovery,
+  encodeRecovery,
+  recoveryKey,
+} from "@/lib/workbook/recovery";
+import { createRecoveryStorage } from "@/lib/workbook/recovery-storage";
+
+const recoveryStorage = createRecoveryStorage();
+
+import { parseSavedTabs } from "@/lib/workbook/saved-tabs";
+import { onAppEvent } from "@/stores/app-store";
 import { useChatStore } from "@/stores/chat-store";
+import { loadDir } from "@/stores/files-store";
 import { useSessionStore } from "@/stores/session-store";
+import { useUIStore } from "./ui-store";
 
 export interface OpenDoc {
   docId: string;
@@ -60,6 +80,8 @@ export interface SelectionRef {
   docId: string;
   rev: number;
   range: string;
+  /** 仅用于输入框显示；发送时仍使用 docId / rev / range 契约。 */
+  path?: string;
 }
 
 /** 代理请用户在表格里确认或选择区域（range_confirm / range_pick 提问）。 */
@@ -88,6 +110,8 @@ interface WorkbookState {
   loadError: string | null;
   docSync: DocSyncState;
   draftConflict: DraftConflict | null;
+  inputDraft: (CellDraft & { docId: string }) | null;
+  recoveredDrafts: DraftConflict[];
   selection: SelectionRef | null;
   /** 输入框上方的区域徽标：钉住后不随选区变化；移除后直到选区变化前不附带。 */
   pinnedSelection: SelectionRef | null;
@@ -125,6 +149,8 @@ export const useWorkbookStore = create<WorkbookState>()(() => ({
   loadError: null,
   docSync: initialDocSync(),
   draftConflict: null,
+  inputDraft: null,
+  recoveredDrafts: [],
   selection: null,
   pinnedSelection: null,
   selectionDismissed: false,
@@ -143,6 +169,8 @@ const set = useWorkbookStore.setState;
 const get = useWorkbookStore.getState;
 
 let docRequest = 0;
+// Navigation intent is separate from background snapshot refreshes.
+let openRequest = 0;
 let opSeq = 0;
 let editor: DocumentEditorBridge | null = null;
 let applyQueue: Promise<void> = Promise.resolve();
@@ -161,9 +189,11 @@ function resetDocView(): Partial<WorkbookState> {
     loadError: null,
     docSync: initialDocSync(),
     draftConflict: null,
+    inputDraft: null,
+    recoveredDrafts: [],
     selection: null,
     pinnedSelection: null,
-    selectionDismissed: false,
+    selectionDismissed: get().selectionDismissed,
     presence: [],
     rangeFocus: null,
     rangePreview: null,
@@ -187,13 +217,26 @@ function requireWorkspace(): string {
   return id;
 }
 
-async function loadDoc(path: string, opts: { docId?: string } = {}): Promise<OpenDoc | null> {
+async function loadDoc(
+  path: string,
+  lookup?: Awaited<ReturnType<ApiClient["getDocSnapshot"]>>,
+): Promise<OpenDoc | null> {
   const request = ++docRequest;
   const workspaceId = requireWorkspace();
-  set({ ...resetDocView(), loading: true, activePath: path });
+  set({
+    ...resetDocView(),
+    pinnedSelection: get().pinnedSelection,
+    loading: true,
+    activePath: path,
+  });
   try {
-    const docId = opts.docId ?? (await api().openDoc(workspaceId, { path })).document.id;
-    const { document, snapshot } = await api().getDocSnapshot(workspaceId, docId);
+    const opened = (await api().openDoc(workspaceId, { path })).document;
+    if (request !== docRequest || get().workspaceId !== workspaceId) return null;
+    // The ID lookup already downloaded a full snapshot. Reuse it only if still current.
+    const { document, snapshot } =
+      lookup && lookup.document.id === opened.id && lookup.document.rev === opened.rev
+        ? { document: opened, snapshot: lookup.snapshot }
+        : await api().getDocSnapshot(workspaceId, opened.id);
     if (request !== docRequest || get().workspaceId !== workspaceId) return null;
     const doc: OpenDoc = {
       docId: document.id,
@@ -208,17 +251,34 @@ async function loadDoc(path: string, opts: { docId?: string } = {}): Promise<Ope
         : {}),
       ...(document.externalConflict ? { externalConflict: true } : {}),
     };
+    let recovery: ReturnType<typeof decodeRecovery> = null;
+    try {
+      recovery = decodeRecovery(
+        recoveryStorage.read(recoveryKey(workspaceId, document.id)),
+        document.rev,
+      );
+    } catch {
+      /* Storage unavailable. */
+    }
     set((s) => ({
       doc,
       loading: false,
       activePath: document.path,
-      docSync: initialDocSync(document.rev),
+      docSync: recovery?.docSync ?? initialDocSync(document.rev),
+      recoveredDrafts: (recovery?.drafts ?? []).map((d) => ({
+        ...d,
+        docId: document.id,
+        theirs: undefined,
+        source: "recovery",
+      })),
       tabs: s.tabs.map((t) =>
         samePath(t.path, path) ? { path: document.path, docId: document.id } : t,
       ),
     }));
     subscribeTopic(docTopic(doc.docId), () => get().doc?.rev ?? 0);
     schedulePresence(doc.docId);
+    // 打开也会更新最近使用时间，刷新所在目录，不必等文件内容变化。
+    void loadDir(document.path.split("/").slice(0, -1).join("/"));
     return doc;
   } catch (error) {
     if (request === docRequest)
@@ -227,11 +287,75 @@ async function loadDoc(path: string, opts: { docId?: string } = {}): Promise<Ope
   }
 }
 
+/** 文件移动只换路径，保留活文档实例、修订与选区。 */
+export function relocateWorkbook(from: string, to: string): void {
+  const movedPath = (path: string) =>
+    samePath(path, from) ? to : path.startsWith(`${from}/`) ? to + path.slice(from.length) : path;
+  set((s) => ({
+    tabs: s.tabs.map((tab) => ({ ...tab, path: movedPath(tab.path) })),
+    activePath: s.activePath ? movedPath(s.activePath) : null,
+    doc: s.doc ? { ...s.doc, path: movedPath(s.doc.path) } : null,
+    ...(s.selection?.path
+      ? { selection: { ...s.selection, path: movedPath(s.selection.path) } }
+      : {}),
+    ...(s.pinnedSelection?.path
+      ? { pinnedSelection: { ...s.pinnedSelection, path: movedPath(s.pinnedSelection.path) } }
+      : {}),
+  }));
+}
+
+onAppEvent((event) => {
+  if (event.type !== "files.changed" || event.workspaceId !== get().workspaceId) return;
+  const moved = event.moved as { from?: unknown; to?: unknown } | undefined;
+  if (typeof moved?.from === "string" && typeof moved.to === "string")
+    relocateWorkbook(moved.from, moved.to);
+  if (Array.isArray(event.moves))
+    for (const move of event.moves) {
+      if (
+        move &&
+        typeof move === "object" &&
+        typeof move.from === "string" &&
+        typeof move.to === "string"
+      )
+        relocateWorkbook(move.from, move.to);
+    }
+});
+
 /** 在工作台打开一个工作区文件（标签不存在则新增），默认打开侧边面板。 */
 export async function openWorkbook(
   path: string,
-  opts: { focus?: string; full?: boolean } = {},
-): Promise<void> {
+  opts: { focus?: string; full?: boolean; isCurrent?: () => boolean } = {},
+): Promise<boolean> {
+  if (opts.isCurrent?.() === false) return false;
+  const request = ++openRequest;
+  if (isLegacySpreadsheetFile(path)) {
+    const workspaceId = requireWorkspace();
+    const isCurrent = () =>
+      request === openRequest && get().workspaceId === workspaceId && opts.isCurrent?.() !== false;
+    if (
+      !(await confirmAction({
+        title: "导入旧格式工作簿",
+        description:
+          "将生成新的 .xlsx，原文件保持不变。保留可解析的值、公式、数字格式、合并区域和行列尺寸；字体、图表、图片、宏及高级对象可能丢失，请核对转换结果。",
+        confirmLabel: "导入为新 .xlsx",
+      }))
+    )
+      return false;
+    if (!isCurrent()) return false;
+    const destination = path.replace(/\.(xls|xlsb)$/i, `-导入-${Date.now()}.xlsx`);
+    try {
+      const result = await api().importLegacy(workspaceId, { source: path, destination });
+      if (!isCurrent()) return false;
+      toast({ title: "已导入新工作簿", description: result.warnings.join(" "), durationMs: 20000 });
+      path = result.path;
+      await loadDir("");
+      if (!isCurrent()) return false;
+    } catch (error) {
+      if (!isCurrent()) return false;
+      toast({ title: "导入失败", description: errorMessage(error), tone: "error" });
+      throw error;
+    }
+  }
   noteManualView();
   const current = get().doc;
   set((s) => ({
@@ -243,9 +367,11 @@ export async function openWorkbook(
     set({ activePath: current.path });
   } else {
     leaveDoc();
-    await loadDoc(path);
+    if (!(await loadDoc(path))) return false;
   }
-  if (opts.focus) await focusRange(opts.focus);
+  if (request === openRequest && opts.isCurrent?.() !== false && opts.focus)
+    await focusRange(opts.focus);
+  return request === openRequest && opts.isCurrent?.() !== false;
 }
 
 /** 按 docId 打开（代理工具结果只给 docId 时）。 */
@@ -253,12 +379,22 @@ export async function openWorkbookById(
   docId: string,
   opts: { focus?: string } = {},
 ): Promise<void> {
+  const request = ++openRequest;
   const current = get().doc;
   if (current?.docId === docId) {
     set({ panelOpen: true });
   } else {
     const workspaceId = requireWorkspace();
-    const { document } = await api().getDocSnapshot(workspaceId, docId);
+    void loadWorkbookSurface().catch(() => undefined);
+    const response = await api()
+      .getDocSnapshot(workspaceId, docId)
+      .catch((error: unknown) => {
+        if (request !== openRequest || get().workspaceId !== workspaceId) return null;
+        toast({ tone: "error", title: "工作簿打开失败", description: errorMessage(error) });
+        return null;
+      });
+    if (!response || request !== openRequest || get().workspaceId !== workspaceId) return;
+    const { document } = response;
     set((s) => ({
       panelOpen: true,
       tabs: s.tabs.some((t) => samePath(t.path, document.path))
@@ -266,17 +402,17 @@ export async function openWorkbookById(
         : [...s.tabs, { path: document.path, docId }],
     }));
     leaveDoc();
-    await loadDoc(document.path, { docId });
+    if (!(await loadDoc(document.path, response))) return;
   }
-  if (opts.focus) await focusRange(opts.focus);
+  if (request === openRequest && opts.focus) await focusRange(opts.focus);
 }
 
 export async function activateTab(path: string): Promise<void> {
+  openRequest += 1;
   if (get().doc && samePath(get().doc?.path ?? "", path)) return;
   noteManualView();
   leaveDoc();
-  const tab = get().tabs.find((t) => samePath(t.path, path));
-  await loadDoc(path, tab?.docId ? { docId: tab.docId } : {});
+  await loadDoc(path);
 }
 
 /** 关闭标签（只退订与清空本地视图；服务端活文档不受影响）。 */
@@ -288,22 +424,34 @@ export async function closeTab(path: string): Promise<void> {
   const closingActive = get().activePath !== null && samePath(get().activePath ?? "", path);
   set({ tabs: rest });
   if (!closingActive) return;
+  openRequest += 1;
   leaveDoc();
   const next = rest[Math.min(index, rest.length - 1)];
-  if (next) await loadDoc(next.path, next.docId ? { docId: next.docId } : {});
+  if (next) await loadDoc(next.path);
   else set({ ...resetDocView(), activePath: null, panelOpen: false, fullView: false });
 }
 
 export function closeAllWorkbooks(): void {
+  openRequest += 1;
   leaveDoc();
-  set({ ...resetDocView(), tabs: [], activePath: null, panelOpen: false, fullView: false });
+  set({
+    ...resetDocView(),
+    tabs: [],
+    activePath: null,
+    panelOpen: false,
+    fullView: false,
+    selectionDismissed: false,
+    rangeQuestion: null,
+  });
 }
 
 export function setPanelOpen(open: boolean): void {
+  if (!open) openRequest += 1;
   set({ panelOpen: open, ...(open ? {} : { fullView: false }) });
 }
 
 export function setFullView(full: boolean): void {
+  if (full) useUIStore.getState().setSidebarOpen(false);
   set({ fullView: full, ...(full ? { panelOpen: true } : {}) });
 }
 
@@ -313,15 +461,32 @@ export async function reloadDocument(): Promise<void> {
   if (!doc) return;
   const request = ++docRequest;
   const workspaceId = requireWorkspace();
-  const { document, snapshot } = await api().getDocSnapshot(workspaceId, doc.docId);
-  if (request !== docRequest || get().doc?.docId !== doc.docId) return;
+  const response = await api()
+    .getDocSnapshot(workspaceId, doc.docId)
+    .catch((error: unknown) => {
+      if (
+        request !== docRequest ||
+        get().workspaceId !== workspaceId ||
+        get().doc?.docId !== doc.docId
+      )
+        return null;
+      throw error;
+    });
+  if (
+    !response ||
+    request !== docRequest ||
+    get().workspaceId !== workspaceId ||
+    get().doc?.docId !== doc.docId
+  )
+    return;
+  const { document, snapshot } = response;
   if (document.rev < (get().doc?.rev ?? 0)) {
     scheduleRefresh(doc.docId);
     return;
   }
   set((s) => ({
     doc: {
-      ...doc,
+      ...(s.doc ?? doc),
       rev: document.rev,
       snapshotRev: document.rev,
       snapshot: snapshot as Record<string, unknown>,
@@ -353,8 +518,9 @@ function scheduleRefresh(docId: string): void {
 export async function resolveExternal(choice: "keepApp" | "loadExternal"): Promise<string> {
   const doc = get().doc;
   if (!doc) throw new Error("没有打开的工作簿");
-  const res = await api().resolveDocExternal(requireWorkspace(), doc.docId, { choice });
-  await reloadDocument();
+  const workspaceId = requireWorkspace();
+  const res = await api().resolveDocExternal(workspaceId, doc.docId, { choice });
+  if (get().workspaceId === workspaceId && get().doc?.docId === doc.docId) await reloadDocument();
   return res.backupPath;
 }
 
@@ -366,22 +532,37 @@ export function registerDocumentEditor(bridge: DocumentEditorBridge | null): voi
 }
 
 /** 用户在工作台产生的 mutation 走统一 doc.submit 写入路径；baseRev 缺省为当前修订。 */
-export function submitDocumentMutation(
+export function submitDocumentMutations(
   docId: string,
-  mutation: DocMutation,
+  mutations: DocMutation[],
   baseRev?: number,
 ): boolean {
   const st = get();
-  if (!st.doc || st.doc.docId !== docId) return false;
+  const mutation = mutations[0];
+  if (!mutation || !st.doc || st.doc.docId !== docId) return false;
   const clientOpId = `web-doc-${Date.now().toString(36)}-${++opSeq}`;
-  const submitted: SubmittedMutation = { mutation, baseRev: baseRev ?? st.docSync.rev };
-  set({ docSync: trackDocSubmit(get().docSync, clientOpId, submitted) });
+  const submitted: SubmittedMutation = { mutation, mutations, baseRev: baseRev ?? st.docSync.rev };
+  const draft = st.inputDraft;
+  const commitsDraft =
+    draft &&
+    mutations.some((m) => {
+      if (m.id !== "sheet.mutation.set-range-values") return false;
+      const p = m.params as {
+        subUnitId?: string;
+        cellValue?: Record<number, Record<number, unknown>>;
+      };
+      return p?.subUnitId === draft.sheetId && p.cellValue?.[draft.row]?.[draft.col] !== undefined;
+    });
+  set({
+    docSync: trackDocSubmit(get().docSync, clientOpId, submitted),
+    ...(commitsDraft ? { inputDraft: null } : {}),
+  });
   const sent = sendSync({
     type: "doc.submit",
     docId,
     clientOpId,
     baseRev: submitted.baseRev,
-    mutations: [mutation],
+    mutations,
   });
   if (!sent) set({ docSync: markOffline(get().docSync, clientOpId, submitted) });
   return sent;
@@ -404,7 +585,7 @@ export function resubmitRejected(clientOpId: string, opts: { overwrite: boolean 
     docId: st.doc.docId,
     clientOpId: nextId,
     baseRev: submitted.baseRev,
-    mutations: [submitted.mutation],
+    mutations: submitted.mutations ?? [submitted.mutation],
     ...(opts.overwrite ? { overwrite: true } : {}),
   });
   if (!sent) {
@@ -421,7 +602,33 @@ export function dismissDocConflict(clientOpId: string): void {
 }
 
 export function setDraftConflict(draft: DraftConflict | null): void {
-  set({ draftConflict: draft });
+  const input = get().inputDraft;
+  const same =
+    draft &&
+    input &&
+    draft.docId === input.docId &&
+    draft.sheetId === input.sheetId &&
+    draft.row === input.row &&
+    draft.col === input.col;
+  set({ draftConflict: draft, ...(same ? { inputDraft: null } : {}) });
+}
+
+export function setInputDraft(docId: string, draft: CellDraft | null): void {
+  if (get().doc?.docId === docId) set({ inputDraft: draft ? { ...draft, docId } : null });
+}
+
+export function dismissRecoveredDraft(draft: DraftConflict): void {
+  set((s) => ({ recoveredDrafts: s.recoveredDrafts.filter((d) => d !== draft) }));
+}
+
+/** Resolving an older draft may close the active editor; retain that separate input first. */
+export function retainCurrentInputDraft(): void {
+  const input = get().inputDraft;
+  if (!input) return;
+  set((s) => ({
+    inputDraft: null,
+    recoveredDrafts: [...s.recoveredDrafts, { ...input, theirs: undefined, source: "recovery" }],
+  }));
 }
 
 // ---------- 选区 / 定位 / 在场 ----------
@@ -450,7 +657,13 @@ export function setSelection(range: string | null): void {
     if (doc) schedulePresence(doc.docId);
     return;
   }
-  set({ selection: { docId: doc.docId, rev: doc.rev, range }, selectionDismissed: false });
+  const previous = get().selection;
+  set({
+    selection: { docId: doc.docId, rev: doc.rev, range, path: doc.path },
+    ...(previous?.docId !== doc.docId || previous.range !== range
+      ? { selectionDismissed: false }
+      : {}),
+  });
   schedulePresence(doc.docId);
 }
 
@@ -464,13 +677,45 @@ export function composerContext(
 }
 
 export function pinSelection(pin: boolean): void {
-  set({ pinnedSelection: pin ? composerContext() : null });
+  const { selection, doc } = get();
+  set({
+    pinnedSelection:
+      pin && selection
+        ? {
+            ...selection,
+            path: selection.path ?? (doc?.docId === selection.docId ? doc.path : undefined),
+          }
+        : null,
+    selectionDismissed: false,
+  });
+}
+
+/** 与引用条使用同一选区来源；显示用的路径不进入请求契约。 */
+export function composerMessageContext(): { docId: string; rev: number; range: string }[] {
+  const context = composerContext();
+  return context ? [{ docId: context.docId, rev: context.rev, range: context.range }] : [];
 }
 
 export function pinRange(range: string): void {
   const doc = get().doc;
   if (!doc) return;
-  set({ pinnedSelection: { docId: doc.docId, rev: doc.rev, range }, selectionDismissed: false });
+  set({
+    pinnedSelection: { docId: doc.docId, rev: doc.rev, range, path: doc.path },
+    selectionDismissed: false,
+  });
+}
+
+export function resetComposerContext(
+  sent: Pick<WorkbookState, "pinnedSelection" | "selectionDismissed"> = get(),
+): void {
+  const current = get();
+  // A send acknowledgement must not undo references changed while it was pending.
+  if (
+    current.pinnedSelection !== sent.pinnedSelection ||
+    current.selectionDismissed !== sent.selectionDismissed
+  )
+    return;
+  set({ pinnedSelection: null, selectionDismissed: false });
 }
 
 export function dismissContext(): void {
@@ -483,14 +728,21 @@ export async function focusRange(
   target?: { docId?: string; path?: string },
 ): Promise<void> {
   try {
-    if (target?.docId && get().doc?.docId !== target.docId) await openWorkbookById(target.docId);
+    let opening: Promise<void | boolean> | undefined;
+    if (target?.docId && get().doc?.docId !== target.docId)
+      opening = openWorkbookById(target.docId);
     else if (target?.path && !samePath(get().doc?.path ?? "", target.path))
-      await openWorkbook(target.path);
+      opening = openWorkbook(target.path);
+    const request = openRequest;
+    if (opening) await opening;
+    if (request !== openRequest) return;
     const doc = get().doc;
     if (!doc) {
       set({ referenceError: "no-document" });
       return;
     }
+    if (target?.docId && doc.docId !== target.docId) return;
+    if (!target?.docId && target?.path && !samePath(doc.path, target.path)) return;
     const parsed = parseRange(range);
     const sheets = doc.snapshot.sheets as Record<string, { name?: string }> | undefined;
     if (parsed.sheet && !Object.values(sheets ?? {}).some((s) => s.name === parsed.sheet)) {
@@ -507,9 +759,25 @@ export async function focusRange(
 export async function startRangeQuestion(question: RangeQuestion): Promise<void> {
   set({ rangeQuestion: question });
   noteManualView();
-  if (question.docId) await openWorkbookById(question.docId);
-  else if (question.path) await openWorkbook(question.path);
+  let opening: Promise<void | boolean> | undefined;
+  if (question.docId) opening = openWorkbookById(question.docId);
+  else if (question.path) opening = openWorkbook(question.path);
   else set({ panelOpen: true });
+  const request = openRequest;
+  if (opening) await opening;
+  if (get().rangeQuestion !== question) return;
+  if (request !== openRequest) {
+    set({ rangeQuestion: null });
+    return;
+  }
+  const doc = get().doc;
+  if (
+    (question.docId && doc?.docId !== question.docId) ||
+    (!question.docId && question.path && !samePath(doc?.path ?? "", question.path))
+  ) {
+    set({ rangeQuestion: null });
+    return;
+  }
   if (question.suggested) await focusRange(question.suggested);
 }
 
@@ -585,8 +853,9 @@ function followAgentActivity(record: {
     range && typeof args.sheet === "string" && !range.includes("!")
       ? `${args.sheet}!${range}`
       : range;
-  const open = docId ? openWorkbookById(docId) : openWorkbook(path as string);
-  void open.then(() => (qualified ? focusRange(qualified) : undefined)).catch(() => undefined);
+  const options = qualified ? { focus: qualified } : {};
+  const open = docId ? openWorkbookById(docId, options) : openWorkbook(path as string, options);
+  void open.catch(() => undefined);
 }
 
 // ---------- 同步通道 ----------
@@ -616,6 +885,9 @@ function onDocOp(message: Extract<ServerMessage, { type: "doc.op" }>): void {
     // 分片或连续远端修订串行回放，避免多个命令交错
     applyQueue = applyQueue
       .then(async () => {
+        const current = get().doc;
+        // A refreshed snapshot may already include this queued revision.
+        if (current?.docId === message.docId && current.snapshotRev >= message.rev) return;
         if (editor?.docId === message.docId) await editor.applyRemote(mutations, message.source);
         else if (get().doc?.docId === message.docId) scheduleRefresh(message.docId);
       })
@@ -624,6 +896,10 @@ function onDocOp(message: Extract<ServerMessage, { type: "doc.op" }>): void {
     scheduleRefresh(message.docId);
   }
 }
+
+onConnection((connected) => {
+  if (!connected) set({ docSync: markDisconnected(get().docSync) });
+});
 
 onSync((message) => {
   const doc = get().doc;
@@ -684,25 +960,101 @@ onSync((message) => {
   }
 });
 
-// 工作区切换：关闭全部工作簿（文档属于工作区）
+let recoveryWarning = false;
+function persistRecovery(state: WorkbookState): void {
+  if (!state.workspaceId || !state.doc) return;
+  try {
+    const drafts: CellDraft[] = [...state.recoveredDrafts];
+    if (state.draftConflict?.docId === state.doc.docId) drafts.push(state.draftConflict);
+    if (state.inputDraft?.docId === state.doc.docId) drafts.push(state.inputDraft);
+    const raw = encodeRecovery(state.docSync, drafts);
+    const key = recoveryKey(state.workspaceId, state.doc.docId);
+    recoveryStorage.write(key, raw);
+    recoveryWarning = false;
+  } catch {
+    if (!recoveryWarning) {
+      recoveryWarning = true;
+      toast({
+        title: "草稿暂时无法保存到浏览器",
+        description: "请勿刷新或关闭页面，先处理未提交的输入。",
+        tone: "error",
+      });
+    }
+  }
+}
+useWorkbookStore.subscribe((state, prev) => {
+  const changedScope =
+    prev.doc?.docId !== state.doc?.docId || prev.workspaceId !== state.workspaceId;
+  if (prev.doc && changedScope) persistRecovery(prev);
+  if (
+    state.doc &&
+    (changedScope ||
+      state.docSync.pending !== prev.docSync.pending ||
+      state.inputDraft !== prev.inputDraft ||
+      state.draftConflict !== prev.draftConflict ||
+      state.recoveredDrafts !== prev.recoveredDrafts)
+  )
+    persistRecovery(state);
+});
+
+// 快照始终从服务端读取；仅标签布局、未提交输入和待确认提交跨刷新保存。
+useWorkbookStore.subscribe((state, prev) => {
+  if (
+    !state.workspaceId ||
+    (state.tabs === prev.tabs &&
+      state.activePath === prev.activePath &&
+      state.panelOpen === prev.panelOpen &&
+      state.fullView === prev.fullView)
+  )
+    return;
+  try {
+    sessionStorage.setItem(
+      `excelmanus.tabs.${state.workspaceId}`,
+      JSON.stringify({
+        paths: state.tabs.map((tab) => tab.path),
+        activePath: state.activePath,
+        panelOpen: state.panelOpen,
+        fullView: state.fullView,
+      }),
+    );
+  } catch {
+    /* storage may be unavailable */
+  }
+});
+
+// 工作区切换：恢复该工作区的标签，文档内容始终重新读取。
 useSessionStore.subscribe((state, prev) => {
   if (state.activeWorkspaceId === prev.activeWorkspaceId) return;
+  openRequest += 1;
   leaveDoc();
+  let saved = null;
+  try {
+    saved = parseSavedTabs(sessionStorage.getItem(`excelmanus.tabs.${state.activeWorkspaceId}`));
+  } catch {
+    /* storage may be unavailable */
+  }
   set({
     ...resetDocView(),
     workspaceId: state.activeWorkspaceId,
-    tabs: [],
-    activePath: null,
-    panelOpen: false,
-    fullView: false,
+    tabs: saved?.paths.map((path) => ({ path })) ?? [],
+    activePath: saved?.activePath ?? null,
+    panelOpen: saved?.panelOpen ?? false,
+    fullView: saved?.fullView ?? false,
+    selectionDismissed: false,
     changesSeenSeq: 0,
   });
+  if (state.activeWorkspaceId && saved?.activePath) void loadDoc(saved.activePath);
 });
 
 // 会话切换：变更高亮从新会话的起点算
 useChatStore.subscribe((state, prev) => {
   if (state.sessionId !== prev.sessionId)
-    set({ changesSeenSeq: 0, pinnedSelection: null, rangeQuestion: null });
+    set({
+      changesSeenSeq: 0,
+      pinnedSelection: null,
+      selectionDismissed: false,
+      rangeQuestion: null,
+    });
   // 提问已被回答（本窗口或其他窗口）或已失效：收起确认条
   const rq = get().rangeQuestion;
   if (

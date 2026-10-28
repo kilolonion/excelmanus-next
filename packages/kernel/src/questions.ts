@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { newId } from "@excelmanus/core";
-import type { SessionLog } from "./session-log.ts";
+import type { NewRecord, SessionLog } from "./session-log.ts";
 
 export interface QuestionSpec {
   questionType: "choice" | "text" | "range_confirm" | "range_pick" | "change_confirm";
@@ -78,11 +78,12 @@ export class QuestionCoordinator {
     return row;
   }
 
-  answer(id: string, answer: unknown, rev?: number): { row: QuestionRow; idempotent: boolean } {
+  answer(id: string, answer: unknown, rev?: number, hostRecords: NewRecord[] = []): { row: QuestionRow; idempotent: boolean } {
     const row = this.get(id);
     if (!row) throw new Error("问题不存在");
     if (row.status !== "pending") return { row, idempotent: true };
     this.log.append(row.session_id, row.agent_id, [
+      ...hostRecords,
       {
         type: "question.answered",
         data: { questionId: id, answer, ...(rev !== undefined ? { rev } : {}) },

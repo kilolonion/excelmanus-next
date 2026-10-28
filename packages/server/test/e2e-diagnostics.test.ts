@@ -5,6 +5,7 @@ import { createApiClient, DiagnosticTracesResponse } from "@excelmanus/protocol"
 import { MockLanguageModelV4 } from "ai/test";
 import { expect, test } from "vitest";
 import { startServer } from "../src/index.ts";
+import { createTestProfile } from "./fixtures/create-model.ts";
 
 test("诊断导出只含元数据，不泄露会话标题、正文和设备令牌；日志按日落盘", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "excelmanus-diagnostics-"));
@@ -32,7 +33,7 @@ test("诊断导出只含元数据，不泄露会话标题、正文和设备令�
   const server = await startServer({ dataDir, log: () => {}, resolveLanguageModel: () => model });
   try {
     const api = createApiClient(server.url, server.token);
-    await api.createModelProfile({
+    await createTestProfile(api, {
       name: "test",
       provider: "custom-openai-compatible",
       model: "mock",

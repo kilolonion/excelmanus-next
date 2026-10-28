@@ -3,20 +3,40 @@
 
 import { formatRange, indexToCol, parseRange } from "@excelmanus/core";
 import { ArrowRight, ExternalLink, Loader2, LocateFixed, Table2 } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
-import { api } from "@/lib/backend/api";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { openWorkspaceFile } from "@/lib/open-file";
 import { fileName } from "@/lib/paths";
 import type { ChangeEntry, ToolState } from "@/lib/session/types";
 import { editDiff, type TextDiff, writeDiff } from "@/lib/text-diff";
 import { cn } from "@/lib/utils";
+import { readComparisonSnapshot, readRevisionBefore } from "@/lib/workbook/change-reads";
+import { downloadWorkspaceFile } from "@/stores/files-store";
 import {
   focusRange,
   openWorkbook,
   openWorkbookById,
   useWorkbookStore,
 } from "@/stores/workbook-store";
+import { RelatedFilesCard } from "./FileCapsule";
 import { ScrollablePreview } from "./ScrollablePreview";
 import { TextDiffView } from "./TextDiffView";
+
+/** 交付入口来自成功的工具结果，不依赖模型是否把文件名写成链接。 */
+export function OutputFiles({ paths }: { paths: string[] }) {
+  return (
+    <RelatedFilesCard
+      files={[...new Set(paths)].map((path) => ({
+        key: path,
+        filename: fileName(path),
+        filePath: path,
+        onOpen: () => openWorkspaceFile(path),
+        onDownload: () => {
+          void downloadWorkspaceFile(path).catch(() => undefined);
+        },
+      }))}
+    />
+  );
+}
 
 const MAX_PREVIEW_ROWS = 50;
 
@@ -132,17 +152,18 @@ export function ValuesGrid({
                 {Array.from({ length: width }, (_, c) => {
                   const v = row[c];
                   const f = formulas?.[r]?.[c];
+                  const text = cellText(v);
                   return (
                     <td
                       key={c}
-                      title={f ? `${f}\n= ${cellText(v)}` : cellText(v)}
+                      title={f ? `${f}\n= ${text}` : text}
                       className={cn(
                         "max-w-[200px] truncate border-b border-r border-[var(--em-hairline)]/60 px-2 py-0.5 whitespace-nowrap",
                         typeof v === "number" ? "text-right tabular-nums" : "text-left",
                         f && "text-[var(--em-primary)]",
                       )}
                     >
-                      {cellText(v)}
+                      {text}
                     </td>
                   );
                 })}
@@ -203,11 +224,12 @@ export function WorkbookReadResult({ data }: { data: unknown }) {
   }
   if (d.mode === "table" && Array.isArray(d.columns) && Array.isArray(d.rows)) {
     const columns = (d.columns as unknown[]).map(String);
-    const rows = (d.rows as Record<string, unknown>[]).map((row) => columns.map((c) => row[c]));
+    const allRows = d.rows as Record<string, unknown>[];
+    const rows = allRows.slice(0, MAX_PREVIEW_ROWS).map((row) => columns.map((c) => row[c]));
     return (
       <ResultBlock
         title={title}
-        meta={`${typeof d.total === "number" ? d.total : rows.length} 行 × ${columns.length} 列`}
+        meta={`${typeof d.total === "number" ? d.total : allRows.length} 行 × ${columns.length} 列`}
       >
         <ScrollablePreview collapsedHeight={180} expandedHeight={420}>
           <div className="overflow-x-auto bg-background/70">
@@ -225,20 +247,23 @@ export function WorkbookReadResult({ data }: { data: unknown }) {
                 </tr>
               </thead>
               <tbody>
-                {rows.slice(0, MAX_PREVIEW_ROWS).map((row, i) => (
+                {rows.map((row, i) => (
                   <tr key={i}>
-                    {row.map((v, j) => (
-                      <td
-                        key={j}
-                        title={cellText(v)}
-                        className={cn(
-                          "max-w-[200px] truncate border-b border-r border-[var(--em-hairline)]/60 px-2 py-0.5 whitespace-nowrap",
-                          typeof v === "number" && "text-right tabular-nums",
-                        )}
-                      >
-                        {cellText(v)}
-                      </td>
-                    ))}
+                    {row.map((v, j) => {
+                      const text = cellText(v);
+                      return (
+                        <td
+                          key={j}
+                          title={text}
+                          className={cn(
+                            "max-w-[200px] truncate border-b border-r border-[var(--em-hairline)]/60 px-2 py-0.5 whitespace-nowrap",
+                            typeof v === "number" && "text-right tabular-nums",
+                          )}
+                        >
+                          {text}
+                        </td>
+                      );
+                    })}
                   </tr>
                 ))}
               </tbody>
@@ -332,9 +357,6 @@ export function WorkbookReadResult({ data }: { data: unknown }) {
   return null;
 }
 
-type BeforeCells = Awaited<ReturnType<ReturnType<typeof api>["getDocRevBefore"]>>["cells"];
-const beforeCache = new Map<string, Promise<BeforeCells>>();
-
 interface DiffRow {
   ref: string;
   before: string;
@@ -348,17 +370,14 @@ function EditDiffRows({ change }: { change: ChangeEntry }) {
   useEffect(() => {
     if (!workspaceId || change.rev === null) return;
     let alive = true;
-    const key = `${workspaceId}:${change.docId}:${change.rev}`;
-    let req = beforeCache.get(key);
-    if (!req) {
-      req = api()
-        .getDocRevBefore(workspaceId, change.docId, change.rev)
-        .then((r) => r.cells);
-      beforeCache.set(key, req);
-      req.catch(() => beforeCache.delete(key));
-    }
-    void Promise.all([req, api().getDocSnapshot(workspaceId, change.docId)])
-      .then(([cells, current]) => {
+    const doc = useWorkbookStore.getState().doc;
+    const currentRev = doc?.docId === change.docId ? doc.rev : null;
+    setRows(null);
+    void Promise.all([
+      readRevisionBefore(workspaceId, change.docId, change.rev),
+      readComparisonSnapshot(workspaceId, change.docId, currentRev),
+    ])
+      .then(([{ cells }, current]) => {
         if (!alive) return;
         if (cells.length === 0) {
           setRows("same");
@@ -551,7 +570,7 @@ export function PublishPlan({ items, title = "待发布的修改" }: { items: un
           );
         }
         const rawRanges: unknown = item.changes?.ranges;
-        const ranges = Array.isArray(rawRanges) ? rawRanges.map(String) : [];
+        const ranges = Array.isArray(rawRanges) ? rawRanges.slice(0, 3).map(String) : [];
         return (
           <ResultBlock
             key={i}
@@ -561,7 +580,7 @@ export function PublishPlan({ items, title = "待发布的修改" }: { items: un
                 <span className="truncate">{fileName(path)}</span>
               </>
             }
-            meta={`${item.create === true ? "新建工作簿" : "修改工作簿"}${typeof item.opsCount === "number" ? ` · ${item.opsCount} 项操作` : ""}${ranges.length ? ` · ${ranges.slice(0, 3).join("、")}` : ""}`}
+            meta={`${item.create === true ? "新建工作簿" : "修改工作簿"}${typeof item.opsCount === "number" ? ` · ${item.opsCount} 项操作` : ""}${ranges.length ? ` · ${ranges.join("、")}` : ""}`}
           >
             {(item.preview ?? [])
               .slice(0, 2)
@@ -611,12 +630,10 @@ export function ScriptResult({ data }: { data: unknown }) {
 
 /** write / edit：直接从参数组成改动展示。 */
 export function TextChange({ tool }: { tool: ToolState }) {
-  const diff: TextDiff | null =
-    tool.name === "edit"
-      ? editDiff(tool.args)
-      : tool.name === "write"
-        ? writeDiff(tool.args)
-        : null;
+  const diff: TextDiff | null = useMemo(
+    () => tool.name === "edit" ? editDiff(tool.args) : tool.name === "write" ? writeDiff(tool.args) : null,
+    [tool.name, tool.args],
+  );
   if (!diff) return null;
   return <TextDiffView data={diff} defaultOpen={tool.phase !== "done" || tool.status === "ok"} />;
 }

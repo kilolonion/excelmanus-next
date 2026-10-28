@@ -6,54 +6,62 @@
 let _hljs: typeof import("highlight.js").default | null = null;
 let _hljsLoading: Promise<void> | null = null;
 
-export function ensureHljs(): Promise<void> {
+const plainLanguages = new Set(["plaintext", "text", "txt"]);
+const isPlainLanguage = (language?: string) => plainLanguages.has(language?.toLowerCase() ?? "");
+
+export function ensureHljs(language?: string): Promise<void> {
+  if (isPlainLanguage(language)) return Promise.resolve();
   if (_hljs) return Promise.resolve();
   if (_hljsLoading) return _hljsLoading;
-  _hljsLoading = import("highlight.js/lib/core").then(async (mod) => {
-    const hljs = mod.default;
-    // 注册常用语言
-    const langs = await Promise.all([
-      import("highlight.js/lib/languages/python"),
-      import("highlight.js/lib/languages/javascript"),
-      import("highlight.js/lib/languages/typescript"),
-      import("highlight.js/lib/languages/json"),
-      import("highlight.js/lib/languages/bash"),
-      import("highlight.js/lib/languages/sql"),
-      import("highlight.js/lib/languages/xml"),
-      import("highlight.js/lib/languages/css"),
-      import("highlight.js/lib/languages/markdown"),
-      import("highlight.js/lib/languages/yaml"),
-      import("highlight.js/lib/languages/shell"),
-      import("highlight.js/lib/languages/plaintext"),
-    ]);
-    const names = [
-      "python",
-      "javascript",
-      "typescript",
-      "json",
-      "bash",
-      "sql",
-      "xml",
-      "css",
-      "markdown",
-      "yaml",
-      "shell",
-      "plaintext",
-    ];
-    langs.forEach((l, i) => {
-      hljs.registerLanguage(names[i], l.default);
+  _hljsLoading = import("highlight.js/lib/core")
+    .then(async (mod) => {
+      const hljs = mod.default;
+      // 注册常用语言
+      const langs = await Promise.all([
+        import("highlight.js/lib/languages/python"),
+        import("highlight.js/lib/languages/javascript"),
+        import("highlight.js/lib/languages/typescript"),
+        import("highlight.js/lib/languages/json"),
+        import("highlight.js/lib/languages/bash"),
+        import("highlight.js/lib/languages/sql"),
+        import("highlight.js/lib/languages/xml"),
+        import("highlight.js/lib/languages/css"),
+        import("highlight.js/lib/languages/markdown"),
+        import("highlight.js/lib/languages/yaml"),
+        import("highlight.js/lib/languages/shell"),
+        import("highlight.js/lib/languages/plaintext"),
+      ]);
+      const names = [
+        "python",
+        "javascript",
+        "typescript",
+        "json",
+        "bash",
+        "sql",
+        "xml",
+        "css",
+        "markdown",
+        "yaml",
+        "shell",
+        "plaintext",
+      ];
+      langs.forEach((l, i) => {
+        hljs.registerLanguage(names[i], l.default);
+      });
+      // Aliases resolve to the same grammar; registering them as languages duplicates auto-detection.
+      hljs.registerAliases("py", { languageName: "python" });
+      hljs.registerAliases("js", { languageName: "javascript" });
+      hljs.registerAliases("ts", { languageName: "typescript" });
+      hljs.registerAliases(["sh", "zsh"], { languageName: "bash" });
+      hljs.registerAliases("html", { languageName: "xml" });
+      hljs.registerAliases("yml", { languageName: "yaml" });
+      hljs.registerAliases("txt", { languageName: "plaintext" });
+      _hljs = hljs;
+    })
+    .catch(() => {
+      // Highlighting is optional; keep plain text usable and allow a later retry.
+      _hljsLoading = null;
     });
-    // 别名
-    hljs.registerLanguage("py", langs[0].default);
-    hljs.registerLanguage("js", langs[1].default);
-    hljs.registerLanguage("ts", langs[2].default);
-    hljs.registerLanguage("sh", langs[4].default);
-    hljs.registerLanguage("zsh", langs[4].default);
-    hljs.registerLanguage("html", langs[6].default);
-    hljs.registerLanguage("yml", langs[9].default);
-    hljs.registerLanguage("txt", langs[11].default);
-    _hljs = hljs;
-  });
   return _hljsLoading;
 }
 
@@ -83,10 +91,10 @@ const CLOSE_TO_OPEN: Record<string, string> = { "}": "{", ")": "(", "]": "[" };
 
 export function colorizeBracketsHtml(html: string): string {
   const depths: Record<string, number> = { "{": 0, "(": 0, "[": 0 };
-  let inTag = false;
   let stringSpanDepth = 0;
   const spanStack: boolean[] = []; // true 表示该 span 为字符串 span
-  let result = "";
+  const parts: string[] = [];
+  const boundary = /[<{}()[\]&]/g;
   let i = 0;
 
   while (i < html.length) {
@@ -97,7 +105,7 @@ export function colorizeBracketsHtml(html: string): string {
       const closeTag = html.startsWith("</span", i);
       if (closeTag) {
         const end = html.indexOf(">", i);
-        result += html.slice(i, end + 1);
+        parts.push(html.slice(i, end + 1));
         i = end + 1;
         const wasString = spanStack.pop();
         if (wasString) stringSpanDepth--;
@@ -110,27 +118,35 @@ export function colorizeBracketsHtml(html: string): string {
         const isString = tag.includes("hljs-string") || tag.includes("hljs-regexp");
         spanStack.push(isString);
         if (isString) stringSpanDepth++;
-        result += tag;
+        parts.push(tag);
         i = end + 1;
         continue;
       }
-      // 其他标签透传
-      inTag = true;
-      result += ch;
-      i++;
-      continue;
-    }
-    if (inTag) {
-      if (ch === ">") inTag = false;
-      result += ch;
-      i++;
+      // Other tags and their attributes are opaque to bracket coloring.
+      const end = html.indexOf(">", i);
+      if (end === -1) {
+        parts.push(html.slice(i));
+        break;
+      }
+      parts.push(html.slice(i, end + 1));
+      i = end + 1;
       continue;
     }
 
-    // 跳过字符串字面量内的括号
+    // Strings and regexp literals only need tag boundaries; ordinary code runs
+    // only need bracket/entity/tag boundaries. Copy each run instead of each character.
     if (stringSpanDepth > 0) {
-      result += ch;
-      i++;
+      const next = html.indexOf("<", i);
+      const end = next === -1 ? html.length : next;
+      parts.push(html.slice(i, end));
+      i = end;
+      continue;
+    }
+    boundary.lastIndex = i;
+    const next = boundary.exec(html)?.index ?? html.length;
+    if (next > i) {
+      parts.push(html.slice(i, next));
+      i = next;
       continue;
     }
 
@@ -151,7 +167,9 @@ export function colorizeBracketsHtml(html: string): string {
       const colors = OPEN_COLORS[bracket];
       const depth = depths[bracket];
       const color = colors[depth % colors.length];
-      result += `<span style="color:${color};font-weight:bold">${html.slice(i, i + consumed)}</span>`;
+      parts.push(
+        `<span style="color:${color};font-weight:bold">${html.slice(i, i + consumed)}</span>`,
+      );
       depths[bracket]++;
       i += consumed;
     } else if (bracket && bracket in CLOSE_COLORS) {
@@ -160,20 +178,32 @@ export function colorizeBracketsHtml(html: string): string {
       const colors = CLOSE_COLORS[bracket];
       const depth = depths[openCh];
       const color = colors[depth % colors.length];
-      result += `<span style="color:${color};font-weight:bold">${html.slice(i, i + consumed)}</span>`;
+      parts.push(
+        `<span style="color:${color};font-weight:bold">${html.slice(i, i + consumed)}</span>`,
+      );
       i += consumed;
     } else {
-      result += ch;
+      parts.push(ch);
       i++;
     }
   }
-  return result;
+  return parts.join("");
 }
 
 /**
  * Highlight code with rainbow brackets. Returns HTML string or null on failure.
  */
 export function highlightCode(code: string, language?: string): string | null {
+  // Explicit plain text has no grammar. Keep the same escaping and rainbow brackets.
+  if (isPlainLanguage(language))
+    return colorizeBracketsHtml(
+      code
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#x27;"),
+    );
   if (!_hljs) return null;
   try {
     const result =
@@ -184,4 +214,14 @@ export function highlightCode(code: string, language?: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** HTML-safe plain lines without running the optional syntax highlighter. */
+export function plainCodeLines(code: string): string[] {
+  return code.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").split("\n");
+}
+
+export function highlightCodeLines(code: string, language?: string): string[] {
+  const html = highlightCode(code, language);
+  return html === null ? plainCodeLines(code) : html.split("\n");
 }

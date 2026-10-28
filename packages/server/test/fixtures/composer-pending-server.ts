@@ -1,3 +1,4 @@
+import { createTestProfile } from "./create-model.ts";
 // 真实后端/HTTP/WS/SQLite；只把模型服务换成可中止的长响应。
 import { resolve } from "node:path";
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
@@ -39,7 +40,7 @@ const server = await startServer({
 });
 const api = createApiClient(server.url, server.token);
 for (const [name, reasoning] of [["GPT-6.1 Sol", "high"], ["GPT-6 Astra", "low"], ["GPT-6 Sol", "medium"]] as const) {
-  const { profile } = await api.createModelProfile({ name, reasoning, provider: "custom-openai-compatible", model: "composer-pending", baseUrl: "https://mock.invalid/v1", apiKey: "fixture-only" });
+  const { profile } = await createTestProfile(api, { name, reasoning, provider: "custom-openai-compatible", model: "composer-pending", baseUrl: "https://mock.invalid/v1", apiKey: "fixture-only" });
   await api.overrideCapabilities(profile.id, { vision: true, tools: true, reasoning: true });
 }
 await api.createSession({ title: "气泡验收" });

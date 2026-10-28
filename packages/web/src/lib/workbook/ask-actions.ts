@@ -4,6 +4,7 @@
 import { fileMention } from "@/components/chat/mention-tokens";
 
 export type AskKind =
+  | "save-as-xlsx"
   | "analyze"
   | "explain"
   | "quality"
@@ -53,6 +54,8 @@ export const DATA_ASKS: AskAction[] = [
 export function askPrompt(kind: AskKind, ctx: { path: string; range?: string | null }): string {
   const target = ctx.range ? `${fileMention(ctx.path)} 的 ${ctx.range}` : fileMention(ctx.path);
   switch (kind) {
+    case "save-as-xlsx":
+      return `请把 ${fileMention(ctx.path)} 另存为新的 XLSX 文件，保留全部数据，不修改源文件，不覆盖已有文件。完成后提供新文件的打开和下载入口。`;
     case "analyze":
       return `请分析 ${target}：概括数据结构、关键模式、异常和可以继续追问的问题。先分析，不要修改表格。`;
     case "explain":

@@ -101,7 +101,7 @@ export class TeamCoordinator implements AgentCoordinator {
       ...(env?.rules ? { rules: env.rules } : {}),
     });
     const filesNote = files && files.length > 0 ? `你负责写入的文件：${files.join("、")}。\n` : "";
-    return `${base}\n\n子代理任务说明：\n你是 ${role} 角色的子代理（${ROLE_NOTES[role] ?? ""}）。你的任务是：${task}。\n${filesNote}完成后直接用文字回复结果，运行时会把回复与变更摘要汇报给派生者。`;
+    return `${base}\n\n子代理任务说明：\n你是 ${role} 角色的子代理（${ROLE_NOTES[role] ?? ""}）。你的任务是：${task}。\n${filesNote}完成后回复结果；若本轮需要受控交付，先用 deliver.inspect 获取可见回执，再用 deliver.finalize 交付，不能直接用文字终稿。返回实际结果、未验证范围与阻塞；自述不是验证证明。运行时向派生者汇报结果，父代理只能使用宿主授权投影中当前可见的回执，并复核所有来源、目标、计划版本和当前授权。`;
   }
 
   bindRuntime(
@@ -119,6 +119,7 @@ export class TeamCoordinator implements AgentCoordinator {
   spawn(args: {
     sessionId: string;
     parentAgentId: string;
+    sourceTurnId?: string;
     name: string;
     role: AgentRole;
     task: string;
@@ -195,6 +196,9 @@ export class TeamCoordinator implements AgentCoordinator {
         data: {
           role: args.role,
           parentId: args.parentAgentId,
+          ...(args.sourceTurnId
+            ? { accessOrigin: { agentId: args.parentAgentId, turnId: args.sourceTurnId } }
+            : {}),
           name: args.name,
           modelProfileId: modelProfileId ?? null,
           systemPrompt: prompt,
@@ -211,6 +215,7 @@ export class TeamCoordinator implements AgentCoordinator {
         data: {
           dispatchId,
           clientMessageId: `spawn:${agentId}`,
+          accessInputOrigin: "agent",
           text: args.task,
           mode: "queue",
         },

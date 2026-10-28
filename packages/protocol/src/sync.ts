@@ -2,9 +2,10 @@
 
 import { z } from "zod";
 import { LogRecord } from "./records.ts";
+import { ChartObject, ShapeObject } from "./workbook-objects.ts";
 
-// v3：history.rewound、present 载荷定型、tool_args 增量带工具 id 与名称（一代前端接入二代内核）。
-export const protocolVersion = 3;
+// v4：供应商连接独立持久化，模型写入要求 connectionId；旧客户端必须刷新。
+export const protocolVersion = 4;
 export function protocolCompatible(remote: number): boolean {
   return remote === protocolVersion;
 }
@@ -204,10 +205,138 @@ export const RenderLayout = z.object({
       fill: z.string().optional(),
       align: z.enum(["left", "center", "right"]).optional(),
       fontSize: z.number().optional(),
+      borders: z
+        .partialRecord(
+          z.enum(["t", "b", "l", "r", "tl_br", "bl_tr"]),
+          z.object({ style: z.number().int().min(0).max(13), color: z.string() }),
+        )
+        .optional(),
+      dataBar: z
+        .object({ start: z.number(), end: z.number(), color: z.string(), gradient: z.boolean() })
+        .optional(),
+      icon: z
+        .object({ type: z.string(), index: z.number().int(), count: z.number().int() })
+        .optional(),
     }),
   ),
+  charts: z
+    .array(
+      z.object({
+        x: z.number(),
+        y: z.number(),
+        w: z.number(),
+        h: z.number(),
+        chart: ChartObject,
+        cells: z.record(
+          z.string(),
+          z.record(
+            z.string(),
+            z.object({ v: z.union([z.string(), z.number(), z.boolean(), z.null()]).optional() }),
+          ),
+        ),
+      }),
+    )
+    .optional(),
+  images: z
+    .array(
+      z.object({
+        x: z.number(),
+        y: z.number(),
+        w: z.number(),
+        h: z.number(),
+        mediaType: z.enum(["image/png", "image/jpeg", "image/gif"]),
+        data: z.string(),
+      }),
+    )
+    .optional(),
+  shapes: z
+    .array(
+      z.object({
+        x: z.number(),
+        y: z.number(),
+        w: z.number(),
+        h: z.number(),
+        shape: ShapeObject,
+      }),
+    )
+    .optional(),
 });
 export type RenderLayout = z.infer<typeof RenderLayout>;
+/** Fixed data-only input for an owned browser rendering a frozen workbook view. */
+export const WorkbookCapturePacket = z
+  .strictObject({
+    chartId: z.string().min(1).max(200).optional(),
+    workspaceId: z.string().min(1).max(128),
+    docId: z.string().min(1).max(128),
+    sheetId: z.string().min(1).max(128),
+    rev: z.int().nonnegative(),
+    range: z.string().regex(/^[A-Z]{1,3}[1-9][0-9]{0,6}:[A-Z]{1,3}[1-9][0-9]{0,6}$/),
+    bounds: z.strictObject({
+      startRow: z.int().nonnegative(),
+      endRow: z.int().nonnegative(),
+      startColumn: z.int().nonnegative(),
+      endColumn: z.int().nonnegative(),
+    }),
+    snapshot: z.looseObject({
+      id: z.string(),
+      sheetOrder: z.array(z.string()),
+      sheets: z.record(z.string(), z.record(z.string(), z.unknown())),
+    }),
+    viewport: z.strictObject({
+      width: z.int().min(640).max(1600),
+      height: z.int().min(480).max(1200),
+    }),
+    dpr: z.number().min(1).max(2),
+  })
+  .superRefine((packet, ctx) => {
+    const b = packet.bounds;
+    const range = /^([A-Z]+)([0-9]+):([A-Z]+)([0-9]+)$/.exec(packet.range);
+    const column = (letters: string) =>
+      [...letters].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
+    if (
+      !range ||
+      column(range[1]!) !== b.startColumn ||
+      column(range[3]!) !== b.endColumn ||
+      Number(range[2]) - 1 !== b.startRow ||
+      Number(range[4]) - 1 !== b.endRow
+    )
+      ctx.addIssue({ code: "custom", message: "截图range与bounds不一致", path: ["range"] });
+    if (
+      b.endRow < b.startRow ||
+      b.endRow - b.startRow >= 80 ||
+      b.endColumn < b.startColumn ||
+      b.endColumn - b.startColumn >= 30
+    )
+      ctx.addIssue({ code: "custom", message: "单次真实视图最多请求80行×30列", path: ["bounds"] });
+    if (
+      !packet.snapshot.sheets[packet.sheetId] ||
+      !packet.snapshot.sheetOrder.includes(packet.sheetId)
+    )
+      ctx.addIssue({ code: "custom", message: "截图工作表不在冻结快照中", path: ["sheetId"] });
+    if (new TextEncoder().encode(JSON.stringify(packet)).byteLength > 16 * 1024 * 1024)
+      ctx.addIssue({ code: "custom", message: "截图快照超过16MiB限制", path: ["snapshot"] });
+  });
+export type WorkbookCapturePacket = z.infer<typeof WorkbookCapturePacket>;
+
+export const WorkbookCaptureReceipt = z.strictObject({
+  chart: z.strictObject({
+    id:z.string().min(1), definitionSha256:z.string().regex(/^[a-f0-9]{64}$/), fullyVisible:z.literal(true),
+    bounds:z.strictObject({x:z.number().nonnegative(),y:z.number().nonnegative(),width:z.number().positive(),height:z.number().positive()}),
+  }).optional(),
+  docId: z.string(),
+  sheetId: z.string(),
+  rev: z.int().nonnegative(),
+  requestedRange: z.string(),
+  visibleRange: z.string(),
+  fullyVisible: z.boolean(),
+  warnings: z.array(z.string().max(500)).max(10).optional(),
+  viewport: z.strictObject({ width: z.int().positive(), height: z.int().positive() }),
+  dpr: z.number().positive(),
+  zoom: z.literal(1),
+  scroll: z.strictObject({ row: z.int().nonnegative(), column: z.int().nonnegative() }),
+});
+export type WorkbookCaptureReceipt = z.infer<typeof WorkbookCaptureReceipt>;
+
 export const RenderRequestMsg = z.strictObject({
   type: z.literal("render.request"),
   requestId: z.string(),

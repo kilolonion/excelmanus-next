@@ -24,6 +24,8 @@
     "@excelmanus/web": "workspace:*",
     "@excelmanus/workbook": "workspace:*",
     "@hono/node-server": "2.1.1",
+    "@napi-rs/canvas": "0.1.80",
+    "echarts": "6.1.0",
     "hono": "4.13.8",
     "undici": "7.29.1",
     "ws": "8.21.3",

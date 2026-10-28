@@ -1,3 +1,4 @@
+import { createTestProfile } from "./fixtures/create-model.ts";
 // 场景 10（14 §5 #10、§3 跨进程恢复门禁）：写入工具执行中 SIGKILL 后端进程，
 // 用同一数据目录重启独立进程，验证不重放 + 合成 tool.result + resume 后续轮。
 // 第二个用例覆盖场景 9 的 SIGKILL 版：审批待决时被杀，重启后批准续行。
@@ -77,7 +78,7 @@ function spawnFixture(dataDir: string, mode: string): Promise<FixtureProc> {
 }
 
 async function boot(api: ApiClient, permissionMode?: "confirm"): Promise<string> {
-  await api.createModelProfile({
+  await createTestProfile(api, {
     name: "mock-kill",
     provider: "custom-openai-compatible",
     model: "mock-kill",

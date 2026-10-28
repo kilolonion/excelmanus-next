@@ -5,6 +5,7 @@ import {
   type RefObject,
   type SetStateAction,
   useCallback,
+  useEffect,
   useRef,
   useState,
 } from "react";
@@ -28,6 +29,12 @@ export function useChatMentions() {
   const [atCategory, setAtCategory] = useState<string | null>(null);
   const cache = useRef<{ key: string; at: number; data: MentionData } | null>(null);
   const request = useRef(0);
+  const pending = useRef<{ workspaceId: string | null; promise: Promise<void> } | null>(null);
+  const cancelMentionRead = useCallback(() => {
+    request.current++;
+    pending.current = null;
+  }, []);
+  useEffect(() => cancelMentionRead, [cancelMentionRead]);
 
   const fetchMentionData = useCallback(() => {
     const workspaceId = useChatStore.getState().workspaceId;
@@ -35,31 +42,54 @@ export function useChatMentions() {
     const key = JSON.stringify([workspaceId, version]);
     const hit = cache.current;
     if (hit && hit.key === key && Date.now() - hit.at < 30_000) {
+      cancelMentionRead();
       setMentionData(hit.data);
       return Promise.resolve();
     }
+    // A traversal fills the directory cache as it goes, changing its version itself.
+    // Keystrokes during that same workspace read must not start another traversal.
+    if (pending.current?.workspaceId === workspaceId) return pending.current.promise;
     const id = ++request.current;
-    return (async () => {
+    const isActive = () =>
+      id === request.current && useChatStore.getState().workspaceId === workspaceId;
+    setMentionData(null);
+    const promise = (async () => {
+      let filesError = false;
+      let skillsError = false;
       const [files, skills] = await Promise.all([
-        workspaceId ? listAllFiles(2000).catch(() => []) : Promise.resolve([]),
+        workspaceId
+          ? listAllFiles(2000, 6, isActive).catch(() => {
+              filesError = true;
+              return [];
+            })
+          : Promise.resolve([]),
         api()
           .listSkills()
           .then((res) => res.items)
-          .catch(() => []),
+          .catch(() => {
+            skillsError = true;
+            return [];
+          }),
       ]);
-      if (id !== request.current) return;
+      if (!isActive()) return;
       const data: MentionData = {
         files: files.map((f) => f.path),
+        filesError,
+        skillsError,
         skills: skills
           .filter((s) => s.enabled && s.available && s.userInvocable)
           .map((s) => ({ name: s.name, description: s.description })),
       };
-      cache.current = { key, at: Date.now(), data };
+      cache.current = filesError || skillsError ? null : { key, at: Date.now(), data };
       setMentionData(data);
-    })();
-  }, []);
+    })().finally(() => {
+      if (pending.current?.promise === promise) pending.current = null;
+    });
+    pending.current = { workspaceId, promise };
+    return promise;
+  }, [cancelMentionRead]);
 
-  return { mentionData, fetchMentionData, atCategory, setAtCategory };
+  return { mentionData, fetchMentionData, cancelMentionRead, atCategory, setAtCategory };
 }
 
 export function buildMentionPopoverItems(
@@ -92,7 +122,7 @@ export function buildMentionPopoverItems(
   if (items.length === 0) {
     items.push({
       command: "",
-      description: "工作区无匹配文件",
+      description: mentionData.filesError ? "文件读取失败，请重新打开重试" : "工作区无匹配文件",
       icon: <FileSpreadsheet className="h-3.5 w-3.5 opacity-30" />,
     });
   }
@@ -121,7 +151,11 @@ export function buildSkillPopoverItems(
   if (items.length === 0) {
     items.push({
       command: "",
-      description: mentionData ? "暂无可用技能" : "正在读取技能…",
+      description: mentionData?.skillsError
+        ? "技能读取失败，请重新打开重试"
+        : mentionData
+          ? "暂无可用技能"
+          : "正在读取技能…",
       icon: <Sparkles className="h-3.5 w-3.5 opacity-30" />,
     });
   }

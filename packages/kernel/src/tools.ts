@@ -1,11 +1,12 @@
 // ToolDefinition 与 CapabilityModule（06 §2.1 全字段、03 §4.3）。
 
 import type { DatabaseSync } from "node:sqlite";
-import { MAX_C, MAX_R, parseRange, type RangeRef } from "@excelmanus/core";
+import { indexToCol, MAX_C, MAX_R, parseRange, type RangeRef } from "@excelmanus/core";
 import type {
   AgentRole,
   ApprovalEffect,
   FileIntentMeta,
+  HarnessCaptureProvenance,
   ReplayKind,
   ToolResult,
 } from "@excelmanus/protocol";
@@ -14,6 +15,18 @@ import type { BoundBackupService } from "./backup.ts";
 import type { Migration } from "./db.ts";
 import type { LeaseService } from "./leases.ts";
 import type { Projection } from "./session-log.ts";
+import type { ToolAccessContext } from "./tool-access.ts";
+
+/** Pure host effect declaration; filesystem identity is captured separately after authorization. */
+export interface EffectIntent {
+  kind: "create" | "mutate" | "remove" | "relocate";
+  path: string;
+  to?: string;
+  /** Physical footprint resolved by the host adapter, not a model permission claim. */
+  sheetId?: string;
+  range?: string;
+  objectId?: string;
+}
 
 export type ToolEffect =
   | "read"
@@ -196,6 +209,26 @@ export function persistedReads(db: DatabaseSync, sessionId: string, agentId: str
 }
 
 export interface ToolContext {
+  /** Host journal attestation; never supplied through model arguments. */
+  assertOriginalChart?(input:{path:string;docId:string;sheetId:string;chartId:string}): void | Promise<void>;
+  /** Host-only actual publication receipt; staging is never publication. */
+  reportArtifactEffect?(effect: {
+    path: string;
+    docId?: string;
+    revision?: number;
+    effect: "data" | "structure" | "format" | "copy" | "move" | "export" | "text" | "external";
+    footprint?: string[];
+    replacesDataRanges?: string[];
+    execution: "succeeded" | "failed" | "uncertain" | "partial";
+    persistence?: "saved" | "pending_save" | "save_failed" | "unknown" | "not_written";
+    capture?: HarnessCaptureProvenance;
+    assetInputs?: { path: string; sha256: string }[];
+    readDependencies?: Record<string, unknown>[];
+  }): Promise<void>;
+  /** Trusted runtime identity; never model parameters. All host callbacks also inherit ALS. */
+  access?: ToolAccessContext;
+  /** Canonical targets checked by runtime before execution (also retained across approval resume). */
+  toolTargets?: string[];
   /** 会话所属工作区 id（workspaces 表）。 */
   workspaceId: string;
   workspaceRoot: string;
@@ -241,6 +274,7 @@ export interface AgentCoordinator {
   spawn(args: {
     sessionId: string;
     parentAgentId: string;
+    sourceTurnId?: string;
     name: string;
     role: AgentRole;
     task: string;
@@ -278,6 +312,10 @@ export interface AgentCoordinator {
 }
 
 export interface ToolDefinition<A = unknown> {
+  /** Catalog visibility only. Hidden legacy calls retain the same execution gates. */
+  modelVisible?: boolean;
+  /** Read-only, same data as status; no tool execution, effects or authority records. */
+  modelContext?(ctx: Pick<ToolContext, "sessionId" | "agentId" | "turnId">): ToolResult;
   /** 小写蛇形。 */
   name: string;
   /** 中文显示名（工具卡片）。 */
@@ -295,10 +333,14 @@ export interface ToolDefinition<A = unknown> {
   // 回调参数标 never：使 ToolDefinition<具体参数> 可赋给异构集合 ToolDefinition<unknown>；
   // 作者如需读 args 可自行标注具体类型（never 可赋给一切参数类型）。
   effect: ToolEffect | ((args: never) => ToolEffect);
+  /** Host-owned transport classification; remote readOnly hints never remove an external boundary. */
+  externalTransport?: true;
+  /** Pure path mapping. Must not access files or accept model-provided identity. */
+  effectIntents?(args: A, scope?: { workspaceRoot: string }): EffectIntent[];
   /** 审批时机：默认执行前按 effect 判定；"publish" 表示发布前由工具经 ctx.requestApproval 自请（08 §6）。 */
   approval?: "publish";
   /** 本次调用会读/写哪些路径，用于审批展示与目标高亮。 */
-  targets(args: A): string[];
+  targets(args: A, scope?: Pick<ToolContext, "workspaceId" | "workspaceRoot" | "access">): string[];
   /**
    * 工作簿活动（11 §3.4 `workbook_activity` 瞬时增量）：执行期间告诉界面代理正在读/写哪些区域。
    * ranges 为空表示整个文档。只用于显示，不入日志。
@@ -309,17 +351,28 @@ export interface ToolDefinition<A = unknown> {
   timeoutMs: number;
   roles: AgentRole[];
   execute(args: A, ctx: ToolContext): Promise<ToolResult> | ToolResult;
+  /** Recognize the trusted delivery branch even when its raw arguments are invalid. */
+  finalizesTurn?(args: unknown): boolean;
+  /** Native delivery can identify its own live state-conflict result. Never model-visible or restored from JSON. */
+  isHostFinalizationConflict?(result: ToolResult): boolean;
+  /** Server-rendered text, never a model supplied value or free-form final. */
+  finalReply?(args: A, result: ToolResult): string | undefined;
   /**
    * 04 §8.2 恢复钩子：进程中断后 open_intents 里的未决调用——有副作用的
    * 工具用它判断该调用是否已在别处落库（返回其结果）；返回 undefined = not_executed。
    */
   intentMeta?(args: A, ctx: ToolContext): FileIntentMeta;
   recover?(info: {
+    workspaceRoot?: string;
+    turnId?: string;
+    access?: ToolAccessContext;
     sessionId: string;
     agentId: string;
     toolCallId: string;
     args: unknown;
     intentMeta?: FileIntentMeta;
+    /** Durable intent sequence disambiguates reused provider call IDs during observation. */
+    intentSeq?: number;
   }): ToolResult | undefined;
 }
 
@@ -328,6 +381,70 @@ export interface WorkbookActivity {
   docId?: string;
   path?: string;
   ranges: string[];
+}
+
+export { classifyWorkbookEffect, WORKBOOK_EFFECT_REGISTRY } from "./workbook-effects.ts";
+
+/** Only dense literal cells.set writes prove replacement, never a general changed range. */
+export function literalReplacementRanges(
+  ops: readonly unknown[],
+  changedRanges: readonly string[],
+): string[] {
+  const replaced: string[] = [];
+  for (const raw of ops) {
+    if (!raw || typeof raw !== "object") continue;
+    const op = raw as { op?: unknown; range?: unknown; values?: unknown };
+    if (
+      op.op !== "cells.set" ||
+      typeof op.range !== "string" ||
+      !Array.isArray(op.values) ||
+      !op.values.length
+    )
+      continue;
+    const rows = op.values;
+    const width = Array.isArray(rows[0]) ? rows[0].length : 0;
+    if (
+      !width ||
+      Array.from(rows).some(
+        (row) =>
+          !Array.isArray(row) ||
+          row.length !== width ||
+          Array.from(row).some(
+            (value) =>
+              (typeof value === "string" && value.startsWith("=")) ||
+              (value !== null &&
+                typeof value !== "string" &&
+                typeof value !== "boolean" &&
+                !(typeof value === "number" && Number.isFinite(value))),
+          ),
+      )
+    )
+      continue;
+    try {
+      const r = parseRange(op.range),
+        endRow = r.startRow + rows.length - 1,
+        endCol = r.startCol + width - 1;
+      const candidates = changedRanges
+        .map((range) => parseRange(range))
+        .filter(
+          (c) =>
+            c.sheet &&
+            (!r.sheet || c.sheet === r.sheet) &&
+            c.startRow <= r.startRow &&
+            c.endRow >= endRow &&
+            c.startCol <= r.startCol &&
+            c.endCol >= endCol,
+        );
+      const sheets = [...new Set(candidates.map((c) => c.sheet!))];
+      if (sheets.length !== 1) continue;
+      replaced.push(
+        `'${sheets[0]!.replace(/'/g, "''")}'!${indexToCol(r.startCol)}${r.startRow}:${indexToCol(endCol)}${endRow}`,
+      );
+    } catch {
+      /* Unknown geometry cannot supersede an old data obligation. */
+    }
+  }
+  return replaced;
 }
 
 export interface CapabilityModule {

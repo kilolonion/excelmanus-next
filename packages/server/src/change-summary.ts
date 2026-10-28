@@ -16,7 +16,7 @@ interface OpRow {
 
 export function workbookChangeSummary(db: DatabaseSync, svc: DocumentService): ChangeSummarySource {
   return {
-    async summarize({ sessionId, workspaceRoot, toolCallIds }) {
+    async summarize({ sessionId, workspaceRoot, toolCallIds, storedOnly }) {
       if (toolCallIds.length === 0) return [];
       const rows = db
         .prepare(
@@ -30,10 +30,12 @@ export function workbookChangeSummary(db: DatabaseSync, svc: DocumentService): C
       const out: DocChangeSummary[] = [];
       for (const [docId, ops] of byDoc) {
         const doc = db
-          .prepare("SELECT path, workspace_id FROM documents WHERE id = ?")
-          .get(docId) as { path: string; workspace_id: string } | undefined;
+          .prepare("SELECT path, workspace_id, checkpoint_snapshot FROM documents WHERE id = ?")
+          .get(docId) as
+          | { path: string; workspace_id: string; checkpoint_snapshot: string | null }
+          | undefined;
         if (!doc) continue;
-        // 工作表名取当前快照；文档打不开时退回 sheetId（摘要不应让收尾失败）。
+        // 受限轮已终态：只用已有 DB 元数据，不再 snapshot/checkExternal 产生迟到访问。
         const names = new Map<string, string>();
         // 删除工作表的前像仍含表名，不能把已删除表显示为内部 id。
         for (const op of ops) {
@@ -41,13 +43,18 @@ export function workbookChangeSummary(db: DatabaseSync, svc: DocumentService): C
             snapshot?: { sheets?: Record<string, { name?: string }> };
           };
           for (const [id, s] of Object.entries(inverse.snapshot?.sheets ?? {}))
-            names.set(id, s.name ?? id);
+            if (typeof s.name === "string") names.set(id, s.name);
         }
         try {
-          const { snapshot } = await svc.snapshot(docId, workspaceRoot);
-          for (const [id, s] of Object.entries(snapshot.sheets ?? {})) {
-            names.set(id, (s as { name?: string }).name ?? id);
-          }
+          const snapshot = storedOnly
+            ? doc.checkpoint_snapshot
+              ? (JSON.parse(doc.checkpoint_snapshot) as {
+                  sheets?: Record<string, { name?: string }>;
+                })
+              : undefined
+            : (await svc.snapshot(docId, workspaceRoot)).snapshot;
+          for (const [id, sheet] of Object.entries(snapshot?.sheets ?? {}))
+            if (typeof sheet.name === "string") names.set(id, sheet.name);
         } catch {}
         const writeSet: { ranges: RangeRef[]; structural: StructuralOp[]; objects: string[] } = {
           ranges: [],
@@ -78,6 +85,13 @@ export function workbookChangeSummary(db: DatabaseSync, svc: DocumentService): C
           toRev: last.rev,
           revs: ops.map((o) => o.rev),
           ...summarizeWriteSet(writeSet, names),
+          ...(storedOnly &&
+          (writeSet.ranges.some((range) => !names.has(range.sheetId)) ||
+            writeSet.structural.some(
+              (op) => "sheetId" in op && typeof op.sheetId === "string" && !names.has(op.sheetId),
+            ))
+            ? { metadataLimited: true }
+            : {}),
           ...(backup ? { backupPath: backup.backup_path } : {}),
         });
       }

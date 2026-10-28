@@ -1,6 +1,8 @@
 // 对话与当前表格的关联：输入框上方的「表格引用」徽标，以及打开表格后的空对话引导页。
 // 附带给代理的只有区域上下文（钉住的区域优先，其次当前选区，见 workbook-store.composerContext）。
 
+import { useState } from "react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { parseRange } from "@excelmanus/core";
 import {
   ArrowLeftRight,
@@ -8,18 +10,15 @@ import {
   BarChart3,
   ClipboardCheck,
   FileSpreadsheet,
-  Lightbulb,
   type LucideIcon,
-  MessageSquare,
   Pin,
   PinOff,
   Search,
-  Sparkles,
   Table2,
   X,
 } from "lucide-react";
+import styles from "@/components/welcome/WelcomePage.module.css";
 import { baseName, fileName } from "@/lib/paths";
-import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat-store";
 import { useUIStore } from "@/stores/ui-store";
 import {
@@ -31,7 +30,6 @@ import {
   setFullView,
   useWorkbookStore,
 } from "@/stores/workbook-store";
-import styles from "./WorkbookConversation.module.css";
 
 export type WorkbookContextStatus = "loading" | "ready" | "error";
 
@@ -84,84 +82,103 @@ export function useWorkbookConversation(): WorkbookConversation {
 
 /** 输入框上方的表格引用：显示随消息附带的区域，可钉住、定位或移除。 */
 export function WorkbookContextChip() {
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const { path, docId, status, context, pinned } = useWorkbookConversation();
   const open = useWorkbookStore((s) => s.panelOpen || s.fullView);
-  if (!path || !open) return null;
-  const contextPath = context && context.docId !== docId ? null : path;
+  const tabs = useWorkbookStore((s) => s.tabs);
+  if (!context && (!path || !open)) return null;
+  const contextPath = context
+    ? (context.path ??
+      (context.docId === docId ? path : tabs.find((tab) => tab.docId === context.docId)?.path))
+    : path;
+  const displayPath = contextPath ?? context?.docId ?? "工作簿";
   const range = context?.range;
-  const label = range ? range : fileName(path);
-  const contextState =
-    status === "error" ? "error" : status === "loading" ? "loading" : range ? "selection" : "ready";
-  const statusText =
-    status === "error"
+  const label = range ? `${fileName(displayPath)} · ${range}` : fileName(displayPath);
+  const contextState = range
+    ? "selection"
+    : status === "error"
+      ? "error"
+      : status === "loading"
+        ? "loading"
+        : "ready";
+  const statusText = range
+    ? pinned
+      ? "已钉住"
+      : "自动跟随选区"
+    : status === "error"
       ? "打开失败"
       : status === "loading"
         ? "正在打开"
-        : range
-          ? pinned
-            ? "已钉住"
-            : "当前选区"
-          : "未选区域";
+        : "未附带区域";
 
   return (
     <div
-      className={cn(
-        "em-composer-tab text-xs",
-        range ? "em-composer-tab--selection" : "em-composer-tab--workbook",
-      )}
-      data-workbook-context={path}
+      className="em-workbook-context"
+      role="group"
+      data-workbook-context={displayPath}
       data-context-state={contextState}
-      aria-label={range ? `本次提问附带区域：${range}` : `当前表格：${fileName(path)}`}
+      aria-label={range ? `本次附带：${label}` : `当前打开：${label}，未附带区域`}
     >
-      <span className="em-composer-tab-icon" aria-hidden="true">
-        <FileSpreadsheet className="h-3.5 w-3.5" />
-      </span>
-      <span className="em-composer-tab-copy min-w-0">
-        <span className="em-composer-tab-kind">{range ? "选区引用" : "当前表格"}</span>
-        <button
-          type="button"
-          className="em-composer-tab-label min-w-0 truncate text-left font-mono"
-          title={
-            range ? `${contextPath ?? path} · ${range}（点击定位）` : `${path}（点击全屏查看）`
-          }
-          onClick={() => (range ? void focusRange(range) : setFullView(true))}
-        >
-          {label}
-        </button>
-      </span>
+      <FileSpreadsheet className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      <Popover open={detailsOpen} onOpenChange={setDetailsOpen}>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className="em-workbook-context-label"
+            title={`${displayPath}${range ? ` · ${range}` : ""}（查看引用详情）`}
+          >
+            <span className="em-workbook-context-kind">{range ? "本次附带" : "当前打开"}</span>
+            <span className="em-workbook-context-file">{fileName(displayPath)}</span>
+            {range && <span className="em-workbook-context-range">{range}</span>}
+          </button>
+        </PopoverTrigger>
+        <PopoverContent side="top" align="start" className="max-w-[calc(100vw-24px)] text-xs">
+          <p className="break-all font-medium">{displayPath}</p>
+          <p className="mt-1 break-all text-muted-foreground">
+            {range ? `${range} · ${statusText} · 随本条消息发送` : "当前打开，未附带区域"}
+          </p>
+          <button
+            type="button"
+            className="mt-3 text-[var(--em-primary)]"
+            onClick={() => {
+              setDetailsOpen(false);
+              if (context) void focusRange(context.range, { docId: context.docId });
+              else setFullView(true);
+            }}
+          >
+            {range ? "打开并定位" : "查看表格"}
+          </button>
+        </PopoverContent>
+      </Popover>
       {range ? (
         <button
           type="button"
           aria-label={pinned ? "取消钉住" : "钉住此区域"}
           title={pinned ? "取消钉住：随选区变化" : "钉住：选区变化后仍附带此区域"}
-          className="em-composer-tab-action inline-flex shrink-0 items-center gap-1"
+          className="em-workbook-context-action"
           onClick={() => pinSelection(!pinned)}
         >
           {pinned ? <PinOff className="h-3 w-3" /> : <Pin className="h-3 w-3" />}
-          <span className="em-composer-tab-action-label">{pinned ? "取消钉住" : "钉住"}</span>
         </button>
       ) : (
         <button
           type="button"
           aria-label="更换表格"
           title="打开另一份表格"
-          className="em-composer-tab-action inline-flex shrink-0 items-center gap-1"
+          className="em-workbook-context-action"
           onClick={() => useUIStore.getState().openWorkbookPicker("panel")}
         >
           <ArrowLeftRight className="h-3 w-3" />
-          <span className="em-composer-tab-action-label">更换</span>
+          <span className="hidden sm:inline">更换</span>
         </button>
       )}
-      <span className="em-composer-tab-status shrink-0">
-        <span className="em-composer-tab-status-dot" aria-hidden="true" />
-        {statusText}
-      </span>
+      <span className="em-workbook-context-status">{statusText}</span>
       {range && (
         <button
           type="button"
           aria-label="不附带此区域"
           title="本条消息不附带区域"
-          className="em-composer-tab-dismiss shrink-0"
+          className="em-workbook-context-action"
           onClick={dismissContext}
         >
           <X className="h-3 w-3" />
@@ -207,91 +224,54 @@ export function WorkbookConversationWelcome({
   ];
 
   return (
-    <main className={styles.page}>
-      <section className={styles.hero} aria-labelledby="workbook-welcome-title">
-        <div className={styles.heroGlow} aria-hidden="true" />
-        <div className={styles.heroContent}>
-          <div className={styles.eyebrow}>
-            <Sparkles /> 工作簿助手
+    <main className={styles.viewport} data-empty-home="workbook">
+      <div className={styles.layout}>
+        <section className={styles.hero} aria-labelledby="workbook-welcome-title">
+          <div className={styles.heroContent}>
+            <h1 id="workbook-welcome-title" className={styles.title}>
+              想对这张表做什么？
+            </h1>
+            {path && (
+              <button
+                type="button"
+                className={styles.workbook}
+                onClick={() => setFullView(true)}
+                title={`${path}（打开全屏表格）`}
+              >
+                <FileSpreadsheet size={16} />
+                <strong>{workbookName}</strong>
+                {sheet && <span>{sheet}</span>}
+                <ArrowRight size={14} aria-hidden="true" />
+              </button>
+            )}
           </div>
-          <h1 id="workbook-welcome-title">
-            和这份表格一起，<span>把问题变成结果。</span>
-          </h1>
-          <p className={styles.heroDescription}>从理解数据开始，快速完成检查、汇总、分析和整理。</p>
-          {path && (
-            <button
-              type="button"
-              className={styles.workbookCard}
-              onClick={() => setFullView(true)}
-              title="打开全屏表格"
-            >
-              <div className={styles.workbookIcon}>
-                <FileSpreadsheet />
-              </div>
-              <div className={styles.workbookMeta}>
-                <strong title={path}>{workbookName}</strong>
-                <span>{sheet ? `当前工作表：${sheet}` : "当前工作簿"}</span>
-              </div>
-              <ArrowRight className={styles.workbookArrow} aria-hidden="true" />
-            </button>
-          )}
+        </section>
+        <div className={styles.heading}>
+          <h2 id="workbook-task-title">快速开始</h2>
+          <p>选中区域，或直接描述需求</p>
         </div>
-        <div className={styles.heroPattern} aria-hidden="true">
-          <span />
-          <span />
-          <span />
-        </div>
-      </section>
-
-      <section className={styles.tasksSection} aria-labelledby="workbook-task-title">
-        <div className={styles.sectionHeading}>
-          <div>
-            <p className={styles.sectionEyebrow}>快速开始</p>
-            <h2 id="workbook-task-title">你想先做什么？</h2>
-          </div>
-          <span>点击即可把任务带入输入框</span>
-        </div>
-        <div className={styles.taskGrid}>
+        <section className={styles.tasks} aria-labelledby="workbook-task-title">
           {suggestions.map(({ label, prompt, description, icon: Icon }) => (
             <button
               type="button"
               key={prompt}
               onClick={() => onSuggestion(prompt)}
-              className={styles.taskCard}
+              className={styles.card}
+              title={description}
             >
-              <span className={styles.taskIcon}>
-                <Icon />
+              <span className={styles.cardContent}>
+                <span className={styles.cardHeader}>
+                  <span className={styles.icon}>
+                    <Icon />
+                  </span>
+                  <strong className={styles.label}>{label}</strong>
+                </span>
+                <span className={styles.copy}>{description}</span>
               </span>
-              <span className={styles.taskCopy}>
-                <strong>{label}</strong>
-                <span>{description}</span>
-              </span>
-              <ArrowRight className={styles.taskArrow} aria-hidden="true" />
             </button>
           ))}
-        </div>
-      </section>
-
-      <section className={styles.tipStrip} aria-label="使用提示">
-        <div className={styles.tipIcon}>
-          <Lightbulb />
-        </div>
-        <div>
-          <strong>让结果更准确</strong>
-          <span>可以先选中表格区域，再告诉我你想比较或修改的内容。</span>
-        </div>
-      </section>
-
-      {path && (
-        <p className={styles.discussion}>
-          <MessageSquare />
-          <span>当前讨论</span>
-          <strong title={path}>{workbookName}</strong>
-          <button type="button" onClick={() => useUIStore.getState().openWorkbookPicker("panel")}>
-            <ArrowLeftRight /> 更换
-          </button>
-        </p>
-      )}
+        </section>
+      </div>
     </main>
   );
 }

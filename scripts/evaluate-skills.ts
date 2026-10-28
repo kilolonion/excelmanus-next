@@ -19,11 +19,16 @@ import { v1EvalCases } from "../fixtures/v1-evals/cases.ts";
 import { parseRange } from "../packages/core/src/index.ts";
 import {
   CreateModelProfileBody,
+  CreateProviderConnectionBody,
   createApiClient,
   type LogRecord,
   type ServerMessage,
 } from "../packages/protocol/src/index.ts";
 import { type RunningServer, startServer } from "../packages/server/src/index.ts";
+
+const EvaluationProfile = CreateProviderConnectionBody.extend(
+  CreateModelProfileBody.omit({ connectionId: true }).shape,
+);
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const hash = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
@@ -89,11 +94,9 @@ if (profileFile === "--validate") {
     process.exitCode = 2;
   } else {
     // 只读取显式传入的评测配置；不读取生产数据目录与环境中的密钥。
-    let profile: ReturnType<typeof CreateModelProfileBody.parse>;
+    let profile: ReturnType<typeof EvaluationProfile.parse>;
     try {
-      profile = CreateModelProfileBody.parse(
-        JSON.parse(readFileSync(resolve(profileFile), "utf8")),
-      );
+      profile = EvaluationProfile.parse(JSON.parse(readFileSync(resolve(profileFile), "utf8")));
     } catch {
       console.error("评测配置读取或校验失败；请检查独立配置文件，不要使用生产数据目录。");
       process.exit(2);
@@ -141,7 +144,19 @@ if (profileFile === "--validate") {
     try {
       server = await startServer({ dataDir, log: () => {} });
       const api = createApiClient(server.url, server.token);
-      const { profile: saved } = await api.createModelProfile(profile);
+      const { provider, baseUrl, apiKey, extraHeaders, accountId, ...modelSettings } = profile;
+      const { connection } = await api.createProviderConnection({
+        name: profile.name ?? provider,
+        provider,
+        baseUrl,
+        apiKey,
+        extraHeaders,
+        accountId,
+      });
+      const { profile: saved } = await api.createModelProfile({
+        ...modelSettings,
+        connectionId: connection.id,
+      });
       for (const skill of (await api.listSkills()).items) {
         // enabled 只启用目标技能，避免其他技能影响归因；disabled 全部禁用。
         await api.setSkillEnabled(

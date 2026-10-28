@@ -1,3 +1,4 @@
+import { ArrayFormulas } from "./ArrayFormulas";
 // 「开始」功能区：只放写回支持的格式项。每个按钮执行 Univer 自带命令，产生的 mutation
 // 与单元格编辑一样经 doc.submit 走同一写入路径；CSV 只保存值，因此只保留撤销 / 重做。
 
@@ -11,6 +12,7 @@ import {
   WrapStrategy,
 } from "@univerjs/core";
 import { ILayoutService } from "@univerjs/preset-sheets-core";
+import { OpenFindDialogOperation } from "@univerjs/preset-sheets-find-replace";
 import type { FUniver } from "@univerjs/presets";
 import type { FWorkbook } from "@univerjs/sheets/facade";
 import {
@@ -36,6 +38,7 @@ import {
   Plus,
   Redo2,
   RemoveFormatting,
+  Search,
   Square,
   SquareDashed,
   Strikethrough,
@@ -61,7 +64,6 @@ import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
@@ -71,8 +73,20 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { toast } from "@/components/ui/toaster";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { askAgent } from "@/lib/workbook/ask";
+import { borderValue } from "@/lib/workbook/border-options";
+import { ConditionalFormats } from "./ConditionalFormats";
+import { DefinedNames } from "./DefinedNames";
+import { FormatPainter } from "./FormatPainter";
+import { TableManagerPanel } from "./TableManagerPanel";
 
-export type SheetApi = { univer: Univer; univerAPI: FUniver; wb: FWorkbook };
+export type SheetApi = {
+  univer: Univer;
+  univerAPI: FUniver;
+  wb: FWorkbook;
+  disposed?: boolean;
+  rendered?: boolean;
+};
 
 type FormatState = {
   bold: boolean;
@@ -198,8 +212,9 @@ function useFormatState(api: SheetApi | null): FormatState | null {
     let frame = 0;
     let last = "";
     const update = () => {
-      cancelAnimationFrame(frame);
+      if (frame) return;
       frame = requestAnimationFrame(() => {
+        frame = 0;
         const next = readFormat(api.wb);
         const key = JSON.stringify(next);
         if (key === last) return;
@@ -208,7 +223,10 @@ function useFormatState(api: SheetApi | null): FormatState | null {
       });
     };
     update();
-    const sub = api.wb.onCommandExecuted(update);
+    const sub = api.wb.onCommandExecuted((command) => {
+      // Scrolling changes the viewport, not the selected cell's format.
+      if (command.id !== "sheet.operation.set-scroll") update();
+    });
     return () => {
       cancelAnimationFrame(frame);
       sub.dispose();
@@ -771,29 +789,112 @@ function NumberGroup({ api, f, off, run, closeToGrid }: Ctx) {
   );
 }
 
+const BORDER_LINES = [
+  [BorderStyleTypes.THIN, "细实线"],
+  [BorderStyleTypes.MEDIUM, "中实线"],
+  [BorderStyleTypes.THICK, "粗实线"],
+  [BorderStyleTypes.HAIR, "发丝线"],
+  [BorderStyleTypes.DOTTED, "点线"],
+  [BorderStyleTypes.DASHED, "虚线"],
+  [BorderStyleTypes.DASH_DOT, "点划线"],
+  [BorderStyleTypes.DASH_DOT_DOT, "双点划线"],
+  [BorderStyleTypes.DOUBLE, "双线"],
+  [BorderStyleTypes.MEDIUM_DASHED, "中虚线"],
+  [BorderStyleTypes.MEDIUM_DASH_DOT, "中点划线"],
+  [BorderStyleTypes.MEDIUM_DASH_DOT_DOT, "中双点划线"],
+  [BorderStyleTypes.SLANT_DASH_DOT, "斜点划线"],
+] as const;
 function CellsGroup({ f, off, run, closeToGrid }: Ctx) {
+  const [open, setOpen] = useState(false);
+  const [line, setLine] = useState<BorderStyleTypes>(BorderStyleTypes.THIN);
+  const [color, setColor] = useState("#000000");
+  const applyBorder = (type: BorderType) => {
+    const value = borderValue(type, line, color);
+    if (!value) {
+      toast({ tone: "error", title: "请输入 3 位或 6 位十六进制颜色" });
+      return;
+    }
+    setOpen(false);
+    run("sheet.command.set-border-basic", { value });
+  };
   return (
     <>
-      <DropdownMenu>
-        <MenuTrigger label="边框" disabled={off}>
-          <Grid2x2 className="size-4" />
-        </MenuTrigger>
-        <DropdownMenuContent align="start" className="w-44" onCloseAutoFocus={closeToGrid}>
-          {BORDERS.map((b) => (
-            <DropdownMenuItem
-              key={b.type}
-              onSelect={() =>
-                run("sheet.command.set-border-basic", {
-                  value: { type: b.type, color: "#000000", style: BorderStyleTypes.THIN },
-                })
-              }
-            >
-              <b.icon className="size-4 text-muted-foreground" />
-              {b.label}
-            </DropdownMenuItem>
-          ))}
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="边框"
+            disabled={off}
+            onMouseDown={keepGridFocus}
+          >
+            <Grid2x2 className="size-4" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="start" className="w-64 p-3" onCloseAutoFocus={closeToGrid}>
+          <p className="mb-2 text-xs text-muted-foreground">先选线型和颜色，再选择边框位置</p>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className="mb-3 w-full justify-between"
+                aria-label="边框线型"
+              >
+                {BORDER_LINES.find(([value]) => value === line)?.[1]}
+                <ChevronDown className="size-3" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent className="max-h-64" align="start">
+              <DropdownMenuRadioGroup
+                value={String(line)}
+                onValueChange={(v) => setLine(Number(v) as BorderStyleTypes)}
+              >
+                {BORDER_LINES.map(([value, label]) => (
+                  <DropdownMenuRadioItem key={value} value={String(value)}>
+                    {label}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <div className="mb-2 grid grid-cols-8 gap-1.5">
+            {PALETTE.flat().map((value) => (
+              <Button
+                key={value}
+                variant="ghost"
+                size="icon-xs"
+                className="size-5 rounded border p-0"
+                aria-label={`边框颜色 ${value}`}
+                aria-pressed={color.toUpperCase() === value}
+                style={{ backgroundColor: value }}
+                onClick={() => setColor(value)}
+              />
+            ))}
+          </div>
+          <Input
+            aria-label="自定义边框颜色"
+            value={color}
+            onChange={(e) => setColor(e.target.value)}
+            placeholder="#000000"
+            className="mb-3 h-8 font-mono text-xs"
+          />
+          <div className="grid grid-cols-2 gap-1 border-t pt-2">
+            {BORDERS.map((b) => (
+              <Button
+                key={b.type}
+                variant="ghost"
+                size="sm"
+                className="justify-start gap-2 text-xs"
+                onClick={() => applyBorder(b.type)}
+              >
+                <b.icon className="size-4" />
+                {b.label}
+              </Button>
+            ))}
+          </div>
+        </PopoverContent>
+      </Popover>
       <ToolButton
         label={f?.merged ? "取消合并" : "合并单元格"}
         icon={f?.merged ? TableCellsSplit : TableCellsMerge}
@@ -861,7 +962,7 @@ function useVisibleCount(keys: GroupKey[]) {
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-  let used = 0;
+  let used = 156;
   for (let i = 0; i < keys.length; i++) {
     const key = keys[i] as GroupKey;
     const need = GROUP_WIDTH[key] + (i > 0 ? GROUP_GAP : 0);
@@ -875,9 +976,11 @@ function useVisibleCount(keys: GroupKey[]) {
 export function FormatToolbar({
   api,
   csv,
+  mobile = false,
 }: {
   api: SheetApi | null /** CSV 只保存值：格式不可写回。 */;
   csv: boolean;
+  mobile?: boolean;
 }) {
   const f = useFormatState(api);
   const keys: GroupKey[] = csv ? ["history"] : ORDER;
@@ -894,6 +997,78 @@ export function FormatToolbar({
       if (api) focusGrid(api);
     },
   };
+  if (mobile) {
+    const labels: Record<GroupKey, string> = {
+      history: "撤销与重做",
+      font: "字体与字号",
+      style: "文字样式",
+      colors: "文字与填充颜色",
+      align: "对齐与换行",
+      number: "数字格式",
+      cells: "边框与合并",
+      clear: "清除格式",
+    };
+    return (
+      <div className="em-mobile-format" aria-label="手机格式工具">
+        <Button
+          variant="ghost"
+          className="justify-start gap-2"
+          disabled={!api}
+          onClick={() => {
+            if (api) void exec(api, OpenFindDialogOperation.id);
+          }}
+        >
+          <Search className="size-4" />
+          查找与替换
+        </Button>
+        {keys.map((key) => {
+          const Group = GROUPS[key];
+          return (
+            <section key={key}>
+              <h4>{labels[key]}</h4>
+              <div>
+                <Group {...ctx} />
+              </div>
+            </section>
+          );
+        })}
+        {csv ? (
+          <p className="text-xs text-muted-foreground">
+            CSV 只保存数据。
+            <Button variant="ghost" onClick={() => askAgent("save-as-xlsx")}>
+              让助手另存为 XLSX
+            </Button>
+          </p>
+        ) : (
+          <details>
+            <summary>表格与高级格式</summary>
+            <div className="em-mobile-format-advanced">
+              <div>
+                <span>格式刷</span>
+                <FormatPainter api={api} disabled={ctx.off} />
+              </div>
+              <div>
+                <span>条件格式</span>
+                <ConditionalFormats api={api} disabled={ctx.off} />
+              </div>
+              <div>
+                <span>定义名称</span>
+                <DefinedNames api={api} disabled={ctx.off} />
+              </div>
+              <div>
+                <span>表对象</span>
+                <TableManagerPanel api={api} disabled={ctx.off} />
+              </div>
+              <div>
+                <span>数组公式</span>
+                <ArrayFormulas api={api} disabled={ctx.off} />
+              </div>
+            </div>
+          </details>
+        )}
+      </div>
+    );
+  }
   const hidden = keys.slice(visible);
   return (
     <div
@@ -902,14 +1077,35 @@ export function FormatToolbar({
       aria-label="格式"
       className="flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden"
     >
+      <ToolButton
+        icon={Search}
+        label="查找与替换（Ctrl/⌘+F）"
+        disabled={!api}
+        onClick={() => {
+          if (api) void exec(api, OpenFindDialogOperation.id);
+        }}
+      />
+      {!csv && <FormatPainter api={api} disabled={ctx.off} />}
+      {!csv && <ConditionalFormats api={api} disabled={ctx.off} />}
+      {!csv && <DefinedNames api={api} disabled={ctx.off} />}
+      {!csv && <TableManagerPanel api={api} disabled={ctx.off} />}
+      {!csv && <ArrayFormulas api={api} disabled={ctx.off} />}
       <Groups keys={keys.slice(0, visible)} ctx={ctx} />
       {csv && (
         <>
           <Divider />
           <span className="flex min-w-0 items-center gap-1.5 px-1 text-xs text-muted-foreground">
             <Info className="size-3.5 shrink-0" />
-            <span className="truncate">CSV 只保存数据；需要格式请另存为 xlsx</span>
+            <span className="truncate">CSV 只保存数据</span>
           </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="shrink-0 text-xs"
+            onClick={() => askAgent("save-as-xlsx")}
+          >
+            让助手另存为 XLSX
+          </Button>
         </>
       )}
       {hidden.length > 0 && (

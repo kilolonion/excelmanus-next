@@ -2,7 +2,7 @@
  * 工作区文件的唯一 kind 表。
  *
  * 打开入口、图标、tooltip、聊天路径、侧栏都走这里。spreadsheet 与活文档一致：
- * .xlsx/.xlsm/.csv/.tsv 可在工作台打开；.xls/.xlsb 暂不支持导入（legacy，只能下载）。
+ * .xlsx/.xlsm/.csv/.tsv 可在工作台打开；.xls/.xlsb 经确认导入为新 .xlsx（legacy）。
  * 视觉附件资格（isVisionImageFile）单独列出：svg 可预览，默认不送进模型。
  * 未知后缀按 text 预览，读不出 UTF-8 时预览会提示改为下载。
  */
@@ -244,7 +244,7 @@ export function workspaceFileOpenHint(filename: string): string {
     case "spreadsheet":
       return "单击: 侧边面板 | 双击: 全屏";
     case "legacy-spreadsheet":
-      return "暂不支持在工作台打开，请另存为 .xlsx | 单击: 下载";
+      return "单击: 导入为新 .xlsx（原文件保留）";
     case "image":
     case "text":
       return "单击: 预览 | 菜单: 下载";
@@ -270,6 +270,21 @@ export function isWorkspaceFileHref(href: string): boolean {
   const kind = classifyWorkspaceFile(name);
   if (kind !== "binary") return true;
   return KNOWN_BINARY_EXTENSIONS.has(getExtension(name));
+}
+
+/** 自动识别聊天文字比显式链接保守，避免把点号、JSON 和工具代码当文件。 */
+export function isWorkspaceFileReference(text: string): boolean {
+  if (!isWorkspaceFileHref(text) || /[{}<>="`]/.test(text)) return false;
+  const name = lastPathSegment(text);
+  const ext = getExtension(name);
+  return (
+    isSpecialTextName(name) ||
+    SPREADSHEET_EXTENSIONS.has(ext) ||
+    LEGACY_SPREADSHEET_EXTENSIONS.has(ext) ||
+    IMAGE_EXTENSIONS.has(ext) ||
+    TEXT_EXTENSIONS.has(ext) ||
+    KNOWN_BINARY_EXTENSIONS.has(ext)
+  );
 }
 
 function acceptList(exts: Set<string>): string[] {

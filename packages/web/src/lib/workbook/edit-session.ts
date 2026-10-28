@@ -55,8 +55,13 @@ export class EditTracker {
     if (this.cur) this.cur.draft = text;
   }
 
-  end(): void {
-    if (this.cur) this.ended = { ...this.cur, at: Date.now() };
+  currentDraft(): { sheetId: string; row: number; col: number; text: string; baseRev: number } | null {
+    const e = this.cur;
+    return e?.draft === undefined ? null : { sheetId: e.sheetId, row: e.row, col: e.col, text: e.draft, baseRev: e.baseRev };
+  }
+
+  end(confirmed = true): void {
+    this.ended = confirmed && this.cur ? { ...this.cur, at: Date.now() } : null;
     this.cur = null;
   }
 
@@ -82,4 +87,27 @@ export class EditTracker {
     e.draft = undefined;
     return { sheetId: e.sheetId, row: e.row, col: e.col, text, theirs };
   }
+}
+
+interface DraftWorkbook {
+  endEditingAsync(save?: boolean): Promise<boolean>;
+  getSheetBySheetId(id: string):
+    | {
+        getRange(row: number, col: number): { setValue(value: string): unknown };
+      }
+    | null
+    | undefined;
+}
+
+/** Resolve a recovered draft only after abandoning the editor's stale pending value. */
+export async function resolveDraftInput(
+  workbook: DraftWorkbook,
+  draft: Clash,
+  choice: "mine" | "theirs",
+): Promise<void> {
+  if (!(await workbook.endEditingAsync(false))) throw new Error("未能结束单元格编辑，请重试");
+  if (choice === "theirs") return;
+  const sheet = workbook.getSheetBySheetId(draft.sheetId);
+  if (!sheet) throw new Error("工作表已关闭，输入草稿仍保留");
+  await sheet.getRange(draft.row, draft.col).setValue(draft.text);
 }

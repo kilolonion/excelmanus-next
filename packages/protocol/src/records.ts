@@ -3,7 +3,10 @@
 
 import { z } from "zod";
 import { FileIntentMeta } from "./files.ts";
+import { HarnessEvent } from "./harness.ts";
 import { ClassifiedError, ErrorGuidance, JsonObject, ToolCall, Usage } from "./neutral.ts";
+import { ContractRef } from "./task-contract.ts";
+import { AccessFact, TurnAccessBinding } from "./turn-access.ts";
 
 // ---------- 06 §2.3 统一工具结果 ----------
 
@@ -71,6 +74,12 @@ export type ToolResult = z.infer<typeof ToolResult>;
 export const TOOL_ERROR_CODE_ALIASES: Readonly<Record<string, ToolErrorCode>> = {
   DOC_NOT_FOUND: "NOT_FOUND",
   BAD_OPERATION: "INVALID_ARGUMENT",
+  INVALID_IMAGE: "INTERNAL",
+  // 宿主来源完整性诊断；交付入口仍保留既有 INVALID_ARGUMENT 拒绝分类。
+  CREATE_PROVENANCE_CONTEXT_MISSING: "INTERNAL",
+  CREATE_PROVENANCE_SCAN_INCOMPLETE: "INTERNAL",
+  CREATE_PROVENANCE_INVALID: "INTERNAL",
+  CREATE_PROVENANCE_ORIGIN_CHANGED: "INTERNAL",
 };
 
 /** 不在词表内的码按语义归入词表（06 §9）；用于运行时写 tool.result 前的边界收敛。 */
@@ -168,6 +177,16 @@ export const PresentPayload = z.discriminatedUnion("kind", [
 export type PresentPayload = z.infer<typeof PresentPayload>;
 
 export const RECORD_DATA_SCHEMAS = {
+  "harness.event": HarnessEvent,
+  "harness.progress": z.object({
+    taskId: z.string(),
+    kind: z.enum(["attempt", "termination", "drain"]),
+    attemptKey: z.string().optional(),
+    progressKey: z.string().optional(),
+    proofKeys: z.array(z.string()).optional(),
+    resolvedFailureKeys: z.array(z.string()).optional(),
+    nonproductivePreflight: z.boolean().optional(),
+  }),
   "session.created": z.object({
     workspaceId: z.string(),
     title: z.string().nullable().optional(),
@@ -182,6 +201,7 @@ export const RECORD_DATA_SCHEMAS = {
     permissionMode: PermissionMode.optional(),
   }),
   "agent.spawned": z.object({
+    accessOrigin: z.object({ agentId: z.string(), turnId: z.string() }).optional(),
     role: AgentRole,
     parentId: z.string().nullable().optional(),
     name: z.string().optional(),
@@ -202,12 +222,26 @@ export const RECORD_DATA_SCHEMAS = {
     kind: z.enum(["agent", "report", "notice", "user"]),
     message: z.string(),
     urgent: z.boolean().optional(),
+    /** Runtime-owned child outcome; agent_send cannot supply this metadata. */
+    numericDelivery: z
+      .object({
+        turnId: z.string(),
+        outcome: z.enum(["completed", "failed", "interrupted"]),
+      })
+      .optional(),
   }),
   "inbox.delivered": z.object({
     messageId: z.string(),
     toAgentId: z.string(),
   }),
   "user.message": z.object({
+    /** Server ingress only; synthetic child task messages are not user authority. */
+    accessInputOrigin: z.enum(["user", "agent"]).optional(),
+    contractRef: ContractRef.optional(),
+    inputUploadIds: z.array(z.string()).max(64).optional(),
+    taskRelation: z.enum(["new", "continue"]).optional(),
+    deferredContextValidation: z.boolean().optional(),
+    unscopedContextRead: z.boolean().optional(),
     dispatchId: z.string(),
     clientMessageId: z.string(),
     replacesDispatchId: z.string().optional(),
@@ -254,7 +288,28 @@ export const RECORD_DATA_SCHEMAS = {
     dispatchId: z.string(),
     status: DispatchStatus,
   }),
-  "turn.started": z.object({ turnId: z.string() }),
+  "turn.started": z.object({
+    turnId: z.string(),
+    accessBinding: TurnAccessBinding.optional(),
+    /** Explicit continuation retains an unfinished numeric delivery obligation. */
+    numericDeliveryRequired: z.literal(true).optional(),
+  }),
+  "turn.context.validated": z.object({ turnId: z.string(), dispatchId: z.string() }),
+  "turn.access.updated": z.object({ turnId: z.string(), accessBinding: TurnAccessBinding }),
+  "access.unscoped": z.object({
+    turnId: z.string(),
+    originAgentId: z.string(),
+    originTurnId: z.string(),
+  }),
+  "access.fact": AccessFact,
+  "access.batch": z.object({
+    batchId: z.string(),
+    turnId: z.string(),
+    originAgentId: z.string(),
+    originTurnId: z.string(),
+    toolCallId: z.string(),
+    status: z.enum(["started", "closed"]),
+  }),
   "turn.completed": z.object({
     turnId: z.string(),
     reason: z.string(),
@@ -265,6 +320,8 @@ export const RECORD_DATA_SCHEMAS = {
     turnId: z.string(),
     /** restart：服务重启时由恢复流程补写；stopped 或缺省：用户/系统主动停止。 */
     reason: z.enum(["stopped", "restart"]).optional(),
+    /** 仅认证宿主停止入口标记当前轮；缺省不推断为用户取消。 */
+    cancellationCause: z.literal("user").optional(),
   }),
   "step.started": z.object({
     turnId: z.string(),
@@ -275,6 +332,10 @@ export const RECORD_DATA_SCHEMAS = {
   "model.output": z.object({
     stepId: z.string(),
     text: z.string().optional(),
+    /** Rejected draft is retained for diagnosis, never projected as assistant text. */
+    withheldText: z.string().optional(),
+    sourceToolCallId: z.string().optional(),
+    deliveryStatus: z.enum(["complete", "incomplete", "rejected"]).optional(),
     reasoning: z.string().optional(),
     reasoningProviderOptions: JsonObject.optional(),
     toolCalls: z.array(ToolCall).optional(),
@@ -311,6 +372,7 @@ export const RECORD_DATA_SCHEMAS = {
   "approval.decided": z.object({
     approvalId: z.string(),
     decision: ApprovalDecision,
+    cause: z.enum(["user", "cancelled", "timeout", "system"]).optional(),
     reason: z.string().optional(),
     remember: z.boolean().optional(),
   }),

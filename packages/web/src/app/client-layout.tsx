@@ -1,19 +1,24 @@
+import { useIsMobile } from "@/hooks/use-mobile";
 // 应用外壳：侧栏 + 顶栏 + 主区域（对话 / 全屏表格）+ 表格侧边面板 + 全局浮层。
 
 import { lazy, Suspense, useEffect } from "react";
 import { BackgroundTasks } from "@/components/chat/BackgroundTasks";
 import { ChatSessionHeader } from "@/components/chat/ChatSessionHeader";
 import { ChatWorkspaceTabs } from "@/components/chat/ChatWorkspaceTabs";
+import { MobileNewConversation } from "@/components/chat/MobileComposerTools";
 import { TopModelSelector } from "@/components/chat/TopModelSelector";
 import { QuickOpen } from "@/components/command/QuickOpen";
 import { CompareDialog } from "@/components/excel/CompareDialog";
+import { ExcelSidePanel } from "@/components/excel/ExcelSidePanel";
 import { OpenWorkbookDialog } from "@/components/excel/OpenWorkbookDialog";
 import { WorkbookPanelButton } from "@/components/excel/WorkbookPanelButton";
 import { FilePreviewHost } from "@/components/files/FilePreviewHost";
 import { Sidebar, SidebarToggle } from "@/components/sidebar/Sidebar";
 import { ConfirmHost } from "@/components/ui/confirm-dialog";
+import { LazyRegion } from "@/components/ui/LazyRegion";
 import { Toaster, toast } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { MobileWorkspaceNav } from "@/components/workspace/MobileWorkspaceNav";
 import { ReconnectBar } from "@/components/workspace/ReconnectBar";
 import { desktop } from "@/lib/backend/api";
 import { installShortcuts } from "@/lib/shortcuts";
@@ -23,12 +28,8 @@ import { useUIStore } from "@/stores/ui-store";
 import { useWorkbookStore } from "@/stores/workbook-store";
 import { HomePage } from "./home-page";
 
-const SettingsDialog = lazy(() =>
-  import("@/components/settings/SettingsDialog").then((m) => ({ default: m.SettingsDialog })),
-);
-const ExcelSidePanel = lazy(() =>
-  import("@/components/excel/ExcelSidePanel").then((m) => ({ default: m.ExcelSidePanel })),
-);
+const loadSettings = () =>
+  import("@/components/settings/SettingsDialog").then((m) => ({ default: m.SettingsDialog }));
 const OnboardingWizard = lazy(() =>
   import("@/components/onboarding/OnboardingWizard").then((m) => ({ default: m.OnboardingWizard })),
 );
@@ -55,18 +56,28 @@ function useDesktopBridge() {
 
 function WorkspaceOverlays() {
   const settingsOpen = useUIStore((s) => s.settingsOpen);
+  const closeSettings = useUIStore((s) => s.closeSettings);
   const panelOpen = useWorkbookStore((s) => s.panelOpen && !s.fullView);
-  const needsSetup = useAppStore((s) => !s.hasModelProfile);
+  const needsSetup = useAppStore((s) => s.profilesLoaded && !s.hasModelProfile);
   return (
-    <Suspense fallback={null}>
-      {settingsOpen && <SettingsDialog />}
-      {needsSetup && !settingsOpen && <OnboardingWizard />}
+    <>
+      {settingsOpen && (
+        <LazyRegion
+          load={loadSettings}
+          componentProps={{}}
+          label="设置"
+          onClose={closeSettings}
+          dialog
+        />
+      )}
+      <Suspense fallback={null}>{needsSetup && !settingsOpen && <OnboardingWizard />}</Suspense>
       {panelOpen && <ExcelSidePanel />}
-    </Suspense>
+    </>
   );
 }
 
 export function ClientLayout() {
+  const isMobile = useIsMobile();
   useDesktopBridge();
   return (
     <TooltipProvider delayDuration={300}>
@@ -84,15 +95,16 @@ export function ClientLayout() {
                 <ChatWorkspaceTabs />
               </div>
               <div className="em-topbar-actions ml-auto flex min-w-0 flex-shrink-0 items-center gap-1 sm:gap-1.5 md:gap-2">
-                <TopModelSelector />
+                {!isMobile && <TopModelSelector />}
                 <BackgroundTasks />
-                <WorkbookPanelButton />
+                {isMobile ? <MobileNewConversation /> : <WorkbookPanelButton />}
               </div>
             </div>
           </div>
           <div className="min-h-0 flex-1 overflow-hidden">
             <HomePage />
           </div>
+          {isMobile && <MobileWorkspaceNav />}
         </main>
         <WorkspaceOverlays />
         <FilePreviewHost />

@@ -1,3 +1,4 @@
+import { createTestProfile } from "./fixtures/create-model.ts";
 // 02 §4.7：用户改了代理读过的区域时，代理下一步收到 context.notice（kind=doc.edited）。
 
 import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
@@ -54,7 +55,7 @@ async function setup(model: MockLanguageModelV4) {
   servers.push(srv);
   copyFileSync(SAMPLE_XLSX, join(srv.workspaceRoot, "sales.xlsx"));
   const api = createApiClient(srv.url, srv.token);
-  await api.createModelProfile({
+  await createTestProfile(api, {
     name: "mock",
     provider: "custom-openai-compatible",
     model: "mock",
@@ -228,6 +229,11 @@ test("新建空文件、文件来源历史与最近打开时间", async () => {
   expect(files.items.find((f) => f.path === "sales.xlsx")?.openedAt).toBeTypeOf("string");
   expect(files.items.find((f) => f.path === "备注.md")?.openedAt).toBeUndefined();
 
+  const backups = await api.listBackups(wsId, "backups");
+  expect(backups.items.find((b) => b.originalPath === "sales.xlsx")).toMatchObject({
+    sourceKind: "user",
+  });
+
   const history = await api.fileHistory(wsId, "sales.xlsx");
   expect(history.events[0]).toMatchObject({
     kind: "modified",
@@ -235,4 +241,28 @@ test("新建空文件、文件来源历史与最近打开时间", async () => {
     rev: 1,
     changes: { ranges: ["'销售'!B2"] },
   });
+}, 60_000);
+
+test("活文档移动后保留身份、修订和编辑能力，拒绝覆盖及改变扩展名", async () => {
+  const { api, session, document, submit, cell, close } = await setup(
+    new MockLanguageModelV4({ provider: "mock", modelId: "mock" }),
+  );
+  const wsId = session.workspaceId;
+  try {
+    await submit("move-before", 1, 1);
+    await api.manageFiles(wsId, { ops: [{ op: "move", path: "sales.xlsx", to: "归档/改名.xlsx" }] });
+    const moved = await api.getDocSnapshot(wsId, document.id);
+    expect(moved.document).toMatchObject({ id: document.id, path: "归档/改名.xlsx", rev: 1 });
+    expect((await api.openDoc(wsId, { path: "归档/改名.xlsx" })).document.id).toBe(document.id);
+    await expect(api.openDoc(wsId, { path: "sales.xlsx" })).rejects.toBeDefined();
+    await submit("move-after", 2, 1);
+    expect(await cell(2, 1)).toBe("用户move-after");
+    expect((await api.listDocRevisions(wsId, document.id)).items).toHaveLength(2);
+    await api.createFile(wsId, "占用.xlsx");
+    await expect(api.manageFiles(wsId, { ops: [{ op: "move", path: "归档/改名.xlsx", to: "占用.xlsx" }] })).rejects.toBeDefined();
+    await expect(api.manageFiles(wsId, { ops: [{ op: "move", path: "归档/改名.xlsx", to: "改名.csv" }] })).rejects.toBeDefined();
+    expect((await api.getDocSnapshot(wsId, document.id)).document.path).toBe("归档/改名.xlsx");
+  } finally {
+    close();
+  }
 }, 60_000);

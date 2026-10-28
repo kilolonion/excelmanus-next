@@ -23,6 +23,8 @@ export interface DocChangeSummary {
   /** 新增对象（新工作表等）。 */
   added: string[];
   backupPath?: string;
+  /** Stored metadata lacked a sheet name; the summary used its stable sheetId. */
+  metadataLimited?: boolean;
 }
 
 export interface ChangeSummarySource {
@@ -31,6 +33,8 @@ export interface ChangeSummarySource {
     sessionId: string;
     workspaceRoot: string;
     toolCallIds: string[];
+    /** Host-owned: a scoped terminal summary may not trigger new document/filesystem reads. */
+    storedOnly?: boolean;
   }): Promise<DocChangeSummary[]>;
 }
 
@@ -91,6 +95,7 @@ export function describeDocChange(c: DocChangeSummary): string {
     ...(c.structural.length > 0 ? [`结构：${c.structural.join("、")}`] : []),
     ...(c.added.length > 0 ? [`新增：${c.added.join("、")}`] : []),
     ...(c.backupPath ? [`备份：${c.backupPath}`] : []),
+    ...(c.metadataLimited ? ["已存工作表名称元数据不足，缺失名称以 sheetId 表示"] : []),
   ];
   return parts.join("；");
 }

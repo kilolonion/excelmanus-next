@@ -4,7 +4,14 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { v1EvalCases } from "../fixtures/v1-evals/cases.ts";
-import { CreateModelProfileBody } from "../packages/protocol/src/index.ts";
+import {
+  CreateModelProfileBody,
+  CreateProviderConnectionBody,
+} from "../packages/protocol/src/index.ts";
+
+const EvaluationProfile = CreateProviderConnectionBody.extend(
+  CreateModelProfileBody.omit({ connectionId: true }).shape,
+);
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -24,7 +31,7 @@ if (args.length === 0 || args[0] === "--validate") {
   // Validate all profiles before spending on any model. Never print profile contents.
   try {
     const parsed = profiles.map((path) =>
-      CreateModelProfileBody.parse(JSON.parse(readFileSync(path, "utf8"))),
+      EvaluationProfile.parse(JSON.parse(readFileSync(path, "utf8"))),
     );
     if (parsed.some((p) => p.accountId)) throw new Error("subscription");
     if (new Set(parsed.map((p) => `${p.provider}/${p.model}`)).size !== 3)

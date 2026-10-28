@@ -1,6 +1,7 @@
 import type { Dispatch, MutableRefObject, RefObject, SetStateAction } from "react";
 import { useCallback } from "react";
 import { fileName, normalizePath } from "@/lib/paths";
+import { extractMentions } from "./mention-tokens";
 
 /**
  * 工作区文件在消息文本里的引用：`@相对路径`（见 mention-tokens）。
@@ -149,26 +150,106 @@ export function scheduleTextareaCursor(
   });
 }
 
-/**
- * 发送前把可见 display 还原为协议串。按 display 长度降序替换，
- * 避免短标签成为长标签的子串（如 `订单与产品.xlsx` 命中
- * `uploads/订单与产品.xlsx · Sheet1!B1`）。占位符两趟是为了防止
- * 已替换的 full token 内部再次命中短 display。
- */
+type MentionTrie = { children: Map<string, MentionTrie>; token?: string };
+const mentionBoundary = (c: string | undefined) =>
+  !c || /[\s,;!?，；！？、。:：()（）"'“”]/.test(c);
+
+function buildMentionTrie(tokens: Iterable<string>): MentionTrie {
+  const root: MentionTrie = { children: new Map() };
+  for (const token of tokens) {
+    if (!token) continue;
+    let node = root;
+    for (let i = 0; i < token.length; i++) {
+      let next = node.children.get(token[i]);
+      if (!next) {
+        next = { children: new Map() };
+        node.children.set(token[i], next);
+      }
+      node = next;
+    }
+    node.token = token;
+  }
+  return root;
+}
+
+/** Match complete tokens, longest first, without replacing text inside another filename. */
+export function mentionOccurrences(text: string, tokens: Iterable<string>) {
+  const root = buildMentionTrie(tokens);
+  const spans: { start: number; end: number; token: string }[] = [];
+  if (root.children.size === 0) return spans;
+  for (let i = 0; i < text.length; i++) {
+    let node = root.children.get(text[i]);
+    if (!node || !mentionBoundary(text[i - 1])) continue;
+    let token: string | undefined;
+    for (let end = i + 1; node; end++) {
+      if (node.token && mentionBoundary(text[end])) token = node.token;
+      node = node.children.get(text[end]);
+    }
+    if (!token) continue;
+    spans.push({ start: i, end: i + token.length, token });
+    i += token.length - 1;
+  }
+  return spans;
+}
+
+/** Keep confirmed labels that are still present, preserving their full-path mappings. */
+export function reconcileMentionTokens(
+  text: string,
+  previous: Set<string>,
+  tokenMap: Map<string, string>,
+): Set<string> {
+  if (previous.size === 0) return previous;
+  const root = buildMentionTrie(previous);
+  const present = new Set<string>();
+  // Unlike display matching, presence includes overlapping complete labels.
+  for (let i = 0; i < text.length; i++) {
+    let node = root.children.get(text[i]);
+    if (!node || !mentionBoundary(text[i - 1])) continue;
+    for (let end = i + 1; node; end++) {
+      if (node.token && mentionBoundary(text[end])) present.add(node.token);
+      node = node.children.get(text[end]);
+    }
+  }
+  let changed = false;
+  const next = new Set<string>();
+  previous.forEach((token) => {
+    if (present.has(token)) next.add(token);
+    else {
+      changed = true;
+      tokenMap.delete(token);
+    }
+  });
+  return changed ? next : previous;
+}
+
 export function applyDisplayReplacements(text: string, tokenMap: Map<string, string>): string {
-  if (tokenMap.size === 0) return text;
-  const entries = [...tokenMap.entries()].sort((a, b) => b[0].length - a[0].length);
-  const marks = entries.map((_, i) => `\u0000EM${i}\u0000`);
-  let result = text;
-  for (let i = 0; i < entries.length; i++) {
-    const display = entries[i][0];
-    if (!display) continue;
-    result = result.replaceAll(display, marks[i]);
+  let cursor = 0;
+  let result = "";
+  for (const span of mentionOccurrences(text, tokenMap.keys())) {
+    result += text.slice(cursor, span.start) + tokenMap.get(span.token);
+    cursor = span.end;
   }
-  for (let i = 0; i < entries.length; i++) {
-    result = result.replaceAll(marks[i], entries[i][1]);
+  return result + text.slice(cursor);
+}
+
+/** Drafts persist full paths; restore their visible labels without losing identity. */
+export function restoreMentionDraft(raw: string) {
+  const map = new Map<string, string>();
+  const tokens = new Set<string>();
+  let text = "";
+  let cursor = 0;
+  const spans = extractMentions(raw).filter((t) => t.kind === "file");
+  const labels = toDisplayMentionTokens(
+    spans.map((span) => span.raw),
+    map,
+  );
+  for (const [index, span] of spans.entries()) {
+    const label = labels[index];
+    tokens.add(label);
+    text += raw.slice(cursor, span.start) + label;
+    cursor = span.end;
   }
-  return result;
+  return { text: text + raw.slice(cursor), map, tokens };
 }
 
 export function toDisplayMentionTokens(
@@ -180,7 +261,7 @@ export function toDisplayMentionTokens(
     const { display: preferred, full } = formatMentionDisplay(fullToken);
     const display = resolveUniqueDisplay(fullToken, preferred, taken, tokenMap);
     taken.add(display);
-    if (display !== full) tokenMap.set(display, full);
+    tokenMap.set(display, full);
     return display;
   });
 }

@@ -1,7 +1,8 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { FolderOpen, MessageSquare, PanelLeft, PanelLeftClose } from "lucide-react";
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { LazyRegion } from "@/components/ui/LazyRegion";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { sidebarContentVariants, useMotionSafe } from "@/lib/sidebar-motion";
 import { useSessionStore } from "@/stores/session-store";
@@ -9,14 +10,7 @@ import { useUIStore } from "@/stores/ui-store";
 import { SessionList } from "./SessionList";
 import { StatusFooter } from "./StatusFooter";
 
-const ExcelFilesBar = lazy(() =>
-  import("./ExcelFilesBar").then((m) => ({ default: m.ExcelFilesBar })),
-);
-const filesLoading = (
-  <div role="status" className="p-4 text-xs text-muted-foreground">
-    正在准备文件列表…
-  </div>
-);
+const loadFiles = () => import("./ExcelFilesBar").then((m) => ({ default: m.ExcelFilesBar }));
 
 const tabs: { key: "chats" | "files"; label: string; icon: typeof MessageSquare }[] = [
   { key: "chats", label: "对话", icon: MessageSquare },
@@ -25,34 +19,47 @@ const tabs: { key: "chats" | "files"; label: string; icon: typeof MessageSquare 
 
 /** 移动端左滑收起侧栏。 */
 function useSwipeToClose(enabled: boolean, onClose: () => void) {
-  const touchRef = useRef<{ startX: number; startY: number; startTime: number } | null>(null);
+  const touchRef = useRef<{ id: number; startX: number; startY: number; startTime: number } | null>(
+    null,
+  );
 
   const onTouchStart = useCallback(
     (e: React.TouchEvent) => {
-      if (!enabled) return;
+      touchRef.current = null;
+      if (!enabled || e.touches.length !== 1) return;
       const t = e.touches[0];
-      touchRef.current = { startX: t.clientX, startY: t.clientY, startTime: Date.now() };
+      touchRef.current = {
+        id: t.identifier,
+        startX: t.clientX,
+        startY: t.clientY,
+        startTime: Date.now(),
+      };
     },
     [enabled],
   );
 
   const onTouchEnd = useCallback(
     (e: React.TouchEvent) => {
-      if (!enabled || !touchRef.current) return;
-      const t = e.changedTouches[0];
-      const dx = t.clientX - touchRef.current.startX;
-      const dy = Math.abs(t.clientY - touchRef.current.startY);
-      const dt = Date.now() - touchRef.current.startTime;
+      const start = touchRef.current;
       touchRef.current = null;
+      const t = e.changedTouches[0];
+      if (!enabled || !start || e.touches.length || t?.identifier !== start.id) return;
+      const dx = t.clientX - start.startX;
+      const dy = Math.abs(t.clientY - start.startY);
+      const dt = Date.now() - start.startTime;
       // 左滑：dx < -60px，基本水平，400ms 内
-      if (dx < -60 && dy < 80 && dt < 400) {
+      if (dx < -60 && dy < 80 && -dx > dy && dt < 400) {
         onClose();
       }
     },
     [enabled, onClose],
   );
 
-  return { onTouchStart, onTouchEnd };
+  const onTouchCancel = useCallback(() => {
+    touchRef.current = null;
+  }, []);
+  useEffect(onTouchCancel, [enabled, onTouchCancel]);
+  return { onTouchStart, onTouchEnd, onTouchCancel };
 }
 
 export function Sidebar() {
@@ -80,7 +87,7 @@ export function Sidebar() {
   // Framer Motion 的动画状态，否则关闭动画完成后快速重新打开时，store 已经
   // 是 true，但 aside 仍可能停留在动画留下的 0px，导致打开按钮消失而侧栏不见。
   // 移动端保持固定宽度，只动画 transform，避免每一帧重排会话列表。
-  const mobileSidebarWidth = "min(88vw, 360px)";
+  const mobileSidebarWidth = "min(100vw, 420px)";
   const desktopSidebarWidth = sidebarOpen ? "320px" : "0px";
   const sidebarTransition =
     shouldReduce || isFirstRender.current
@@ -149,6 +156,7 @@ export function Sidebar() {
         }}
         onTouchStart={swipe.onTouchStart}
         onTouchEnd={swipe.onTouchEnd}
+        onTouchCancel={swipe.onTouchCancel}
       >
         {/* Inner content container with fixed width to prevent layout shifts */}
         <motion.div
@@ -163,36 +171,42 @@ export function Sidebar() {
         >
           {/* Header */}
           <div className="em-sidebar-header flex items-center justify-between px-4 pt-4 pb-3 flex-shrink-0">
-            <div className="em-brand-lockup">
-              <img
-                src="/logo.svg"
-                alt="ExcelManus"
-                width={180}
-                height={60}
-                loading="lazy"
-                className="em-brand-logo em-brand-logo-light"
-              />
-              <img
-                src="/logo-dark.svg"
-                alt="ExcelManus"
-                width={180}
-                height={60}
-                loading="lazy"
-                className="em-brand-logo em-brand-logo-dark"
-              />
-              <span className="em-brand-status" aria-label="ExcelManus 已就绪">
-                <span className="em-brand-status-dot" />
-                <span>工作台</span>
-              </span>
-            </div>
+            {isMobile ? (
+              <h2 className="text-base font-semibold">
+                {activeTab === "files" ? "工作区文件" : "历史对话"}
+              </h2>
+            ) : (
+              <div className="em-brand-lockup">
+                <img
+                  src="/logo.svg"
+                  alt="ExcelManus"
+                  width={180}
+                  height={60}
+                  loading="lazy"
+                  className="em-brand-logo em-brand-logo-light"
+                />
+                <img
+                  src="/logo-dark.svg"
+                  alt="ExcelManus"
+                  width={180}
+                  height={60}
+                  loading="lazy"
+                  className="em-brand-logo em-brand-logo-dark"
+                />
+                <span className="em-brand-status" aria-label="ExcelManus 已就绪">
+                  <span className="em-brand-status-dot" />
+                  <span>工作台</span>
+                </span>
+              </div>
+            )}
             <Button
               variant="ghost"
               size="icon"
               onClick={closeSidebar}
-              aria-label="收起侧栏"
+              aria-label={isMobile ? "返回工作区" : "收起侧栏"}
               className="h-7 w-7 min-h-8 min-w-8 flex-shrink-0"
             >
-              <PanelLeftClose className="h-4 w-4" />
+              {isMobile ? "返回" : <PanelLeftClose className="h-4 w-4" />}
             </Button>
           </div>
 
@@ -245,15 +259,21 @@ export function Sidebar() {
                 </div>
               ) : (
                 <div className="h-full min-h-0">
-                  <Suspense fallback={filesLoading}>
-                    <ExcelFilesBar />
-                  </Suspense>
+                  <LazyRegion
+                    load={loadFiles}
+                    componentProps={{}}
+                    label="文件列表"
+                    onClose={() => setActiveTab("chats")}
+                  />
                 </div>
               ))}
           </div>
 
           {/* Footer */}
-          <div style={{ paddingBottom: isMobile ? "env(safe-area-inset-bottom)" : undefined }}>
+          <div
+            className="shrink-0"
+            style={{ paddingBottom: isMobile ? "env(safe-area-inset-bottom)" : undefined }}
+          >
             <StatusFooter />
           </div>
         </motion.div>

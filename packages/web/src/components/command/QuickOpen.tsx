@@ -18,8 +18,11 @@ import {
 } from "lucide-react";
 import { Dialog } from "radix-ui";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { FileTypeIcon } from "@/components/ui/file-type-icon";
+import { errorMessage } from "@/lib/backend/api";
 import { openWorkspaceFile } from "@/lib/open-file";
+import { rankQuickOpenItems } from "@/lib/quick-open-search";
 import { isMac, runShortcut, type ShortcutAction } from "@/lib/shortcuts";
 import { isDarkTheme, setTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
@@ -38,6 +41,10 @@ interface Item {
   run: () => void;
 }
 
+function indexItems(items: Item[]) {
+  return items.map((item) => ({ item, text: `${item.title} ${item.hint ?? ""}`.toLowerCase() }));
+}
+
 const COMMANDS: { action: ShortcutAction; title: string; icon: LucideIcon; key: string }[] = [
   { action: "new-session", title: "新对话", icon: Plus, key: "N" },
   { action: "focus-workbench", title: "打开或聚焦表格", icon: Sheet, key: "1" },
@@ -45,26 +52,6 @@ const COMMANDS: { action: ShortcutAction; title: string; icon: LucideIcon; key: 
   { action: "toggle-sidebar", title: "切换侧栏", icon: PanelLeft, key: "B" },
   { action: "settings", title: "打开设置", icon: Settings, key: "," },
 ];
-
-/** 子序列匹配打分：连续命中、词首命中加分；不匹配返回 -1。 */
-function score(text: string, query: string): number {
-  if (!query) return 0;
-  const t = text.toLowerCase();
-  const q = query.toLowerCase();
-  const direct = t.indexOf(q);
-  if (direct >= 0) return 1000 - direct * 2 - t.length * 0.1;
-  let ti = 0;
-  let total = 0;
-  let streak = 0;
-  for (const ch of q) {
-    const found = t.indexOf(ch, ti);
-    if (found < 0) return -1;
-    streak = found === ti ? streak + 1 : 0;
-    total += 10 + streak * 5 - Math.min(found - ti, 10);
-    ti = found + 1;
-  }
-  return total;
-}
 
 function sessionTitle(s: SessionSummary): string {
   return s.title?.trim() || "新对话";
@@ -89,9 +76,22 @@ export function QuickOpen() {
   );
 }
 
+export async function readQuickOpenFiles(
+  isActive = () => true,
+): Promise<{ files: FileEntry[]; error: string | null }> {
+  try {
+    return { files: await listAllFiles(800, 5, isActive), error: null };
+  } catch (error) {
+    return { files: [], error: errorMessage(error, "文件列表读取失败") };
+  }
+}
+
 function QuickOpenBody({ onDone }: { onDone: () => void }) {
   const [query, setQuery] = useState("");
   const [files, setFiles] = useState<FileEntry[]>([]);
+  const [filesLoading, setFilesLoading] = useState(true);
+  const [filesError, setFilesError] = useState<string | null>(null);
+  const [filesRetry, setFilesRetry] = useState(0);
   const [active, setActive] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
   const sessions = useSessionStore((s) => s.sessions);
@@ -105,18 +105,23 @@ function QuickOpenBody({ onDone }: { onDone: () => void }) {
 
   useEffect(() => {
     let alive = true;
-    void listAllFiles(800, 5)
-      .then((items) => alive && setFiles(items))
-      .catch(() => undefined);
+    setFilesLoading(true);
+    setFilesError(null);
+    void readQuickOpenFiles(() => alive).then((result) => {
+      if (!alive) return;
+      setFiles(result.files);
+      setFilesError(result.error);
+      setFilesLoading(false);
+    });
     return () => {
       alive = false;
     };
-  }, []);
+  }, [filesRetry]);
 
-  const items = useMemo(() => {
+  const dark = isDarkTheme();
+  const commands = useMemo<Item[]>(() => {
     const mod = isMac() ? "⌘" : "Ctrl+";
-    const dark = isDarkTheme();
-    const commands: Item[] = [
+    return [
       ...COMMANDS.map((c) => ({
         id: `cmd:${c.action}`,
         group: "命令" as const,
@@ -163,40 +168,51 @@ function QuickOpenBody({ onDone }: { onDone: () => void }) {
         run: () => setTheme(dark ? "light" : "dark"),
       },
     ];
-    const chats: Item[] = sessions
+  }, [busy, hasSubagents, dark]);
+  const chats = useMemo<Item[]>(() => {
+    const dateFormat = new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric" });
+    const dateHint = (updatedAt: string) => {
+      const date = new Date(updatedAt);
+      return Number.isNaN(date.getTime())
+        ? date.toLocaleDateString("zh-CN", { month: "short", day: "numeric" })
+        : dateFormat.format(date);
+    };
+    return sessions
       .toSorted((a, b) => b.updatedAt.localeCompare(a.updatedAt))
       .map((s) => ({
         id: `session:${s.id}`,
         group: "对话",
         title: sessionTitle(s),
-        hint:
-          s.id === activeSessionId
-            ? "当前"
-            : new Date(s.updatedAt).toLocaleDateString("zh-CN", { month: "short", day: "numeric" }),
+        hint: s.id === activeSessionId ? "当前" : dateHint(s.updatedAt),
         icon: MessageSquare,
         run: () => void selectSession(s.id).catch(() => undefined),
       }));
-    const fileItems: Item[] = files.map((f) => ({
-      id: `file:${f.path}`,
-      group: "文件",
-      title: f.path.split("/").pop() ?? f.path,
-      hint: f.path.includes("/") ? f.path.slice(0, f.path.lastIndexOf("/")) : undefined,
-      icon: { file: f.path },
-      run: () => openWorkspaceFile(f.path),
-    }));
-
-    const q = query.trim();
+  }, [sessions, activeSessionId]);
+  const fileItems = useMemo<Item[]>(
+    () =>
+      files.map((f) => ({
+        id: `file:${f.path}`,
+        group: "文件",
+        title: f.path.split("/").pop() ?? f.path,
+        hint: f.path.includes("/") ? f.path.slice(0, f.path.lastIndexOf("/")) : undefined,
+        icon: { file: f.path },
+        run: () => openWorkspaceFile(f.path),
+      })),
+    [files],
+  );
+  const fileIndex = useMemo(() => indexItems(fileItems), [fileItems]);
+  const chatIndex = useMemo(() => indexItems(chats), [chats]);
+  const commandIndex = useMemo(() => indexItems(commands), [commands]);
+  const items = useMemo(() => {
+    const q = query.trim().toLowerCase();
     if (!q) return [...commands.slice(0, 5), ...chats.slice(0, 5), ...fileItems.slice(0, 8)];
-    const ranked = (list: Item[], limit: number) =>
-      list
-        .map((item) => ({ item, s: score(`${item.title} ${item.hint ?? ""}`, q) }))
-        .filter((x) => x.s >= 0)
-        .sort((a, b) => b.s - a.s)
-        .slice(0, limit)
-        .map((x) => x.item);
     // 文件排在前面：输入内容时多半在找文件
-    return [...ranked(fileItems, 12), ...ranked(chats, 8), ...ranked(commands, 6)];
-  }, [query, files, sessions, activeSessionId, busy, hasSubagents]);
+    return [
+      ...rankQuickOpenItems(fileIndex, q, 12),
+      ...rankQuickOpenItems(chatIndex, q, 8),
+      ...rankQuickOpenItems(commandIndex, q, 6),
+    ];
+  }, [query, fileItems, chats, commands, fileIndex, chatIndex, commandIndex]);
 
   useEffect(() => setActive(0), [query]);
   useEffect(() => {
@@ -247,8 +263,22 @@ function QuickOpenBody({ onDone }: { onDone: () => void }) {
         />
         <kbd className="em-kbd">Esc</kbd>
       </div>
+      {filesLoading ? (
+        <p role="status" className="px-4 py-2 text-xs text-muted-foreground">
+          正在读取文件列表…
+        </p>
+      ) : filesError ? (
+        <div role="alert" className="flex items-center gap-2 px-4 py-2 text-xs text-destructive">
+          <span className="min-w-0 flex-1 break-words">文件列表读取失败：{filesError}</span>
+          <Button size="sm" variant="outline" onClick={() => setFilesRetry((n) => n + 1)}>
+            重试
+          </Button>
+        </div>
+      ) : null}
       <div ref={listRef} id="em-quick-list" role="listbox" className="em-quick-list">
-        {items.length === 0 && <p className="em-quick-empty">没有匹配「{query.trim()}」的结果</p>}
+        {items.length === 0 && !filesLoading && !filesError && (
+          <p className="em-quick-empty">没有匹配「{query.trim()}」的结果</p>
+        )}
         {items.map((item, index) => {
           const header = item.group !== lastGroup ? item.group : null;
           lastGroup = item.group;

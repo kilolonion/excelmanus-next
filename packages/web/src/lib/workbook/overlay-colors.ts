@@ -15,15 +15,22 @@ function tokenRgb(name: OverlayTone): [number, number, number] {
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
 
-export function rgba(name: OverlayTone, alpha: number): string {
+/** Capture a token once for a paint pass; a new pass observes theme changes. */
+export function overlayColor(name: OverlayTone): (alpha: number) => string {
   const [r, g, b] = tokenRgb(name);
-  return alpha >= 1 ? `rgb(${r}, ${g}, ${b})` : `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  return (alpha) => (alpha >= 1 ? `rgb(${r}, ${g}, ${b})` : `rgba(${r}, ${g}, ${b}, ${alpha})`);
+}
+
+export function rgba(name: OverlayTone, alpha: number): string {
+  return overlayColor(name)(alpha);
 }
 
 export function overlayStyles() {
+  const read = overlayColor("read"),
+    warn = overlayColor("warn");
   return {
-    reading: { fill: rgba("read", 0.06), stroke: rgba("read", 1), strokeWidth: 1.5, strokeDash: 4 },
-    writing: { fill: rgba("read", 0.1), stroke: rgba("read", 1), strokeWidth: 1.5 },
-    pending: { fill: rgba("warn", 0.08), stroke: rgba("warn", 1), strokeWidth: 1.5, strokeDash: 5 },
+    reading: { fill: read(0.06), stroke: read(1), strokeWidth: 1.5, strokeDash: 4 },
+    writing: { fill: read(0.1), stroke: read(1), strokeWidth: 1.5 },
+    pending: { fill: warn(0.08), stroke: warn(1), strokeWidth: 1.5, strokeDash: 5 },
   };
 }

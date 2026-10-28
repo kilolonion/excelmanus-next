@@ -1,0 +1,1 @@
+import { defineConfig, mergeConfig } from 'vite';import base from './vite.config';export default mergeConfig(base,defineConfig({base:'/qa-lazy-diff/',publicDir:false,build:{outDir:'/opt/excelmanus-next/packages/web/dist/qa-lazy-diff',emptyOutDir:true,rollupOptions:{input:'qa-lazy-diff.html'}}}));

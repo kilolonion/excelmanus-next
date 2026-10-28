@@ -1,12 +1,32 @@
-import { describeObjectChanges, sniffWorkbookImage } from "./objects.ts";
+import {
+  describeObjectChanges,
+  imagePreviewBytes,
+  objectsOf,
+  sniffWorkbookImage,
+} from "./objects.ts";
+import {
+  assertRegionalFootprint,
+  assertRegionalSnapshot,
+  compileRegionalFootprint,
+} from "./regional-effects.ts";
 import { CF_RESOURCE, DV_RESOURCE, rulesResource } from "./rule-codec.ts";
 // DocumentService（07 §3）：活文档 actor——每个打开的文档持有一个 Univer 无头
 // 实例（主线程，ADR 0003），提交串行处理，修订号严格递增，doc_ops 追加写日志。
 // 快照定影：createWorkbook 前深拷贝；对外 snapshot() 一律返回 getSnapshot 深拷贝。
 // 冲突检测：读集区域各带读取修订，与之后修订的写集在 head 坐标系下求交（03 §6.1）。
 
-import { existsSync, readFileSync, realpathSync, rmSync, type Stats, statSync } from "node:fs";
-import { extname } from "node:path";
+import {
+  existsSync,
+  linkSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  type Stats,
+  statSync,
+  unlinkSync,
+} from "node:fs";
+import { dirname, extname } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import {
   indexToCol,
@@ -27,22 +47,67 @@ import {
   transformRangeAll,
 } from "@excelmanus/core";
 import {
+  assertToolAccess,
+  assertToolEffectsAllowed,
+  assertToolReadAccess,
+  assertToolWriteAccess,
+  atomicCreateDocument,
   atomicWrite,
   BackupService,
+  canonicalWorkspaceRoot,
+  consumeCreatedDocumentReceipt,
+  currentHostNativeAccess,
+  currentHostNativeCheckpoint,
+  currentToolAccess,
+  type EffectIntent,
+  type EffectPermit,
+  effectPathExists,
   FileOperationError,
+  issueEffectPublication,
+  issueHostNativeCheckpoint,
   type Migration,
   PathSafetyError,
+  pathVersion,
+  prepareEffectPlan,
+  readVerifiedResourceSync,
+  recheckEffectPlan,
+  recordDocumentAccess,
   resolveWorkspacePath,
+  runWithEffectPlan,
+  runWithHostNativeCheckpoint,
+  runWithoutToolAccess,
+  runWithToolAccess,
   sha256,
+  statVerifiedResourceSync,
+  type ToolAccessContext,
+  type ToolContext,
+  TurnAccessError,
+  turnAccessBinding,
+  withFileAccessSync,
 } from "@excelmanus/kernel";
-import type { BackupInfo, DocKind, FileIntentMeta, ToolResult } from "@excelmanus/protocol";
+import type {
+  BackupInfo,
+  DocKind,
+  FileIntentMeta,
+  MergeDocsBody,
+  ToolResult,
+} from "@excelmanus/protocol";
+import {
+  ContractRef,
+  OBJECT_LAYER_MUTATION,
+  printNamesOf,
+  printSettingsOf,
+  SheetObjectsMutation,
+} from "@excelmanus/protocol";
 import type { IWorkbookData, IWorksheetData } from "@univerjs/core";
 import {
   assertCellsWritable,
+  assertUnprotected,
   assertWritable,
   exportXlsx,
   minimalXlsx,
   pendingChanges,
+  workbookProtection,
 } from "./checkpoint.ts";
 import { exportCsv, importCsv } from "./csv.ts";
 import {
@@ -53,7 +118,21 @@ import {
   ENGINE_VERSION,
   MutationCapture,
 } from "./engine.ts";
+import {
+  assertExternalLinkWrites,
+  assertExternalRecalculation,
+  assertNoExternalFormulaInputs,
+  externalCells,
+  filterExternalEngineResults,
+  restoreSavedExternalCaches,
+} from "./external-link-writes.ts";
 import { makeInverse, type Snap, snapshotRestoreMutations } from "./inverse.ts";
+import {
+  assertMacroPreserved,
+  assertMacroWriteSupported,
+  inspectMacroPackage,
+} from "./macro-evidence.ts";
+import { mergeMutations } from "./merge.ts";
 import {
   type ChangeOp,
   type CompiledOps,
@@ -63,6 +142,7 @@ import {
   transformChangeOp,
   transformMutation,
 } from "./ops.ts";
+import { importPivotRefresh, planPivotRefreshPatches } from "./pivot-codec.ts";
 import {
   boundedWriteRanges,
   sheetNamesOf,
@@ -71,8 +151,10 @@ import {
   workbookSheets,
 } from "./summary.ts";
 import { fixupMutationForTransport, reconcileFilterResource } from "./transport.ts";
+import { assertLegacyWorkbookWriteSupported } from "./workbook-manifest.ts";
 import { deriveWriteSetAll } from "./writeset.ts";
 import { type ImportedWorkbook, importXlsx } from "./xlsx.ts";
+import { textOf } from "./xml.ts";
 
 const MAX_SUBMIT_CELLS = 200_000;
 const MAX_PREVIEW_CELLS = 2000;
@@ -110,9 +192,14 @@ export class DocNotFoundError extends Error {
   }
 }
 
-export class UnsupportedDocError extends Error {
+export class UnsupportedDocError extends FileOperationError {
   constructor(path: string) {
-    super(`不支持的文档类型（仅支持 .xlsx/.csv）：${path}`);
+    super(
+      "UNSUPPORTED_FEATURE",
+      [".xls", ".xlsb"].includes(extname(path).toLowerCase())
+        ? `旧格式不能直接读取或修改：${path}。请在界面打开该文件并选择“导入为新 .xlsx”，生成可能有损的转换副本，原文件保持不变；这是界面专用操作，不是模型可调用的工具。`
+        : `不支持的文档类型（仅支持 .xlsx/.xlsm/.csv/.tsv）：${path}`,
+    );
     this.name = "UnsupportedDocError";
   }
 }
@@ -176,6 +263,16 @@ export const DOC_OPS_REVERTS_MIGRATION: Migration = {
   sql: "ALTER TABLE doc_ops ADD COLUMN reverts INTEGER;",
 };
 
+export const DOC_MOVES_MIGRATION: Migration = {
+  id: "workbook/doc-moves",
+  sql: "CREATE TABLE doc_moves (doc_id TEXT PRIMARY KEY, from_path TEXT NOT NULL, to_path TEXT NOT NULL, hash TEXT NOT NULL);",
+};
+
+export const DOC_PATH_MOVES_MIGRATION: Migration = {
+  id: "workbook/doc-path-moves",
+  sql: "CREATE TABLE doc_path_moves (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, from_path TEXT NOT NULL, to_path TEXT NOT NULL, hash TEXT NOT NULL);",
+};
+
 export interface DocWriteSet {
   objects?: string[];
   ranges: RangeRef[];
@@ -198,6 +295,8 @@ export interface SubmitSource {
 }
 
 export interface SubmitBatch {
+  /** Canonical target pinned when acquiring the tool lease; rechecked inside the actor. */
+  expectedPath?: string;
   baseRev: number;
   /**
    * 提交者依据读过的区域（省略 = 只按写集判定；用户编辑的读集即写集）。
@@ -276,6 +375,7 @@ export interface SubmitOk {
 export interface SubmitFail {
   ok: false;
   code:
+    | "INVALID_ARGUMENT"
     | "VERSION_CONFLICT"
     | "LIMIT_EXCEEDED"
     | "DOC_NOT_FOUND"
@@ -317,7 +417,15 @@ interface DocEntry {
   checkpointSnapshot: IWorkbookData;
   checkpointHash: string;
   checkpointRev: number;
+  /** 只读打开的派生值只留内存；已有授权修改/重算才允许记录并写回。 */
+  persistEngineResults: boolean;
+  computedInMemoryOnly: boolean;
+  openedHash: string;
   timer?: ReturnType<typeof setTimeout>;
+  /** Trusted origin of committed but not yet checkpointed writes; never inferred from a timer. */
+  pendingWriteAccess?: ToolAccessContext;
+  /** Retained while an authorized calculation can still produce derived revisions. */
+  writeAccess?: ToolAccessContext;
   /** 外部修改与未写回修订冲突（07 §5）：写回暂停，等用户二选一后清除。 */
   external?: { hash: string };
   /** 最近确认过的源文件签名（size/mtime/ino）：未变时跳过整文件读取与哈希。 */
@@ -366,8 +474,29 @@ function normalizeMutations(raw: unknown): DocMutation[] {
   });
 }
 
+// 仅存于服务端 SQLite 检查点，不从用户文件读取，也不交给引擎或 xlsx 导出。
+const PENDING_CALCULATION = "excelmanusPendingCalculation";
+function readCheckpointSnapshot(json: string): { snapshot: IWorkbookData; pending: boolean } {
+  const snapshot = JSON.parse(json) as IWorkbookData;
+  const pending = snapshot.custom?.[PENDING_CALCULATION] === true;
+  if (snapshot.custom) delete snapshot.custom[PENDING_CALCULATION];
+  return { snapshot, pending };
+}
+
 export class DocumentService {
   private readonly docs = new Map<string, Promise<DocEntry>>();
+  private readonly liveEntries = new Map<string, DocEntry>();
+  private readonly regionalPlans = new WeakMap<EffectPermit, RangeRef[]>();
+  private readonly workspaceTails = new Map<string, Promise<unknown>>();
+  private inWorkspace<T>(id: string, action: () => Promise<T>): Promise<T> {
+    const run = (this.workspaceTails.get(id) ?? Promise.resolve()).then(action);
+    const tail = run.catch(() => {});
+    this.workspaceTails.set(id, tail);
+    void tail.then(() => {
+      if (this.workspaceTails.get(id) === tail) this.workspaceTails.delete(id);
+    });
+    return run;
+  }
   private readonly metas = new Map<string, DocumentMeta>();
   private readonly db: DatabaseSync;
   /** 新修订提交后回调（server 订阅做 doc.op 广播）。 */
@@ -391,12 +520,91 @@ export class DocumentService {
 
   /** 打开（或复开）工作区内文档：导入 → 建 Univer 实例 → 重放 doc_ops → {docId, rev}。 */
   async open(workspaceId: string, workspaceRoot: string, relPath: string): Promise<OpenedDoc> {
+    return this.inWorkspace(workspaceId, () =>
+      this.openUnlocked(workspaceId, workspaceRoot, relPath),
+    );
+  }
+
+  private pendingWriteOrigin(workspaceId: string, path: string): ToolAccessContext | undefined {
+    const pendingWrite = this.db
+      .prepare(
+        "SELECT id,head_rev,checkpoint_rev,checkpoint_snapshot FROM documents WHERE workspace_id=? AND path=?",
+      )
+      .get(workspaceId, path) as
+      | { id: string; head_rev: number; checkpoint_rev: number; checkpoint_snapshot: string | null }
+      | undefined;
+    let resumedAccess: ToolAccessContext | undefined;
+    if (pendingWrite && !this.docs.has(pendingWrite.id)) {
+      const pendingCalc = pendingWrite.checkpoint_snapshot
+        ? readCheckpointSnapshot(pendingWrite.checkpoint_snapshot).pending
+        : false;
+      if (pendingWrite.head_rev > pendingWrite.checkpoint_rev || pendingCalc) {
+        const lower = pendingCalc
+          ? Math.min(pendingWrite.checkpoint_rev, pendingWrite.head_rev - 1)
+          : pendingWrite.checkpoint_rev;
+        const rows = this.db
+          .prepare("SELECT inverse FROM doc_ops WHERE doc_id=? AND rev>? AND rev<=? ORDER BY rev")
+          .all(pendingWrite.id, lower, pendingWrite.head_rev);
+        const origins = rows.map(
+          (row) =>
+            (JSON.parse(String(row.inverse ?? "{}")) as { _hostAccessOrigin?: unknown })
+              ._hostAccessOrigin,
+        );
+        const current = currentToolAccess();
+        const marked = origins.some((origin) => origin !== undefined);
+        const matches = (origin: unknown) => {
+          if (!origin || typeof origin !== "object" || !current) return false;
+          const o = origin as Record<string, unknown>;
+          return (
+            o.version === 1 &&
+            o.sessionId === current.sessionId &&
+            o.originAgentId === current.originAgentId &&
+            o.originTurnId === current.originTurnId &&
+            (current.binding().contractRef
+              ? ContractRef.safeParse(o.contractRef).success &&
+                JSON.stringify(ContractRef.parse(o.contractRef)) ===
+                  JSON.stringify(current.binding().contractRef)
+              : o.contractRef === undefined)
+          );
+        };
+        if (marked) {
+          if (
+            !(current?.binding().accessDeliveryRequired || current?.binding().contractRef) ||
+            !origins.length ||
+            !origins.every(matches)
+          )
+            throw new FileOperationError(
+              "VERSION_CONFLICT",
+              "受限任务的待保存修订缺少可信原任务归属；原件和日志均保留，请从原任务继续恢复（仅限原任务当前有效范围；若已无法授权，需人工处理日志），不能由新任务或后台代写",
+            );
+          resumedAccess = current;
+        } else if (current?.binding().accessDeliveryRequired || current?.binding().contractRef) {
+          throw new FileOperationError(
+            "VERSION_CONFLICT",
+            "待保存修订的原任务归属无法验证；原件和日志均保留，本轮不自动恢复写回",
+          );
+        }
+      }
+    }
+    return resumedAccess;
+  }
+
+  private async openUnlocked(
+    workspaceId: string,
+    workspaceRoot: string,
+    relPath: string,
+  ): Promise<OpenedDoc> {
+    const checked = assertToolAccess(relPath, workspaceRoot);
     this.assertWorkspaceRoot(workspaceId, workspaceRoot);
+    let resumedAccess = this.pendingWriteOrigin(workspaceId, checked);
+    this.recoverMoves(workspaceId, workspaceRoot);
     const { abs, rel } = resolveWorkspacePath(workspaceRoot, relPath);
+    if (rel !== checked) resumedAccess = this.pendingWriteOrigin(workspaceId, rel);
     let st: ReturnType<typeof statSync>;
     try {
-      st = statSync(abs);
-    } catch {
+      st = statVerifiedResourceSync(workspaceRoot, abs, { purpose: "workbook-open" });
+    } catch (error) {
+      if (error instanceof TurnAccessError) throw error;
       throw new PathSafetyError("NOT_FOUND", `路径不存在：${relPath}`);
     }
     if (!st.isFile()) throw new PathSafetyError("NOT_FOUND", `不是文件：${relPath}`);
@@ -409,15 +617,31 @@ export class DocumentService {
           : (() => {
               throw new UnsupportedDocError(relPath);
             })();
-    const bytes = readFileSync(abs);
-    const imported = kind === "xlsx" ? importXlsx(bytes, rel) : importCsv(bytes, rel);
-
+    const bytes = readVerifiedResourceSync(workspaceRoot, abs, { purpose: "workbook-open" }).bytes;
     const existing = this.db
       .prepare("SELECT * FROM documents WHERE workspace_id = ? AND path = ?")
       .get(workspaceId, rel) as DocRow | undefined;
     const cached = existing ? await this.docs.get(existing.id) : undefined;
+    // 字节与已验证的检查点相同时复用导入结果，避免每次复开重新解析整本。
+    // 外部字节变化仍先走完整导入校验，保留损坏文件和冲突处理语义。
+    const imported =
+      cached && sha256(bytes) === cached.checkpointHash
+        ? cached.imported
+        : kind === "xlsx"
+          ? importXlsx(bytes, rel)
+          : importCsv(bytes, rel);
+    if (!cached || sha256(bytes) !== cached.checkpointHash)
+      recordDocumentAccess({
+        kind: "package-cache-parse",
+        path: rel,
+        purpose: "decode-opened-bytes",
+        packageState: "opened-file-bytes",
+      });
     if (cached) {
       await this.enqueue(cached, () => this.checkExternal(cached, true));
+      this.db
+        .prepare("UPDATE documents SET last_opened_at = ? WHERE id = ?")
+        .run(nowIso(), cached.meta.id);
       return { meta: cached.meta, imported: cached.imported };
     }
     const now = nowIso();
@@ -462,19 +686,25 @@ export class DocumentService {
     // 文档进入"待用户二选一"状态；保真写回以外部文件的包为底（原始包已不在磁盘上）。
     const conflict = Boolean(savedHash && savedHash !== hash && headRev > checkpointRev);
     let externalBaseline: IWorkbookData | undefined;
+    let pendingCalculation = false;
     if (conflict) {
       if (!savedSnapshot)
         throw new FileOperationError(
           "VERSION_CONFLICT",
           "外部文件与未写回日志冲突，且缺少检查点快照，无法还原应用中的版本",
         );
-      const snap = JSON.parse(savedSnapshot) as IWorkbookData;
+      const saved = readCheckpointSnapshot(savedSnapshot);
+      const snap = saved.snapshot;
+      pendingCalculation = saved.pending;
       externalBaseline = rekeyLike(imported.snapshot, snap);
       this.remapPreservation(imported, snap);
       imported.snapshot = snap;
     } else if (savedHash === hash && savedSnapshot) {
-      const snap = JSON.parse(savedSnapshot) as IWorkbookData;
+      const saved = readCheckpointSnapshot(savedSnapshot);
+      const snap = saved.snapshot;
+      pendingCalculation = saved.pending;
       this.remapPreservation(imported, snap);
+      hydrateMissingPivotRefresh(imported, snap);
       imported.snapshot = snap;
     }
     // 首次打开即保存检查点快照：之后若外部修改与未写回修订冲突（含重启后），能还原应用版本
@@ -495,6 +725,10 @@ export class DocumentService {
       existing?.created_at ?? now,
       workspaceRoot,
       conflict ? (savedHash as string) : hash,
+      hash,
+      pendingCalculation,
+      savedHash === hash,
+      resumedAccess,
     );
     if (externalBaseline) {
       entry.checkpointSnapshot = externalBaseline;
@@ -527,6 +761,10 @@ export class DocumentService {
     createdAt: string,
     workspaceRoot: string,
     hash: string,
+    openedHash: string,
+    pendingCalculation: boolean,
+    hydrateLegacyPivotMetadata: boolean,
+    resumedAccess?: ToolAccessContext,
   ): Promise<DocEntry> {
     const pending = this.docs.get(docId);
     if (pending) return pending;
@@ -536,12 +774,29 @@ export class DocumentService {
       const book = createBook(boot, snapshot);
       const capture = new MutationCapture(boot);
       const checkpointSnapshot = structuredClone(book.workbook.save());
+      // This baseline describes formulas on disk, before createBook normalizes table syntax.
+      for (const [sid, sheet] of Object.entries(imported.snapshot.sheets))
+        for (const [r, row] of Object.entries(sheet.cellData ?? {}))
+          for (const [c, cell] of Object.entries(row ?? {})) {
+            const target = checkpointSnapshot.sheets[sid]?.cellData?.[Number(r)]?.[Number(c)];
+            const formula = (cell as { f?: string } | undefined)?.f;
+            if (formula && target?.f) target.f = formula;
+          }
       const ops = this.opsAfter(docId, checkpointRev);
       for (const op of ops) {
         for (const m of op.mutations) {
-          const params = JSON.parse(JSON.stringify(m.params ?? {})) as object;
+          const params = JSON.parse(JSON.stringify(m.params ?? {})) as Record<string, unknown>;
+          const replay =
+            hydrateLegacyPivotMetadata && m.id === OBJECT_LAYER_MUTATION
+              ? carryMissingPivotRefresh({ id: m.id, params }, book.workbook.save())
+              : { id: m.id, params };
           try {
-            if (!(await boot.executeCommand(m.id, params, { fromCollab: true })))
+            if (
+              !(await boot.executeCommand(replay.id, replay.params, {
+                fromCollab: true,
+                excelmanusReplay: true,
+              }))
+            )
               throw new Error("回放失败");
           } catch {
             await boot.dispose();
@@ -564,16 +819,43 @@ export class DocumentService {
         checkpointSnapshot,
         checkpointHash: hash,
         checkpointRev,
+        pendingWriteAccess: headRev > checkpointRev ? resumedAccess : undefined,
+        writeAccess: resumedAccess,
+        persistEngineResults:
+          !workbookProtection(imported).readOnly && (ops.length > 0 || pendingCalculation),
+        computedInMemoryOnly: false,
+        openedHash,
         formulaCount: Object.values(imported.formulaCounts ?? {}).reduce((s, n) => s + n, 0),
       };
+      // 仅剩显式重算授权时，恢复尚未完成的计算；已记录完整结果的回放不重复记修订。
+      const lastOp = ops.at(-1);
+      if (
+        pendingCalculation ||
+        (lastOp?.sourceKind === "engine" && lastOp.sourceId === "recalculate")
+      ) {
+        entry.meta.calcPending = true;
+        if (!resumedAccess && !currentToolAccess()) {
+          entry.computedInMemoryOnly = true;
+          entry.meta.checkpointError =
+            "恢复的异步计算尚无可证明的文档因果归属；已提交公式日志保留待核，未持久化缓存";
+        } else {
+          const done = await boot.waitCalc(RECALC_MS, entry.formulaCount > 0);
+          await this.commitEngine(entry);
+          if (done) delete entry.meta.calcPending;
+          else entry.meta.calcPending = true;
+        }
+      }
       this.watchCalc(entry);
       entry.meta.checkpointRev = checkpointRev;
       this.metas.set(docId, entry.meta);
+      this.liveEntries.set(docId, entry);
       if (!this.watchTimer) {
-        this.watchTimer = setInterval(() => {
-          for (const task of this.docs.values())
-            void task.then((e) => this.enqueue(e, () => this.checkExternal(e))).catch(() => {});
-        }, 1000);
+        this.watchTimer = runWithoutToolAccess(() =>
+          setInterval(() => {
+            for (const task of this.docs.values())
+              void task.then((e) => this.enqueue(e, () => this.checkExternal(e))).catch(() => {});
+          }, 1000),
+        );
         this.watchTimer.unref();
       }
       return entry;
@@ -600,7 +882,9 @@ export class DocumentService {
     }
     let same = false;
     try {
-      same = row !== undefined && realpathSync(row.path) === realpathSync(workspaceRoot);
+      same =
+        row !== undefined &&
+        canonicalWorkspaceRoot(row.path) === canonicalWorkspaceRoot(workspaceRoot);
     } catch {
       same = false;
     }
@@ -609,21 +893,386 @@ export class DocumentService {
 
   /** 拿活文档；未在内存时按 documents 行从工作区重新导入并重放。 */
   async entry(docId: string, workspaceRoot: string): Promise<DocEntry> {
-    const hit = await this.docs.get(docId);
-    if (hit) {
-      if (
-        resolveWorkspacePath(workspaceRoot, ".").abs !==
-        resolveWorkspacePath(hit.workspaceRoot, ".").abs
-      )
-        throw new PathSafetyError("OUT_OF_WORKSPACE", "文档不属于当前工作区");
-      return hit;
-    }
     const row = this.db.prepare("SELECT * FROM documents WHERE id = ?").get(docId) as
       | DocRow
       | undefined;
     if (!row) throw new DocNotFoundError(docId);
-    const opened = await this.open(row.workspace_id, workspaceRoot, row.path);
+    assertToolAccess(row.path, workspaceRoot);
+    this.assertWorkspaceRoot(row.workspace_id, workspaceRoot);
+    const hit = await this.docs.get(docId);
+    if (hit) {
+      assertToolAccess(hit.meta.path, workspaceRoot);
+      if (canonicalWorkspaceRoot(workspaceRoot) !== canonicalWorkspaceRoot(hit.workspaceRoot))
+        throw new PathSafetyError("OUT_OF_WORKSPACE", "文档不属于当前工作区");
+      return hit;
+    }
+    this.recoverMoves(row.workspace_id, workspaceRoot);
+    const current = this.db.prepare("SELECT path FROM documents WHERE id=?").get(docId) as {
+      path: string;
+    };
+    const opened = await this.openUnlocked(row.workspace_id, workspaceRoot, current.path);
     return this.entry(opened.meta.id, workspaceRoot);
+  }
+
+  /** 移动已登记的单个工作簿；保留 docId 与修订链，普通文件返回 null。 */
+  async moveFile(
+    workspaceId: string,
+    root: string,
+    from: string,
+    to: string,
+  ): Promise<{ docId: string; from: string; to: string } | null> {
+    const related = this.db
+      .prepare("SELECT path,head_rev,checkpoint_rev FROM documents WHERE workspace_id=?")
+      .all(workspaceId) as { path: string; head_rev: number; checkpoint_rev: number }[];
+    const members = related.filter((row) => row.path === from || row.path.startsWith(from + "/"));
+    const permit = prepareEffectPlan({
+      workspaceRoot: root,
+      atomicScope: "none",
+      effects: [
+        { operation: "relocate", path: from, to },
+        { operation: "remove", path: from },
+        { operation: "create", path: to },
+        ...[...new Set([from, ...members.map((row) => row.path)])].flatMap((path) => [
+          { operation: "read-content" as const, path },
+          { operation: "read-metadata" as const, path },
+        ]),
+        ...members.map((row) => ({
+          operation: "read-metadata" as const, path: to + row.path.slice(from.length),
+        })),
+        ...members
+          .filter((row) => row.head_rev > row.checkpoint_rev)
+          .map((row) => ({ operation: "mutate" as const, path: row.path })),
+      ],
+    });
+    return runWithEffectPlan(permit, () =>
+      this.inWorkspace(workspaceId, async () => {
+        recheckEffectPlan(permit);
+        return this.moveFileUnlocked(workspaceId, root, from, to);
+      }),
+    );
+  }
+
+  /** Hold all affected document actors while the files module performs its synchronous transaction. */
+  async withFileMoves(
+    workspaceId: string,
+    root: string,
+    moves: Array<{ from: string; to: string }>,
+    execute: (commit: () => void) => ToolResult | Promise<ToolResult>,
+  ): Promise<ToolResult> {
+    return this.inWorkspace(workspaceId, async () => {
+      const effects = moves.flatMap(({ from, to }) => [
+        { kind: "relocate" as const, path: from, to },
+        { kind: "remove" as const, path: from },
+        { kind: "create" as const, path: to },
+      ]);
+      assertToolEffectsAllowed(effects, root);
+      this.assertWorkspaceRoot(workspaceId, root);
+      this.recoverMoves(workspaceId, root);
+      const paths = moves.map((move) => ({
+        from: resolveWorkspacePath(root, move.from).rel,
+        to: resolveWorkspacePath(root, move.to).rel,
+      }));
+      const rows = this.db
+        .prepare("SELECT id,path FROM documents WHERE workspace_id=?")
+        .all(workspaceId) as { id: string; path: string }[];
+      const affected = rows
+        .flatMap((row) => {
+          const move = paths.find((m) => row.path === m.from || row.path.startsWith(`${m.from}/`));
+          if (!move) return [];
+          if (
+            row.path === move.from &&
+            extname(move.from).toLowerCase() !== extname(move.to).toLowerCase()
+          )
+            throw new FileOperationError(
+              "INVALID_ARGUMENT",
+              "重命名不能改变工作簿格式，请保留原扩展名",
+            );
+          return [{ ...row, to: move.to + row.path.slice(move.from.length) }];
+        })
+        .sort((a, b) => a.id.localeCompare(b.id));
+      const entries: DocEntry[] = [];
+      for (const row of affected) entries.push(await this.entry(row.id, root));
+      const commit = () => {
+        assertToolEffectsAllowed(effects, root);
+        for (const row of affected)
+          this.db.prepare("UPDATE documents SET path=? WHERE id=?").run(row.to, row.id);
+        const roots = paths.filter((m) =>
+          affected.some((row) => row.path === m.from || row.path.startsWith(`${m.from}/`)),
+        );
+        for (const row of this.db
+          .prepare("SELECT id,original_path FROM backups WHERE workspace_id=?")
+          .all(workspaceId)) {
+          const path = String(row.original_path),
+            move = roots.find((m) => path === m.from || path.startsWith(`${m.from}/`));
+          if (move)
+            this.db
+              .prepare("UPDATE backups SET original_path=? WHERE id=?")
+              .run(move.to + path.slice(move.from.length), row.id!);
+        }
+      };
+      const lock = (i: number): Promise<ToolResult> => {
+        const entry = entries[i];
+        if (entry) return this.enqueue(entry, () => lock(i + 1));
+        return (async () => {
+          for (const entry of entries) await this.doCheckpoint(entry);
+          assertToolEffectsAllowed(effects, root);
+          const result = await execute(commit);
+          if (result.status === "ok") {
+            for (const row of affected) {
+              const meta = this.metas.get(row.id);
+              if (meta) meta.path = row.to;
+            }
+            for (const entry of entries) entry.fileSig = this.statSig(entry);
+          }
+          return result;
+        })();
+      };
+      return lock(0);
+    });
+  }
+
+  private async moveFileUnlocked(
+    workspaceId: string,
+    root: string,
+    from: string,
+    to: string,
+  ): Promise<{ docId: string; from: string; to: string } | null> {
+    const effects = [
+      { kind: "relocate" as const, path: from, to },
+      { kind: "remove" as const, path: from },
+      { kind: "create" as const, path: to },
+    ];
+    assertToolEffectsAllowed(effects, root);
+    this.assertWorkspaceRoot(workspaceId, root);
+    this.recoverMoves(workspaceId, root);
+    const src = resolveWorkspacePath(root, from);
+    const dst = resolveWorkspacePath(root, to);
+    const row = this.db
+      .prepare("SELECT id FROM documents WHERE workspace_id=? AND path=?")
+      .get(workspaceId, src.rel) as { id: string } | undefined;
+    if (!row) return this.moveDirectory(workspaceId, root, src, dst);
+    const entry = await this.entry(row.id, root);
+    return this.enqueue(entry, async () => {
+      if (entry.meta.path !== src.rel)
+        throw new FileOperationError("VERSION_CONFLICT", "文件路径已改变，请刷新后重试");
+      if (src.rel === dst.rel) return { docId: row.id, from: src.rel, to: dst.rel };
+      if (extname(src.rel).toLowerCase() !== extname(dst.rel).toLowerCase())
+        throw new FileOperationError(
+          "INVALID_ARGUMENT",
+          "重命名不能改变工作簿格式，请保留原扩展名",
+        );
+      if (
+        existsSync(dst.abs) ||
+        this.db
+          .prepare("SELECT 1 FROM documents WHERE workspace_id=? AND path=?")
+          .get(workspaceId, dst.rel)
+      )
+        throw new FileOperationError("VERSION_CONFLICT", "目标路径已存在，不会覆盖");
+      await this.doCheckpoint(entry);
+      assertToolEffectsAllowed(effects, root);
+      mkdirSync(dirname(dst.abs), { recursive: true });
+      // 在文件系统操作前持久化意图，重启可补齐路径登记。
+      this.db
+        .prepare("INSERT INTO doc_moves (doc_id, from_path, to_path, hash) VALUES (?,?,?,?)")
+        .run(row.id, src.rel, dst.rel, entry.checkpointHash);
+      let linked = false;
+      try {
+        linkSync(src.abs, dst.abs); // 原子拒绝已存在目标；不覆盖其他文件。
+        linked = true;
+        unlinkSync(src.abs);
+      } catch (error) {
+        if (!linked) this.db.prepare("DELETE FROM doc_moves WHERE doc_id=?").run(row.id);
+        throw new FileOperationError(
+          "VERSION_CONFLICT",
+          `移动未完成：${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      this.finishMove(row.id, workspaceId, src.rel, dst.rel);
+      entry.meta.path = dst.rel;
+      delete entry.fileSig; // The next independently authorized read refreshes destination metadata.
+      return { docId: row.id, from: src.rel, to: dst.rel };
+    });
+  }
+
+  private async moveDirectory(
+    workspaceId: string,
+    root: string,
+    src: { abs: string; rel: string },
+    dst: { abs: string; rel: string },
+  ): Promise<{ docId: string; from: string; to: string } | null> {
+    const rows = this.db
+      .prepare("SELECT id,path FROM documents WHERE workspace_id=?")
+      .all(workspaceId) as { id: string; path: string }[];
+    const moved = rows
+      .filter((row) => row.path.startsWith(`${src.rel}/`))
+      .sort((a, b) => a.id.localeCompare(b.id));
+    if (!moved.length) return null;
+    if (!src.rel || !dst.rel || dst.rel.startsWith(`${src.rel}/`))
+      throw new FileOperationError("INVALID_ARGUMENT", "不能移动工作区根目录或将文件夹移入自身");
+    if (src.rel === dst.rel) return { docId: moved[0]!.id, from: src.rel, to: dst.rel };
+    if (
+      existsSync(dst.abs) ||
+      rows.some((row) => row.path === dst.rel || row.path.startsWith(`${dst.rel}/`))
+    )
+      throw new FileOperationError("VERSION_CONFLICT", "目标路径已存在，不会覆盖");
+    if (!statSync(src.abs).isDirectory())
+      throw new FileOperationError("INVALID_ARGUMENT", "源路径不是文件夹");
+    const entries: DocEntry[] = [];
+    for (const row of moved) entries.push(await this.entry(row.id, root));
+    const lock = (index: number): Promise<{ docId: string; from: string; to: string }> => {
+      const entry = entries[index];
+      if (entry) return this.enqueue(entry, () => lock(index + 1));
+      return (async () => {
+        for (const e of entries) await this.doCheckpoint(e);
+        if (existsSync(dst.abs))
+          throw new FileOperationError("VERSION_CONFLICT", "目标路径已存在，不会覆盖");
+        const hash = pathVersion(src.abs);
+        if (!hash) throw new FileOperationError("NOT_FOUND", "源文件夹不存在");
+        assertToolEffectsAllowed(
+          [
+            { kind: "relocate", path: src.rel, to: dst.rel },
+            { kind: "remove", path: src.rel },
+            { kind: "create", path: dst.rel },
+          ],
+          root,
+        );
+        mkdirSync(dirname(dst.abs), { recursive: true });
+        const id = newId("move");
+        this.db
+          .prepare("INSERT INTO doc_path_moves VALUES (?,?,?,?,?)")
+          .run(id, workspaceId, src.rel, dst.rel, hash);
+        try {
+          renameSync(src.abs, dst.abs);
+        } catch (error) {
+          this.db.prepare("DELETE FROM doc_path_moves WHERE id=?").run(id);
+          throw error;
+        }
+        this.finishDirectoryMove(id, workspaceId, src.rel, dst.rel);
+        for (const e of entries) e.fileSig = this.statSig(e);
+        return { docId: moved[0]!.id, from: src.rel, to: dst.rel };
+      })();
+    };
+    return lock(0);
+  }
+
+  private finishDirectoryMove(id: string, workspaceId: string, from: string, to: string): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const row of this.db
+        .prepare("SELECT id,path FROM documents WHERE workspace_id=?")
+        .all(workspaceId)) {
+        const path = String(row.path);
+        if (path.startsWith(`${from}/`))
+          this.db
+            .prepare("UPDATE documents SET path=? WHERE id=?")
+            .run(to + path.slice(from.length), row.id!);
+      }
+      for (const row of this.db
+        .prepare("SELECT id,original_path FROM backups WHERE workspace_id=?")
+        .all(workspaceId)) {
+        const path = String(row.original_path);
+        if (path === from || path.startsWith(`${from}/`))
+          this.db
+            .prepare("UPDATE backups SET original_path=? WHERE id=?")
+            .run(to + path.slice(from.length), row.id!);
+      }
+      this.db.prepare("DELETE FROM doc_path_moves WHERE id=?").run(id);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    for (const meta of this.metas.values())
+      if (meta.workspaceId === workspaceId && meta.path.startsWith(`${from}/`))
+        meta.path = to + meta.path.slice(from.length);
+  }
+
+  private finishMove(docId: string, workspaceId: string, from: string, to: string): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare("UPDATE documents SET path=? WHERE id=?").run(to, docId);
+      this.db
+        .prepare("UPDATE backups SET original_path=? WHERE workspace_id=? AND original_path=?")
+        .run(to, workspaceId, from);
+      this.db.prepare("DELETE FROM doc_moves WHERE doc_id=?").run(docId);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    const meta = this.metas.get(docId);
+    if (meta) meta.path = to;
+  }
+
+  /** 只恢复已持久化的移动意图；绝不覆盖不同内容的目标。 */
+  private recoverMoves(workspaceId: string, root: string): void {
+    const access = currentToolAccess();
+    if (access && access.binding().decision.kind !== "unbounded") {
+      const pendingMove = this.db
+        .prepare(
+          "SELECT 1 FROM doc_moves m JOIN documents d ON d.id=m.doc_id WHERE d.workspace_id=? LIMIT 1",
+        )
+        .get(workspaceId);
+      const pendingDirectory =
+        this.db.prepare("SELECT 1 FROM sqlite_master WHERE name='doc_path_moves'").get() &&
+        this.db
+          .prepare("SELECT 1 FROM doc_path_moves WHERE workspace_id=? LIMIT 1")
+          .get(workspaceId);
+      if (pendingMove || pendingDirectory)
+        throw new FileOperationError(
+          "VERSION_CONFLICT",
+          "工作区有待恢复的移动操作；受限任务不能扫描其他目录，请先独立处理恢复",
+        );
+      this.backups.recoverFileBatches(workspaceId, root);
+      return;
+    }
+    this.backups.recoverFileBatches(workspaceId, root);
+    if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE name='doc_path_moves'").get()) {
+      for (const move of this.db
+        .prepare("SELECT * FROM doc_path_moves WHERE workspace_id=?")
+        .all(workspaceId)) {
+        const from = String(move.from_path),
+          to = String(move.to_path),
+          id = String(move.id);
+        const src = resolveWorkspacePath(root, from).abs,
+          dst = resolveWorkspacePath(root, to).abs;
+        if (existsSync(src) && !existsSync(dst)) {
+          this.db.prepare("DELETE FROM doc_path_moves WHERE id=?").run(id);
+          continue;
+        }
+        if (existsSync(src) || !existsSync(dst) || pathVersion(dst) !== move.hash)
+          throw new FileOperationError(
+            "VERSION_CONFLICT",
+            `文件夹移动恢复需要检查：${from} → ${to}`,
+          );
+        this.finishDirectoryMove(id, workspaceId, from, to);
+      }
+    }
+    const moves = this.db
+      .prepare(`SELECT m.* FROM doc_moves m JOIN documents d ON d.id=m.doc_id
+      WHERE d.workspace_id=?`)
+      .all(workspaceId);
+    for (const move of moves) {
+      const from = String(move.from_path),
+        to = String(move.to_path),
+        id = String(move.doc_id);
+      const src = resolveWorkspacePath(root, from).abs,
+        dst = resolveWorkspacePath(root, to).abs;
+      if (existsSync(src) && !existsSync(dst)) {
+        this.db.prepare("DELETE FROM doc_moves WHERE doc_id=?").run(id);
+        continue;
+      }
+      if (!existsSync(dst) || sha256(readFileSync(dst)) !== move.hash)
+        throw new FileOperationError("VERSION_CONFLICT", `移动恢复需要检查文件：${from} → ${to}`);
+      if (existsSync(src)) {
+        const a = statSync(src),
+          b = statSync(dst);
+        if (a.dev !== b.dev || a.ino !== b.ino)
+          throw new FileOperationError("VERSION_CONFLICT", "移动恢复发现两个不同文件，未覆盖");
+        unlinkSync(src);
+      }
+      this.finishMove(id, workspaceId, from, to);
+    }
   }
 
   /** 每文档串行化：submit/snapshot 统一排队。 */
@@ -637,11 +1286,206 @@ export class DocumentService {
   snapshot(
     docId: string,
     workspaceRoot: string,
+    includeImageData = false,
   ): Promise<{ meta: DocumentMeta; snapshot: IWorkbookData }> {
     return this.entry(docId, workspaceRoot).then((e) =>
       this.enqueue(e, async () => {
         await this.checkExternal(e);
-        return { meta: { ...e.meta }, snapshot: structuredClone(e.live.save()) };
+        assertToolAccess(e.meta.path, workspaceRoot);
+        // Pinned Univer 1.0.2 saveUnit already deep-clones cells/styles/custom and creates
+        // fresh serialized resources; snapshot-isolation.test.ts guards this contract.
+        const snapshot = e.live.save();
+        recordDocumentAccess({
+          kind: "document-snapshot",
+          path: e.meta.path,
+          docId: e.meta.id,
+          rev: e.meta.rev,
+          mode: "snapshot",
+          purpose: "actor-snapshot",
+        });
+        if (includeImageData)
+          for (const sheet of Object.values(snapshot.sheets)) {
+            const objects = objectsOf(sheet);
+            for (const image of objects.images) {
+              try {
+                image.data = Buffer.from(
+                  imagePreviewBytes(image, e.imported.preservation?.parts ?? {}),
+                ).toString("base64");
+              } catch {
+                /* Renderer reports missing embedded content explicitly. */
+              }
+            }
+            if (objects.images.length)
+              sheet.custom = { ...sheet.custom, excelmanusObjects: objects };
+          }
+        return { meta: { ...e.meta }, snapshot };
+      }),
+    );
+  }
+
+  /** 本次打开与当前磁盘字节的真实比较；不把历史变更归因于本次读取。 */
+  sourceStatus(docId: string, root: string) {
+    this.assertMacroReadEntry(docId, root);
+    return this.entry(docId, root).then((entry) =>
+      this.enqueue(entry, () => {
+        const currentSha256 = sha256(
+          readVerifiedResourceSync(root, entry.meta.path, {
+            docId: entry.meta.id,
+            rev: entry.meta.rev,
+            purpose: "source-status-hash",
+          }).bytes,
+        );
+        return {
+          openedSha256: entry.openedHash,
+          currentSha256,
+          changedSinceOpen: currentSha256 !== entry.openedHash,
+          calculation: entry.computedInMemoryOnly
+            ? "computed-in-memory-not-persisted"
+            : "no-unpersisted-calculation-observed",
+          pendingWrite:
+            entry.meta.rev > entry.checkpointRev ||
+            (!!entry.writeAccess && entry.meta.calcPending === true),
+        };
+      }),
+    );
+  }
+
+  /** Read-only semantic verification must never trigger cold write recovery. */
+  assertSavedReadOpen(
+    workspaceId: string,
+    root: string,
+    input: { docId?: string; path?: string },
+  ): void {
+    const path = this.editTarget(workspaceId, root, input);
+    const row = this.db
+      .prepare("SELECT * FROM documents WHERE workspace_id=? AND path=?")
+      .get(workspaceId, path) as DocRow | undefined;
+    if (!row) return;
+    const pending =
+      row.head_rev !== row.checkpoint_rev ||
+      (row.checkpoint_snapshot !== null &&
+        readCheckpointSnapshot(row.checkpoint_snapshot).pending) ||
+      this.db.prepare("SELECT 1 FROM doc_checkpoints WHERE doc_id=?").get(row.id) !== undefined;
+    if (pending)
+      throw new FileOperationError(
+        "VERSION_CONFLICT",
+        "来源对齐只读取已保存版本；此文件有待保存或待恢复状态，请先在原任务完成保存。",
+      );
+  }
+
+  /** Do not let a macro metadata read trigger cold pending-write recovery. */
+  assertMacroReadOpen(
+    workspaceId: string,
+    root: string,
+    input: { docId?: string; path?: string },
+  ): void {
+    const path = this.editTarget(workspaceId, root, input);
+    const row = this.db
+      .prepare("SELECT * FROM documents WHERE workspace_id=? AND path=?")
+      .get(workspaceId, path) as DocRow | undefined;
+    if (!row || row.kind !== "xlsx" || this.docs.has(row.id)) return;
+    const pending =
+      row.head_rev > row.checkpoint_rev ||
+      (row.checkpoint_snapshot !== null &&
+        readCheckpointSnapshot(row.checkpoint_snapshot).pending) ||
+      this.db.prepare("SELECT 1 FROM doc_checkpoints WHERE doc_id=?").get(row.id) !== undefined;
+    if (!pending) return;
+    const bytes = readVerifiedResourceSync(root, path, {
+      docId: row.id,
+      purpose: "macro-cold-read-preflight",
+    }).bytes;
+    // Empty path intentionally excludes extension-only detection for this lifecycle guard.
+    const macro = inspectMacroPackage(bytes, "", {
+      checkpointRev: row.checkpoint_rev,
+      currentRev: row.head_rev,
+      packageRev: null,
+      isCurrent: false,
+      packageState: "unconfirmed_disk",
+    });
+    if (macro)
+      throw new FileOperationError(
+        "VERSION_CONFLICT",
+        "此宏工作簿存在尚未恢复的保存或计算状态；只读宏核验不会自动恢复写回，请先从原任务处理后再读取。",
+      );
+  }
+
+  private assertMacroReadEntry(docId: string, root: string): void {
+    const row = this.db.prepare("SELECT workspace_id FROM documents WHERE id=?").get(docId) as
+      | { workspace_id: string }
+      | undefined;
+    if (!row) throw new DocNotFoundError(docId);
+    this.assertMacroReadOpen(row.workspace_id, root, { docId });
+  }
+
+  /** Same-buffer disk facts, serialized with writes; this read never checkpoints or commits. */
+  macroEvidence(docId: string, root: string) {
+    this.assertMacroReadEntry(docId, root);
+    return this.entry(docId, root).then((entry) =>
+      this.enqueue(entry, () => this.readMacroEvidence(entry)),
+    );
+  }
+
+  private readMacroEvidence(entry: DocEntry) {
+    assertToolAccess(entry.meta.path, entry.workspaceRoot);
+    const bytes = readVerifiedResourceSync(entry.workspaceRoot, entry.meta.path, {
+      docId: entry.meta.id,
+      rev: entry.meta.rev,
+      purpose: "macro-evidence-current-disk",
+    }).bytes;
+    const currentSha256 = sha256(bytes);
+    const pendingWrite =
+      entry.meta.rev > entry.checkpointRev ||
+      (entry.persistEngineResults && entry.meta.calcPending === true);
+    const packageRev =
+      currentSha256 === entry.checkpointHash && !entry.rebased && !entry.external
+        ? entry.checkpointRev
+        : null;
+    const isCurrent =
+      packageRev !== null &&
+      entry.checkpointRev === entry.meta.rev &&
+      !pendingWrite &&
+      !entry.readError &&
+      !entry.meta.checkpointError;
+    return {
+      docId: entry.meta.id,
+      path: entry.meta.path,
+      rev: entry.meta.rev,
+      docRevs: { [entry.meta.id]: entry.meta.rev },
+      sourceFile: {
+        openedSha256: entry.openedHash,
+        currentSha256,
+        changedSinceOpen: currentSha256 !== entry.openedHash,
+        calculation: entry.computedInMemoryOnly
+          ? "computed-in-memory-not-persisted"
+          : "no-unpersisted-calculation-observed",
+        pendingWrite,
+      },
+      macroEvidence:
+        entry.meta.kind === "xlsx"
+          ? inspectMacroPackage(bytes, entry.meta.path, {
+              checkpointRev: entry.checkpointRev,
+              currentRev: entry.meta.rev,
+              packageRev,
+              isCurrent,
+              packageState: isCurrent
+                ? "confirmed_checkpoint"
+                : packageRev !== null
+                  ? "saved_checkpoint_not_current"
+                  : "unconfirmed_disk",
+            })
+          : undefined,
+    };
+  }
+
+  imagePreview(docId: string, root: string, sheetId: string, imageId: string) {
+    return this.entry(docId, root).then((e) =>
+      this.enqueue(e, () => {
+        const image = objectsOf(e.live.save().sheets[sheetId]).images.find((i) => i.id === imageId);
+        if (!image) throw new FileOperationError("INVALID_ARGUMENT", "图片不存在");
+        return {
+          bytes: imagePreviewBytes(image, e.imported.preservation?.parts ?? {}),
+          mediaType: image.mediaType,
+        };
       }),
     );
   }
@@ -650,6 +1494,66 @@ export class DocumentService {
   hasDoc(docId: string): boolean {
     if (this.docs.has(docId) || this.metas.has(docId)) return true;
     return this.db.prepare("SELECT 1 FROM documents WHERE id = ?").get(docId) !== undefined;
+  }
+
+  /** Host-only final barrier across the whole trusted origin, not model-selected sources.
+   * Pure synchronous state inspection: never opens an actor/file or starts calculation/save.
+   */
+  hasPendingWritesForOrigin(
+    workspaceId: string,
+    origin: Pick<ToolAccessContext, "sessionId" | "originAgentId" | "originTurnId">,
+  ): boolean {
+    const matches = (value: unknown, persisted = false): boolean => {
+      if (!value || typeof value !== "object") return false;
+      const candidate = value as Record<string, unknown>;
+      return (
+        (!persisted || candidate.version === 1) &&
+        candidate.sessionId === origin.sessionId &&
+        candidate.originAgentId === origin.originAgentId &&
+        candidate.originTurnId === origin.originTurnId
+      );
+    };
+    for (const entry of this.liveEntries.values()) {
+      if (entry.meta.workspaceId !== workspaceId) continue;
+      if (
+        (entry.meta.rev > entry.checkpointRev && matches(entry.pendingWriteAccess)) ||
+        (entry.meta.calcPending && matches(entry.writeAccess))
+      )
+        return true;
+    }
+    const rows = this.db
+      .prepare(
+        "SELECT id,head_rev,checkpoint_rev,checkpoint_snapshot FROM documents WHERE workspace_id=?",
+      )
+      .all(workspaceId) as Pick<
+      DocRow,
+      "id" | "head_rev" | "checkpoint_rev" | "checkpoint_snapshot"
+    >[];
+    for (const row of rows) {
+      // An active actor is authoritative; a saved pending flag can be older than its state.
+      if (this.liveEntries.has(row.id)) continue;
+      const pendingCalc = row.checkpoint_snapshot
+        ? readCheckpointSnapshot(row.checkpoint_snapshot).pending
+        : false;
+      if (row.head_rev <= row.checkpoint_rev && !pendingCalc) continue;
+      const lower = pendingCalc
+        ? Math.min(row.checkpoint_rev, row.head_rev - 1)
+        : row.checkpoint_rev;
+      const pending = this.db
+        .prepare("SELECT inverse FROM doc_ops WHERE doc_id=? AND rev>? AND rev<=?")
+        .all(row.id, lower, row.head_rev);
+      if (
+        pending.some((op) =>
+          matches(
+            (JSON.parse(String(op.inverse ?? "{}")) as { _hostAccessOrigin?: unknown })
+              ._hostAccessOrigin,
+            true,
+          ),
+        )
+      )
+        return true;
+    }
+    return false;
   }
 
   headRev(docId: string): number {
@@ -821,15 +1725,40 @@ export class DocumentService {
     if (this.db.prepare("SELECT 1 FROM doc_ops WHERE doc_id = ? AND reverts = ?").get(docId, rev))
       return { ok: false, code: "VERSION_CONFLICT", message: `修订 ${rev} 已经撤销过` };
     const ws = JSON.parse(target.write_set) as DocWriteSet;
-    const later = this.opsAfter(docId, rev).filter((h) => h.sourceKind !== "engine");
     const overlaps = (a: RangeRef, b: RangeRef) =>
       a.sheetId === b.sheetId && a.r0 <= b.r1 && b.r0 <= a.r1 && a.c0 <= b.c1 && b.c0 <= a.c1;
-    const blocker = later.find(
-      (h) =>
-        ws.structural.length > 0 ||
-        h.writeSet.structural.length > 0 ||
-        h.writeSet.ranges.some((r) => ws.ranges.some((t) => overlaps(r, t))),
+    const conflicts = (a: DocWriteSet, b: DocWriteSet) =>
+      a.structural.length > 0 ||
+      b.structural.length > 0 ||
+      a.ranges.some((r) => b.ranges.some((t) => overlaps(r, t)));
+    const reversals = new Map(
+      (
+        this.db
+          .prepare(
+            "SELECT rev, reverts FROM doc_ops WHERE doc_id = ? AND rev > ? AND reverts IS NOT NULL",
+          )
+          .all(docId, rev) as Array<{ rev: number; reverts: number }>
+      ).map((r) => [r.rev, r.reverts]),
     );
+    const later: DocOpRecord[] = [];
+    for (const h of this.opsAfter(docId, rev).filter((h) => h.sourceKind !== "engine")) {
+      const index = later.findIndex((r) => r.rev === reversals.get(h.rev));
+      const original = later[index];
+      // 只抵消没有跨过有效冲突写入的修订/逆操作对；内部强制回退不能掩盖后来的编辑。
+      if (
+        original &&
+        later
+          .slice(index + 1)
+          .every(
+            (r) => !conflicts(r.writeSet, original.writeSet) && !conflicts(r.writeSet, h.writeSet),
+          )
+      ) {
+        later.splice(index, 1);
+      } else {
+        later.push(h);
+      }
+    }
+    const blocker = later.find((h) => conflicts(ws, h.writeSet));
     if (blocker)
       return {
         ok: false,
@@ -839,8 +1768,78 @@ export class DocumentService {
     return this.revert(docId, workspaceRoot, rev, source);
   }
 
+  /** Resolve a tool target without opening an actor or changing file bytes. */
+  editTarget(workspaceId: string, root: string, input: { docId?: string; path?: string }): string {
+    const row = input.docId
+      ? (this.db.prepare("SELECT workspace_id,path FROM documents WHERE id=?").get(input.docId) as
+          | { workspace_id: string; path: string }
+          | undefined)
+      : undefined;
+    if (row) assertToolAccess(row.path, root);
+    if (input.path !== undefined) assertToolAccess(input.path, root);
+    this.assertWorkspaceRoot(workspaceId, root);
+    const supplied =
+      input.path === undefined ? undefined : resolveWorkspacePath(root, input.path).rel;
+    if (!input.docId) {
+      if (supplied === undefined)
+        throw new FileOperationError("INVALID_ARGUMENT", "需要 docId 或 path");
+      return supplied;
+    }
+    if (!row) throw new DocNotFoundError(input.docId);
+    if (row.workspace_id !== workspaceId)
+      throw new PathSafetyError("OUT_OF_WORKSPACE", "文档不属于当前工作区");
+    const canonical = resolveWorkspacePath(root, row.path).rel;
+    if (supplied !== undefined && supplied !== canonical)
+      throw new FileOperationError(
+        "INVALID_ARGUMENT",
+        "docId 与 path 指向不同工作簿，本次修改未执行；请重新读取目标并使用一致的 docId/path",
+      );
+    return canonical;
+  }
+
   meta(docId: string): DocumentMeta | undefined {
     return this.metas.get(docId);
+  }
+
+  /** 双方 actor 按稳定顺序锁定，预览版本核对后走唯一提交路径。 */
+  async merge(workspaceId: string, root: string, input: MergeDocsBody): Promise<SubmitResult> {
+    if (input.sourceDocId === input.targetDocId)
+      return { ok: false, code: "BAD_OPERATION", message: "请选择两个不同的工作簿" };
+    return this.inWorkspace(workspaceId, async () => {
+      const source = await this.entry(input.sourceDocId, root),
+        target = await this.entry(input.targetDocId, root);
+      if (source.meta.workspaceId !== workspaceId || target.meta.workspaceId !== workspaceId)
+        throw new DocNotFoundError(input.targetDocId);
+      const entries = [source, target].sort((a, b) => a.meta.id.localeCompare(b.meta.id));
+      const lock = (i: number): Promise<SubmitResult> => {
+        const entry = entries[i];
+        if (entry) return this.enqueue(entry, () => lock(i + 1));
+        return (async (): Promise<SubmitResult> => {
+          for (const e of entries) {
+            await this.checkExternal(e);
+            await this.commitEngine(e);
+          }
+          if (
+            source.external ||
+            target.external ||
+            source.meta.rev !== input.sourceRev ||
+            target.meta.rev !== input.targetRev
+          )
+            return {
+              ok: false,
+              code: "VERSION_CONFLICT",
+              message: "工作簿已在对比后发生变化，请重新对比再合并",
+            };
+          const mutations = mergeMutations(source.live.save(), target.live.save(), input.cells);
+          return this.doSubmit(target, {
+            baseRev: input.targetRev,
+            source: { kind: "user", id: "compare-merge" },
+            mutations,
+          });
+        })();
+      };
+      return lock(0);
+    });
   }
 
   // ---------- 提交 ----------
@@ -849,17 +1848,134 @@ export class DocumentService {
    * 统一写入路径（07 §3.3）：冲突检查（变换坐标）→ 编译/修补 → 同步窗口执行 →
    * 前像逆操作 → dryRun 回滚 或 事务写 doc_ops + head_rev → 广播。
    */
+  /** Actual host snapshot + compiler, never model-supplied sheet IDs or claimed ranges. */
+  editEffectIntents(path: string, root: string, ops: ChangeOp[]): EffectIntent[] {
+    const whole: EffectIntent[] = [{ kind: "mutate", path }];
+    assertToolReadAccess(path, "file-bytes", root);
+    const live = [...this.liveEntries.values()].find(
+      (entry) => entry.meta.path === path && entry.workspaceRoot === root,
+    );
+    const row = this.db
+      .prepare(
+        "SELECT d.kind,d.checkpoint_snapshot FROM documents d JOIN workspaces w ON w.id=d.workspace_id WHERE d.path=? AND w.path=?",
+      )
+      .get(path, root) as { kind: string; checkpoint_snapshot: string | null } | undefined;
+    if (!row?.checkpoint_snapshot || row.kind !== "xlsx") return whole;
+    try {
+      const snapshot = live
+        ? live.live.save()
+        : readCheckpointSnapshot(row.checkpoint_snapshot).snapshot;
+      return compileRegionalFootprint(snapshot, ops).map((range) => ({
+        kind: "mutate",
+        path,
+        sheetId: range.sheetId,
+        range: `${indexToCol(range.c0 + 1)}${range.r0 + 1}:${indexToCol(range.c1 + 1)}${range.r1 + 1}`,
+      }));
+    } catch (error) {
+      // An unsupported local footprint does not become a whole-file grant.
+      // Existing whole-file-authorized operations retain their pre-existing path.
+      assertToolEffectsAllowed(whole, root);
+      return whole;
+    }
+  }
+  private prepareRegionalPlan(path: string, root: string, ranges: RangeRef[]): EffectPermit {
+    const permit = prepareEffectPlan({
+      workspaceRoot: root,
+      atomicScope: "single-resource",
+      effects: [
+        ...ranges.map((range) => ({
+          operation: "mutate" as const,
+          path,
+          sheetId: range.sheetId,
+          range: `${indexToCol(range.c0 + 1)}${range.r0 + 1}:${indexToCol(range.c1 + 1)}${range.r1 + 1}`,
+        })),
+        { operation: "read-metadata", path },
+        { operation: "read-content", path },
+      ],
+    });
+    this.regionalPlans.set(permit, ranges);
+    return permit;
+  }
+  private prepareDocumentWrite(path: string, root: string, ops: ChangeOp[] = []): EffectPermit {
+    try {
+      return prepareEffectPlan({
+        workspaceRoot: root,
+        atomicScope: "single-resource",
+        effects: [
+          { operation: "mutate", path },
+          { operation: "read-metadata", path },
+          { operation: "read-content", path },
+          ...ops.flatMap((op) =>
+            op.op === "image.add"
+              ? [
+                  { operation: "read-metadata" as const, path: op.path },
+                  { operation: "read-content" as const, path: op.path },
+                ]
+              : [],
+          ),
+        ],
+      });
+    } catch (error) {
+      if (
+        !(error instanceof TurnAccessError) ||
+        !currentToolAccess()?.binding().contractRef ||
+        !ops.length
+      )
+        throw error;
+      const live = [...this.liveEntries.values()].find(
+        (entry) => entry.meta.path === path && entry.workspaceRoot === root,
+      );
+      const row = this.db
+        .prepare(
+          "SELECT d.kind,d.checkpoint_snapshot FROM documents d JOIN workspaces w ON w.id=d.workspace_id WHERE d.path=? AND w.path=?",
+        )
+        .get(path, root) as { kind: string; checkpoint_snapshot: string | null } | undefined;
+      if (!row?.checkpoint_snapshot || row.kind !== "xlsx")
+        throw new FileOperationError(
+          "UNSUPPORTED_FEATURE",
+          "区域编辑需先获准读取并登记普通 XLSX；当前不能证明操作范围",
+        );
+      const snapshot = live
+        ? live.live.save()
+        : readCheckpointSnapshot(row.checkpoint_snapshot).snapshot;
+      return this.prepareRegionalPlan(path, root, compileRegionalFootprint(snapshot, ops));
+    }
+  }
+
   submit(docId: string, workspaceRoot: string, batch: SubmitBatch): Promise<SubmitResult> {
-    return this.entry(docId, workspaceRoot)
-      .then((e) => this.enqueue(e, () => this.doSubmit(e, batch)))
+    return Promise.resolve()
+      .then(() => {
+        if (
+          "_hostRegionalEffect" in batch ||
+          "_hostAccessOrigin" in batch ||
+          "_hostNativeOrigin" in batch ||
+          "_hostCreatedDocument" in batch
+        )
+          throw new FileOperationError("INVALID_ARGUMENT", "客户端不能提交宿主授权或区域证明字段");
+        const meta = this.meta(docId);
+        if (!meta) throw new DocNotFoundError(docId);
+        const permit = this.prepareDocumentWrite(meta.path, workspaceRoot, batch.ops);
+        return runWithEffectPlan(permit, () => {
+          this.assertMacroReadEntry(docId, workspaceRoot);
+          return this.entry(docId, workspaceRoot).then((e) =>
+            this.enqueue(e, () => this.doSubmit(e, batch)),
+          );
+        });
+      })
       .catch((e): SubmitFail => {
         if (e instanceof DocNotFoundError) {
           return { ok: false, code: "DOC_NOT_FOUND", message: e.message };
         }
         return {
           ok: false,
-          code: e instanceof FileOperationError ? (e.code as SubmitFail["code"]) : "BAD_OPERATION",
-          message: e instanceof FileOperationError ? e.message : "文档操作失败",
+          code:
+            e instanceof FileOperationError || e instanceof TurnAccessError
+              ? (e.code as SubmitFail["code"])
+              : "BAD_OPERATION",
+          message:
+            e instanceof FileOperationError || e instanceof TurnAccessError
+              ? e.message
+              : "文档操作失败",
         };
       });
   }
@@ -869,6 +1985,62 @@ export class DocumentService {
     batch: SubmitBatch,
     opts: { revert?: boolean } = {},
   ): Promise<SubmitResult> {
+    const permit = this.prepareDocumentWrite(entry.meta.path, entry.workspaceRoot, batch.ops);
+    return runWithEffectPlan(permit, async () => {
+      const initialRev = entry.meta.rev;
+      let preimage: IWorkbookData | undefined;
+      try {
+        const result = await this.doSubmitAuthorized(entry, batch, opts, permit, (snapshot) => {
+          preimage = snapshot;
+        });
+        if (!result.ok && preimage && entry.meta.rev === initialRev)
+          await this.restore(entry, preimage);
+        return result;
+      } catch (error) {
+        if (preimage && entry.meta.rev === initialRev) await this.restore(entry, preimage);
+        throw error;
+      }
+    });
+  }
+
+  private async doSubmitAuthorized(
+    entry: DocEntry,
+    batch: SubmitBatch,
+    opts: { revert?: boolean },
+    permit: EffectPermit,
+    capturePreimage: (snapshot: IWorkbookData) => void,
+  ): Promise<SubmitResult> {
+    const regional = this.regionalPlans.get(permit);
+    if (regional) recheckEffectPlan(permit);
+    else assertToolWriteAccess(entry.meta.path, entry.workspaceRoot);
+    for (const op of batch.ops ?? [])
+      if (op.op === "image.add") assertToolAccess(op.path, entry.workspaceRoot);
+    const macroBefore =
+      entry.meta.kind === "xlsx" ? this.readMacroEvidence(entry).macroEvidence : undefined;
+    if (macroBefore) {
+      assertUnprotected(entry.imported);
+      assertMacroWriteSupported(
+        macroBefore,
+        entry.live.save(),
+        batch.ops,
+        batch.mutations,
+        opts.revert === true,
+      );
+      if (macroBefore.checkpoint.packageRev === null)
+        throw new FileOperationError(
+          "VERSION_CONFLICT",
+          "宏包与已确认检查点不同，请先处理外部变更；本批修改未执行",
+        );
+    }
+    if (!batch.dryRun) await this.prepareWriteOrigin(entry);
+    if (
+      batch.expectedPath !== undefined &&
+      resolveWorkspacePath(entry.workspaceRoot, entry.meta.path).rel !== batch.expectedPath
+    )
+      throw new FileOperationError(
+        "INVALID_ARGUMENT",
+        "工作簿路径已改变，本次修改未执行；请重新读取目标",
+      );
     await this.checkExternal(entry);
     if (entry.external)
       return {
@@ -876,13 +2048,24 @@ export class DocumentService {
         code: "VERSION_CONFLICT",
         message: `${EXTERNAL_CONFLICT}；选择前暂停写入`,
       };
+    assertUnprotected(entry.imported);
+    assertNoExternalFormulaInputs(batch.ops, batch.mutations);
+    if (batch.ops?.some((op) => op.op === "recalculate"))
+      assertExternalRecalculation(entry.live.save());
     // 之前异步到达的引擎结果先成为独立修订，本次冲突检查能看到它
     await this.commitEngine(entry);
     const recalc = batch.ops?.some((o) => o.op === "recalculate") === true;
     if (!batch.created && recalc && batch.ops?.every((o) => o.op === "recalculate")) {
-      const done = await entry.live.boot.waitCalc(RECALC_MS);
+      if (!batch.dryRun) await this.commitEngine(entry, true);
+      const done = await entry.live.boot.waitCalc(
+        RECALC_MS,
+        batch.dryRun !== true && entry.formulaCount > 0,
+      );
       await this.commitEngine(entry);
       if (done) delete entry.meta.calcPending;
+      else if (!batch.dryRun) entry.meta.calcPending = true;
+      if (!batch.dryRun && currentToolAccess()?.binding().accessDeliveryRequired)
+        await this.doCheckpoint(entry);
       return {
         ok: true,
         docId: entry.meta.id,
@@ -999,18 +2182,43 @@ export class DocumentService {
             unitId: live.unitId,
             snapshot: snap,
             images: loadImageFiles(opsIn, entry.workspaceRoot),
+            preservation: entry.imported.preservation,
           },
           opsIn,
         );
         mutations = [];
       } else {
-        const raw = normalizeMutations(mutIn ?? []);
-        if (!opts.revert && batch.source.kind === "user" && raw.some(isDerivedWorkbookMutation))
+        const normalized = normalizeMutations(mutIn ?? []);
+        const raw = opts.revert
+          ? normalized.map((mutation) => carryMissingPivotRefresh(mutation, live.save()))
+          : normalized;
+        if (
+          !opts.revert &&
+          batch.source.kind === "user" &&
+          raw.some((mutation) => isDerivedWorkbookMutation(mutation))
+        )
           return {
             ok: false,
             code: "UNSUPPORTED_FEATURE",
             message: "工作台不能回传公式派生状态或计算结果；请提交由用户命令触发的修改",
           };
+        if (raw.some((mutation) => mutation.id === OBJECT_LAYER_MUTATION)) {
+          const before = live.save();
+          const projected = structuredClone(before);
+          for (const mutation of raw) {
+            if (mutation.id !== OBJECT_LAYER_MUTATION) continue;
+            const { subUnitId, objects } = SheetObjectsMutation.parse(mutation.params);
+            const sheet = projected.sheets[subUnitId];
+            if (sheet) sheet.custom = { ...sheet.custom, excelmanusObjects: objects };
+          }
+          assertPivotRefreshChanges(before, projected, opts.revert === true);
+          planPivotRefreshPatches(
+            entry.imported.preservation?.parts ?? {},
+            entry.imported.preservation?.sheetParts ?? {},
+            projected,
+            before,
+          );
+        }
         mutations = raw.map((m) =>
           fixupMutationForTransport(
             m,
@@ -1030,6 +2238,12 @@ export class DocumentService {
       compiled !== undefined
         ? { ranges: [...compiled.ranges], structural: [...compiled.structural] }
         : deriveWriteSetAll(mutations);
+    if (regional) {
+      assertRegionalFootprint(regional, writeSet.ranges, writeSet.structural);
+      if (!opsIn)
+        throw new FileOperationError("UNSUPPORTED_FEATURE", "区域许可不接受未编译的原生 mutation");
+      compileRegionalFootprint(live.save(), opsIn);
+    }
     if (batch.created) {
       const snapshot = live.save();
       writeSet.structural.unshift(
@@ -1058,9 +2272,51 @@ export class DocumentService {
     }
 
     if (!opts.revert)
-      assertWritable(entry.imported, writeSet.ranges, opsIn, mutations, live.save());
+      assertWritable(
+        entry.imported,
+        writeSet.ranges,
+        opsIn,
+        mutations,
+        live.save(),
+        this.opsAfter(entry.meta.id, entry.checkpointRev).flatMap(
+          (record) => record.writeSet.structural,
+        ),
+      );
+    assertExternalLinkWrites(live.save(), opsIn, mutations, compiled);
+    const workbookPart = entry.imported.preservation?.parts["xl/workbook.xml"];
+    if (workbookPart) {
+      const commands = compiled?.commands ?? mutations;
+      assertLegacyWorkbookWriteSupported(textOf(workbookPart), {
+        sheets:
+          opsIn?.some((op) => /^sheet\.(?:add|delete|copy|move|rename|hide)$/.test(op.op)) ||
+          commands.some((m) =>
+            /(?:insert|remove|copy|move)-sheet|set-worksheet-(?:name|hidden|show|order)/.test(m.id),
+          ),
+        calcPr:
+          !!compiled?.formulas.length ||
+          commands.some((m) => mutationWritesFormula(m.params)) ||
+          (entry.formulaCount > 0 &&
+            (opsIn?.some(
+              (op) =>
+                (op.op === "find_replace" && op.formulas) ||
+                /^(?:rows|cols)\.(?:insert|delete)$|^sheet\.(?:copy|rename|delete)$|^(?:sort|cells\.fill)$/.test(
+                  op.op,
+                ),
+            ) ||
+              commands.some((m) =>
+                /move-range|move-rows|move-columns|reorder-range|(?:insert|remove)-(?:row|col)|copy-sheet|set-worksheet-name/.test(
+                  m.id,
+                ),
+              ))),
+      });
+    }
     let backupPath: string | undefined;
-    if (!batch.dryRun && (batch.source.kind === "agent" || batch.source.kind === "script")) {
+    if (
+      !batch.dryRun &&
+      (batch.source.kind === "agent" ||
+        batch.source.kind === "script" ||
+        batch.source.kind === "user")
+    ) {
       const bound = this.backups.bind({
         workspaceId: meta.workspaceId,
         workspaceRoot: entry.workspaceRoot,
@@ -1069,6 +2325,7 @@ export class DocumentService {
       });
       if (bound.needsBackup(meta.path) && meta.rev > entry.checkpointRev)
         await this.doCheckpoint(entry);
+      recheckEffectPlan(permit);
       backupPath = bound.ensureBackup(meta.path)?.backupPath;
     }
 
@@ -1095,9 +2352,12 @@ export class DocumentService {
 
     // ---- 5. 应用（同步命令窗口内捕获 mutation） ----
     const preSnap = structuredClone(live.save());
+    capturePreimage(preSnap);
+    const unpersistedExternal = entry.computedInMemoryOnly && externalCells(preSnap).length > 0;
     const emitted: DocMutation[] = [];
     let execError: string | undefined;
     const execInWindow = async (id: string, params: unknown, fromCollab: boolean) => {
+      recheckEffectPlan(permit);
       live.capture.begin();
       const ok = await live.boot.executeCommand(
         id,
@@ -1148,13 +2408,39 @@ export class DocumentService {
     const formulaTotal = entry.formulaCount + formulas.length;
     let calc: SubmitOk["calc"] = "computed";
     if (formulaTotal > 0 && (recalc || formulaTotal <= FORMULA_SYNC_THRESHOLD)) {
-      if (!(await live.boot.waitCalc(recalc ? RECALC_MS : SYNC_CALC_MS))) calc = "pending";
+      if (!(await live.boot.waitCalc(recalc ? RECALC_MS : SYNC_CALC_MS, recalc))) calc = "pending";
     } else if (formulaTotal > 0) calc = "pending";
-    const engineResults = withFormulas(live.capture.takeEngineResults(), live.save());
+    const externalResults = filterExternalEngineResults(
+      live.capture.takeEngineResults(),
+      live.save(),
+      entry.imported.snapshot,
+    );
+    const engineResults = withFormulas(externalResults.results, live.save());
     emitted.push(...engineResults);
 
     const postSnap = live.save();
     try {
+      if (regional) {
+        const actual = deriveWriteSetAll(emitted);
+        assertRegionalFootprint(regional, actual.ranges, actual.structural);
+        assertRegionalSnapshot(preSnap, postSnap, regional);
+      }
+      assertPivotRefreshChanges(preSnap, postSnap, opts.revert === true);
+      // The bounded OOXML validation cannot be skipped by the large-workbook fast path.
+      const pivotPatches = planPivotRefreshPatches(
+        entry.imported.preservation?.parts ?? {},
+        entry.imported.preservation?.sheetParts ?? {},
+        postSnap,
+        entry.checkpointSnapshot,
+      );
+      if (
+        pivotPatches.length &&
+        (writeSet.structural.length || deriveWriteSetAll(emitted).structural.length)
+      )
+        throw new FileOperationError(
+          "UNSUPPORTED_FEATURE",
+          "透视缓存刷新标记不能与源结构变化同批提交",
+        );
       if (!postSnap.sheetOrder.some((id) => !postSnap.sheets[id]?.hidden))
         throw new FileOperationError("UNSUPPORTED_FEATURE", "工作簿必须保留至少一个可见工作表");
       if (entry.imported.csv) {
@@ -1192,18 +2478,32 @@ export class DocumentService {
               structural: [...writeSet.structural, ...deriveWriteSetAll(emitted).structural],
             },
             sourceKind: batch.source.kind,
+            mutations: engineResults,
           },
         ]);
         // 整本导出预检只对小工作簿做；大表导出只在检查点（P1-31，提交确认不被阻塞），
         // 但仍对本次写集命中的格做同规则的轻量保真检查，做不到就在提交时拒绝
-        if (cellTotal(entry.imported) <= PRECHECK_MAX_CELLS)
-          exportXlsx(
+        if (macroBefore || cellTotal(entry.imported) <= PRECHECK_MAX_CELLS) {
+          const candidate = exportXlsx(
             entry.imported,
             postSnap,
             entry.checkpointSnapshot,
             entry.rebased ? undefined : changes,
           );
-        else
+          assertMacroPreserved(macroBefore, candidate, entry.meta.path);
+          if (regional)
+            assertRegionalSnapshot(
+              entry.imported.snapshot,
+              importXlsx(candidate, entry.meta.path).snapshot,
+              [
+                ...this.opsAfter(meta.id, entry.checkpointRev).flatMap(
+                  (record) => record.writeSet.ranges,
+                ),
+                ...regional,
+              ],
+              true,
+            );
+        } else
           assertCellsWritable(
             entry.imported,
             postSnap,
@@ -1231,6 +2531,18 @@ export class DocumentService {
       emittedDerived.structural,
     );
     const objectChanges = describeObjectChanges(preSnap, postSnap);
+    for (const sid of postSnap.sheetOrder) {
+      const before = {
+        settings: printSettingsOf(preSnap.sheets[sid]),
+        names: printNamesOf(preSnap, sid),
+      };
+      const after = {
+        settings: printSettingsOf(postSnap.sheets[sid]),
+        names: printNamesOf(postSnap, sid),
+      };
+      if (JSON.stringify(before) !== JSON.stringify(after))
+        objectChanges.push(`更新打印设置（${postSnap.sheets[sid]?.name ?? sid}）`);
+    }
     for (const [resource, label] of [
       [CF_RESOURCE, "条件格式"],
       [DV_RESOURCE, "数据验证"],
@@ -1283,8 +2595,10 @@ export class DocumentService {
     }
 
     // ---- 7. 事务写 doc_ops + head_rev；提交后才广播 ----
+    recheckEffectPlan(permit);
     const rev = head + 1;
     const now = nowIso();
+    const accessOrigin = this.writeOriginMetadata(entry, rev);
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db
@@ -1302,13 +2616,37 @@ export class DocumentService {
           batch.toolCallId ?? null,
           JSON.stringify(finalWriteSet),
           JSON.stringify(emitted),
-          JSON.stringify(inverse),
+          JSON.stringify({
+            ...inverse,
+            ...accessOrigin,
+            ...(regional
+              ? {
+                  _hostRegionalEffect: {
+                    version: 1,
+                    preimageHash: entry.checkpointHash,
+                    ranges: regional,
+                    ops: opsIn,
+                  },
+                }
+              : {}),
+          }),
           now,
           batch.reverts ?? null,
         );
       this.db
         .prepare("UPDATE documents SET head_rev = ?, rev = ? WHERE id = ?")
         .run(rev, rev, meta.id);
+      if (calc === "pending") {
+        // 授权与编辑日志同事务落盘，覆盖首次检查点前崩溃；不能以 postSnap 覆盖原基线。
+        const saved = this.db
+          .prepare("SELECT checkpoint_snapshot FROM documents WHERE id=?")
+          .get(meta.id) as { checkpoint_snapshot: string };
+        const baseline = readCheckpointSnapshot(saved.checkpoint_snapshot).snapshot;
+        baseline.custom = { ...baseline.custom, [PENDING_CALCULATION]: true };
+        this.db
+          .prepare("UPDATE documents SET checkpoint_snapshot=? WHERE id=?")
+          .run(JSON.stringify(baseline), meta.id);
+      }
       this.db.exec("COMMIT");
     } catch (_e) {
       this.db.exec("ROLLBACK");
@@ -1320,6 +2658,10 @@ export class DocumentService {
       };
     }
     meta.rev = rev;
+    entry.pendingWriteAccess = currentToolAccess();
+    entry.writeAccess = currentToolAccess();
+    entry.persistEngineResults = true;
+    entry.computedInMemoryOnly = unpersistedExternal || externalResults.filtered;
     entry.formulaCount += formulas.length;
     if (calc === "pending") meta.calcPending = true;
     else delete meta.calcPending;
@@ -1338,6 +2680,16 @@ export class DocumentService {
       });
     }
     this.schedule(entry, batch.source.kind === "user" ? 2000 : 1000);
+    if (currentToolAccess()?.binding().accessDeliveryRequired) {
+      try {
+        await this.doCheckpoint(entry);
+      } catch (error) {
+        throw new FileOperationError(
+          "VERSION_CONFLICT",
+          `修订 ${rev} 已提交文档日志，但保存未完成：${error instanceof Error ? error.message : String(error)}；未回滚已提交修订，请先处理保存问题`,
+        );
+      }
+    }
     return {
       ok: true,
       docId: meta.id,
@@ -1358,34 +2710,76 @@ export class DocumentService {
 
   /** 引擎在窗口外算完时，把结果排进文档 actor 作为 engine 来源修订提交。 */
   private watchCalc(entry: DocEntry): void {
-    entry.live.capture.onEngineResults = () => {
-      void this.enqueue(entry, () => this.commitEngine(entry)).catch(() => {});
-    };
+    entry.live.capture.onEngineResults = () =>
+      runWithoutToolAccess(() => {
+        void this.enqueue(entry, () =>
+          entry.writeAccess
+            ? runWithToolAccess(entry.writeAccess, () => this.commitEngine(entry))
+            : this.commitEngine(entry),
+        ).catch(() => {});
+      });
   }
 
   /** 异步到达的公式结果作为后续修订提交（source.kind = "engine"），走同一日志事务与广播。 */
-  private async commitEngine(entry: DocEntry): Promise<void> {
+  private async commitEngine(
+    entry: DocEntry,
+    authorize = false,
+    permit?: EffectPermit,
+  ): Promise<void> {
+    if ((authorize || entry.persistEngineResults) && !permit) {
+      if (!currentToolAccess() && !currentHostNativeAccess()) {
+        entry.meta.checkpointError =
+          "异步计算结果缺少可证明的当前授权与文档因果归属；原操作日志保留，未持久化缓存";
+        throw new FileOperationError("UNSUPPORTED_FEATURE", entry.meta.checkpointError);
+      }
+      const authorized = this.prepareDocumentWrite(entry.meta.path, entry.workspaceRoot);
+      return runWithEffectPlan(authorized, () => this.commitEngine(entry, authorize, authorized));
+    }
+    if (permit) recheckEffectPlan(permit);
+    if (authorize || entry.persistEngineResults)
+      assertToolWriteAccess(entry.meta.path, entry.workspaceRoot);
     const raw = entry.live.capture.takeEngineResults();
-    if (raw.length === 0) return;
-    const results = withFormulas(raw, entry.live.save());
+    if (workbookProtection(entry.imported).readOnly) {
+      if (authorize) assertUnprotected(entry.imported);
+      if (raw.length > 0) entry.computedInMemoryOnly = true;
+      return;
+    }
+    if (!entry.persistEngineResults && !authorize) {
+      if (raw.length > 0) entry.computedInMemoryOnly = true;
+      return;
+    }
+    // 显式重算先记持久授权，即使计算未返回；崩溃后可由未保存日志恢复。
+    if (raw.length === 0 && !authorize) return;
+    const externalResults = filterExternalEngineResults(
+      raw,
+      entry.live.save(),
+      entry.imported.snapshot,
+    );
+    if (externalResults.filtered) entry.computedInMemoryOnly = true;
+    if (!externalResults.results.length && !authorize) return;
+    const results = withFormulas(externalResults.results, entry.live.save());
+    const unpersistedExternal =
+      entry.computedInMemoryOnly && externalCells(entry.live.save()).length > 0;
     const { meta } = entry;
     const rev = meta.rev + 1;
     const writeSet: DocWriteSet = { ranges: deriveWriteSetAll(results).ranges, structural: [] };
+    const accessOrigin = this.writeOriginMetadata(entry, rev);
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db
         .prepare(
           `INSERT INTO doc_ops (doc_id, rev, base_rev, source_kind, source_id, session_id, tool_call_id, write_set, mutations, inverse, created_at)
-           VALUES (?, ?, ?, 'engine', 'formula', NULL, NULL, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, 'engine', ?, NULL, NULL, ?, ?, ?, ?)`,
         )
         .run(
           meta.id,
           rev,
           meta.rev,
+          authorize ? "recalculate" : "formula",
           JSON.stringify(writeSet),
           JSON.stringify(results),
           // 引擎结果是派生值：回退其输入后引擎会重算，自身无需逆操作
-          JSON.stringify({ mutations: [] }),
+          JSON.stringify({ mutations: [], ...accessOrigin }),
           nowIso(),
         );
       this.db
@@ -1397,22 +2791,42 @@ export class DocumentService {
       throw e;
     }
     meta.rev = rev;
-    delete meta.calcPending;
+    entry.pendingWriteAccess = currentToolAccess();
+    entry.writeAccess = currentToolAccess();
+    entry.persistEngineResults = true;
+    entry.computedInMemoryOnly = unpersistedExternal || externalResults.filtered;
+    if (authorize) meta.calcPending = true;
+    else delete meta.calcPending;
     this.onRevision?.(meta.id, rev, "engine:formula", results);
     this.schedule(entry, 1000);
   }
 
-  /** ADR 0002 recalculate：等待进行中的重算完成并提交引擎修订。 */
+  /** 显式重算：强制新一轮计算，并提交真实引擎结果，供检查点刷新公式缓存。 */
   async recalculate(
     docId: string,
     workspaceRoot: string,
     timeoutMs = RECALC_MS,
   ): Promise<{ rev: number; calc: SubmitOk["calc"] }> {
+    this.assertMacroReadEntry(docId, workspaceRoot);
     const entry = await this.entry(docId, workspaceRoot);
     return this.enqueue(entry, async () => {
-      const done = await entry.live.boot.waitCalc(timeoutMs);
+      assertToolWriteAccess(entry.meta.path, entry.workspaceRoot);
+      assertUnprotected(entry.imported);
+      if (entry.meta.kind === "xlsx")
+        assertMacroWriteSupported(
+          this.readMacroEvidence(entry).macroEvidence,
+          entry.live.save(),
+          [{ op: "recalculate" }],
+          undefined,
+        );
+      await this.prepareWriteOrigin(entry);
+      assertExternalRecalculation(entry.live.save());
+      await this.commitEngine(entry, true);
+      const done = await entry.live.boot.waitCalc(timeoutMs, entry.formulaCount > 0);
       await this.commitEngine(entry);
       if (done) delete entry.meta.calcPending;
+      else entry.meta.calcPending = true;
+      if (currentToolAccess()?.binding().accessDeliveryRequired) await this.doCheckpoint(entry);
       return { rev: entry.meta.rev, calc: done ? "computed" : "pending" };
     });
   }
@@ -1663,18 +3077,92 @@ export class DocumentService {
     this.watchCalc(entry);
   }
 
+  private sameWriteOrigin(
+    a: ToolAccessContext | undefined,
+    b: ToolAccessContext | undefined,
+  ): boolean {
+    return (
+      a === b ||
+      (!!a &&
+        !!b &&
+        a.sessionId === b.sessionId &&
+        a.originAgentId === b.originAgentId &&
+        a.originTurnId === b.originTurnId &&
+        JSON.stringify(a.binding().contractRef) === JSON.stringify(b.binding().contractRef))
+    );
+  }
+
+  /** Host-only provenance, not executable inverse commands or persisted permission. */
+  private writeOriginMetadata(entry?: DocEntry, rev?: number): Record<string, unknown> {
+    const access = currentToolAccess();
+    const native = currentHostNativeAccess();
+    if (!access && native && !currentHostNativeCheckpoint() && entry && rev !== undefined)
+      return {
+        _hostNativeOrigin: {
+          version: 1,
+          operationId: native.operationId,
+          workspaceId: entry.meta.workspaceId,
+          docId: entry.meta.id,
+          path: entry.meta.path,
+          priorRev: entry.meta.rev,
+          rev,
+          checkpointRev: entry.checkpointRev,
+          preimageHash: entry.checkpointHash,
+        },
+      };
+    return access && (access.binding().accessDeliveryRequired || access.binding().contractRef)
+      ? {
+          _hostAccessOrigin: {
+            version: 1,
+            sessionId: access.sessionId,
+            originAgentId: access.originAgentId,
+            originTurnId: access.originTurnId,
+            ...(access.binding().contractRef
+              ? { contractRef: structuredClone(access.binding().contractRef) }
+              : {}),
+          },
+        }
+      : {};
+  }
+
+  /** Called inside the actor, so flushing a prior origin cannot deadlock on its own queue. */
+  private async prepareWriteOrigin(entry: DocEntry): Promise<void> {
+    const current = currentToolAccess();
+    if (entry.meta.calcPending && !this.sameWriteOrigin(entry.writeAccess, current))
+      throw new FileOperationError(
+        "VERSION_CONFLICT",
+        "上一任务的计算尚未完成，不能把待保存修订转交给新任务",
+      );
+    if (
+      entry.meta.rev > entry.checkpointRev &&
+      !this.sameWriteOrigin(entry.pendingWriteAccess, current)
+    )
+      await this.doCheckpoint(entry);
+  }
+
   private schedule(entry: DocEntry, delay: number): void {
     if (this.closing || entry.external) return;
     clearTimeout(entry.timer);
-    entry.timer = setTimeout(() => {
-      entry.timer = undefined;
-      void this.enqueue(entry, () => this.doCheckpoint(entry)).catch((e) => {
-        // 保真能力不足是确定性失败；自动重试只适用于源文件暂时不可读、外部占用等瞬态错误。
-        // 继续重试 UNSUPPORTED_FEATURE 会无界消耗 CPU/IO，并掩盖需要用户选择的拒绝原因。
-        if (e instanceof FileOperationError && e.code === "UNSUPPORTED_FEATURE") return;
-        this.schedule(entry, 5000);
-      });
-    }, delay);
+    // Independent scheduling never captures whichever task happened to replace the timer.
+    entry.timer = runWithoutToolAccess(() =>
+      setTimeout(() => {
+        entry.timer = undefined;
+        void this.enqueue(entry, () => {
+          if (entry.meta.rev === entry.checkpointRev) {
+            this.finishSavedOrigin(entry);
+            return;
+          }
+          return this.doCheckpoint(entry);
+        }).catch((e) => {
+          if (
+            e instanceof TurnAccessError ||
+            (e instanceof FileOperationError && e.code === "UNSUPPORTED_FEATURE")
+          )
+            return;
+          this.schedule(entry, 5000);
+        });
+      }, delay),
+    );
     entry.timer.unref();
   }
 
@@ -1683,12 +3171,203 @@ export class DocumentService {
     await this.enqueue(entry, () => this.doCheckpoint(entry));
   }
 
+  private nativeCheckpointOrigin(entry: DocEntry): { operationId: string } | undefined {
+    if (entry.meta.rev <= entry.checkpointRev) return;
+    const rows = this.db
+      .prepare("SELECT rev,inverse FROM doc_ops WHERE doc_id=? AND rev>? AND rev<=? ORDER BY rev")
+      .all(entry.meta.id, entry.checkpointRev, entry.meta.rev);
+    const parsed = rows.map((row) => ({
+      rev: Number(row.rev),
+      inverse: JSON.parse(String(row.inverse ?? "{}")) as Record<string, unknown>,
+    }));
+    if (!parsed.some(({ inverse }) => inverse._hostNativeOrigin !== undefined)) return;
+    if (entry.rebased || entry.external || parsed.length !== entry.meta.rev - entry.checkpointRev)
+      throw new FileOperationError(
+        "VERSION_CONFLICT",
+        "原生检查点存在外部变化或已提交修订链不完整；日志保留待核",
+      );
+    let operationId: string | undefined;
+    for (const [index, row] of parsed.entries()) {
+      const value = row.inverse._hostNativeOrigin;
+      if (!value || typeof value !== "object" || row.inverse._hostAccessOrigin !== undefined)
+        throw new FileOperationError(
+          "VERSION_CONFLICT",
+          "原生与任务修订归属混合或缺失，不能自动代写",
+        );
+      const origin = value as Record<string, unknown>;
+      const rev = entry.checkpointRev + index + 1;
+      if (
+        Object.keys(origin).some(
+          (key) =>
+            ![
+              "version",
+              "operationId",
+              "workspaceId",
+              "docId",
+              "path",
+              "priorRev",
+              "rev",
+              "checkpointRev",
+              "preimageHash",
+            ].includes(key),
+        ) ||
+        origin.version !== 1 ||
+        typeof origin.operationId !== "string" ||
+        !origin.operationId ||
+        origin.workspaceId !== entry.meta.workspaceId ||
+        origin.docId !== entry.meta.id ||
+        origin.path !== entry.meta.path ||
+        row.rev !== rev ||
+        origin.rev !== rev ||
+        origin.priorRev !== rev - 1 ||
+        origin.checkpointRev !== entry.checkpointRev ||
+        origin.preimageHash !== entry.checkpointHash
+      )
+        throw new FileOperationError(
+          "VERSION_CONFLICT",
+          "原生检查点修订、前像或资源归属不匹配；日志保留待核",
+        );
+      operationId = origin.operationId;
+    }
+    return { operationId: operationId! };
+  }
+
   private async doCheckpoint(entry: DocEntry): Promise<void> {
+    // Protected source bytes are never writable, including legacy pending logs.
+    if (entry.meta.rev > entry.checkpointRev) {
+      try {
+        assertUnprotected(entry.imported);
+      } catch (error) {
+        entry.meta.checkpointError = error instanceof Error ? error.message : String(error);
+        throw error;
+      }
+    }
+    const access = entry.meta.rev > entry.checkpointRev ? entry.pendingWriteAccess : undefined;
+    if (access) return runWithToolAccess(access, () => this.saveCheckpoint(entry));
+    const current = currentToolAccess();
+    const origin = this.nativeCheckpointOrigin(entry);
+    if (origin) {
+      if (current)
+        throw new FileOperationError("VERSION_CONFLICT", "任务不能消费原生文档的检查点续接");
+      if (entry.meta.calcPending)
+        throw new FileOperationError(
+          "UNSUPPORTED_FEATURE",
+          "原生异步计算结果尚无可证明的文档因果归属；已提交公式日志保留待核，未自动保存缓存",
+        );
+      this.assertWorkspaceRoot(entry.meta.workspaceId, entry.workspaceRoot);
+      const token = issueHostNativeCheckpoint({
+        owner: entry,
+        db: this.db,
+        workspaceId: entry.meta.workspaceId,
+        workspaceRoot: entry.workspaceRoot,
+        operationId: origin.operationId,
+        docId: entry.meta.id,
+        revision: entry.meta.rev,
+        path: entry.meta.path,
+        preimageHash: entry.checkpointHash,
+      });
+      return runWithHostNativeCheckpoint(
+        token,
+        {
+          owner: entry,
+          docId: entry.meta.id,
+          revision: entry.meta.rev,
+          preimageHash: entry.checkpointHash,
+        },
+        () => this.saveCheckpoint(entry),
+      );
+    }
+    if (entry.meta.rev > entry.checkpointRev) {
+      entry.meta.checkpointError =
+        "待保存修订没有可信的原操作归属；日志保留待确认，新任务或新原生请求不能代写";
+      throw new FileOperationError("VERSION_CONFLICT", entry.meta.checkpointError);
+    }
+    return this.saveCheckpoint(entry);
+  }
+
+  private finishSavedOrigin(entry: DocEntry): void {
+    if (entry.meta.rev !== entry.checkpointRev) return;
+    delete entry.pendingWriteAccess;
+    if (
+      (entry.writeAccess?.binding().accessDeliveryRequired ||
+        entry.writeAccess?.binding().contractRef) &&
+      !entry.meta.calcPending
+    ) {
+      entry.persistEngineResults = false;
+      delete entry.writeAccess;
+    }
+  }
+
+  private async saveCheckpoint(entry: DocEntry): Promise<void> {
+    if (entry.meta.rev === entry.checkpointRev) {
+      this.finishSavedOrigin(entry);
+      return;
+    }
+    let permit: EffectPermit;
+    try {
+      permit = this.prepareDocumentWrite(entry.meta.path, entry.workspaceRoot);
+    } catch (error) {
+      if (
+        !(error instanceof TurnAccessError) ||
+        !currentToolAccess()?.binding().contractRef ||
+        entry.rebased
+      )
+        throw error;
+      const records = this.db
+        .prepare(
+          "SELECT write_set,inverse FROM doc_ops WHERE doc_id=? AND rev>? AND rev<=? ORDER BY rev",
+        )
+        .all(entry.meta.id, entry.checkpointRev, entry.meta.rev);
+      const ranges: RangeRef[] = [];
+      if (!records.length) throw error;
+      for (const row of records) {
+        const marker = (
+          JSON.parse(String(row.inverse)) as {
+            _hostRegionalEffect?: {
+              version: number;
+              preimageHash: string;
+              ranges: RangeRef[];
+              ops: ChangeOp[];
+            };
+          }
+        )._hostRegionalEffect;
+        const written = JSON.parse(String(row.write_set)) as DocWriteSet;
+        if (
+          !marker ||
+          marker.version !== 1 ||
+          marker.preimageHash !== entry.checkpointHash ||
+          !Array.isArray(marker.ops) ||
+          !Array.isArray(marker.ranges)
+        )
+          throw new FileOperationError(
+            "UNSUPPORTED_FEATURE",
+            "待保存操作缺少真实受控区域编译链，不能借标记扩大权限",
+          );
+        const recomputed = compileRegionalFootprint(entry.checkpointSnapshot, marker.ops);
+        assertRegionalFootprint(recomputed, written.ranges, written.structural);
+        assertRegionalFootprint(recomputed, marker.ranges);
+        ranges.push(...recomputed);
+      }
+      assertRegionalSnapshot(entry.checkpointSnapshot, entry.live.save(), ranges);
+      permit = this.prepareRegionalPlan(entry.meta.path, entry.workspaceRoot, ranges);
+    }
+    return runWithEffectPlan(permit, () => this.saveCheckpointAuthorized(entry, permit));
+  }
+
+  private async saveCheckpointAuthorized(entry: DocEntry, permit: EffectPermit): Promise<void> {
+    recheckEffectPlan(permit);
     clearTimeout(entry.timer);
+    entry.timer = undefined;
     try {
       await this.checkExternal(entry, true);
       if (entry.external) throw new FileOperationError("VERSION_CONFLICT", EXTERNAL_CONFLICT);
-      if (entry.meta.rev === entry.checkpointRev) return;
+      if (entry.meta.rev === entry.checkpointRev) {
+        this.finishSavedOrigin(entry);
+        return;
+      }
+      assertUnprotected(entry.imported);
+      const macroBefore =
+        entry.meta.kind === "xlsx" ? this.readMacroEvidence(entry).macroEvidence : undefined;
       const snapshot = structuredClone(entry.live.save());
       const bytes = entry.imported.csv
         ? exportCsv(snapshot, entry.imported.csv)
@@ -1701,21 +3380,53 @@ export class DocumentService {
               ? undefined
               : pendingChanges(this.opsAfter(entry.meta.id, entry.checkpointRev)),
           );
+      assertMacroPreserved(macroBefore, bytes, entry.meta.path);
       const hash = sha256(bytes);
-      const saved = JSON.stringify(snapshot);
+      const nextImported = entry.imported.csv
+        ? importCsv(bytes, entry.meta.path)
+        : importXlsx(bytes, entry.meta.path);
+      restoreSavedExternalCaches(snapshot, nextImported.snapshot);
+      const regional = this.regionalPlans.get(permit);
+      if (regional)
+        assertRegionalSnapshot(entry.imported.snapshot, nextImported.snapshot, regional, true);
+      const checkpointState = structuredClone(snapshot);
+      if (entry.persistEngineResults && entry.meta.calcPending) {
+        checkpointState.custom = { ...checkpointState.custom, [PENDING_CALCULATION]: true };
+      }
+      const saved = JSON.stringify(checkpointState);
       // Durable publication intent closes the rename/SQLite crash window.
+      recheckEffectPlan(permit);
       this.db
         .prepare(
           "INSERT INTO doc_checkpoints VALUES (?,?,?,?) ON CONFLICT(doc_id) DO UPDATE SET rev=excluded.rev,hash=excluded.hash,snapshot=excluded.snapshot",
         )
         .run(entry.meta.id, entry.meta.rev, hash, saved);
-      const nextImported = entry.imported.csv
-        ? importCsv(bytes, entry.meta.path)
-        : importXlsx(bytes, entry.meta.path);
       this.remapPreservation(nextImported, snapshot);
       // exportXlsx 已对这份字节做过回读校验；atomicWrite 再核对临时文件与之逐字节相同，
       // 不再整本重复解析（P1-31）
-      atomicWrite(entry.workspaceRoot, entry.meta.path, bytes, entry.checkpointHash);
+      const publication =
+        regional || currentHostNativeCheckpoint()
+          ? {
+              token: issueEffectPublication(permit, {
+                path: entry.meta.path,
+                resourceId: entry.meta.id,
+                revision: entry.meta.rev,
+                preimageSha256: entry.checkpointHash,
+                bytes,
+              }),
+              resourceId: entry.meta.id,
+              revision: entry.meta.rev,
+            }
+          : undefined;
+      atomicWrite(
+        entry.workspaceRoot,
+        entry.meta.path,
+        bytes,
+        entry.checkpointHash,
+        undefined,
+        publication,
+      );
+      recheckEffectPlan(permit);
       this.db.exec("BEGIN IMMEDIATE");
       try {
         this.db
@@ -1738,6 +3449,8 @@ export class DocumentService {
       entry.checkpointRev = entry.meta.rev;
       entry.meta.checkpointRev = entry.checkpointRev;
       delete entry.meta.checkpointError;
+      // Actor-serialized completion barrier: no unfinished authorized calculation is discarded.
+      this.finishSavedOrigin(entry);
       this.onCheckpoint?.(entry.meta.id, entry.checkpointRev);
     } catch (e) {
       entry.meta.checkpointError =
@@ -1749,8 +3462,13 @@ export class DocumentService {
 
   private statSig(entry: DocEntry): string | undefined {
     try {
-      return fileSig(statSync(resolveWorkspacePath(entry.workspaceRoot, entry.meta.path).abs));
-    } catch {
+      return fileSig(
+        statVerifiedResourceSync(entry.workspaceRoot, entry.meta.path, {
+          purpose: "checkpoint-signature",
+        }),
+      );
+    } catch (error) {
+      if (error instanceof TurnAccessError) throw error;
       return undefined;
     }
   }
@@ -1764,10 +3482,20 @@ export class DocumentService {
     let bytes: Uint8Array;
     let sig: string;
     try {
-      sig = fileSig(statSync(abs));
+      sig = fileSig(
+        statVerifiedResourceSync(entry.workspaceRoot, abs, {
+          docId: entry.meta.id,
+          purpose: "external-change-check",
+        }),
+      );
       if (!force && !entry.readError && sig === entry.fileSig) return;
-      bytes = readFileSync(abs);
-    } catch {
+      bytes = readVerifiedResourceSync(entry.workspaceRoot, abs, {
+        docId: entry.meta.id,
+        rev: entry.meta.rev,
+        purpose: "external-change-hash",
+      }).bytes;
+    } catch (error) {
+      if (error instanceof TurnAccessError) throw error;
       if (!entry.readError) {
         entry.readError = true;
         if (!entry.external) entry.meta.checkpointError = SOURCE_UNREADABLE;
@@ -1808,7 +3536,7 @@ export class DocumentService {
         entry.meta.kind === "csv"
           ? importCsv(bytes, entry.meta.path)
           : importXlsx(bytes, entry.meta.path);
-      const snapshot = JSON.parse(pending.snapshot) as IWorkbookData;
+      const { snapshot } = readCheckpointSnapshot(pending.snapshot);
       this.remapPreservation(imported, snapshot);
       imported.snapshot = snapshot;
       entry.imported = imported;
@@ -1861,11 +3589,17 @@ export class DocumentService {
         sessionId: "user",
         agentId: "user",
       };
-      const bytes = readFileSync(resolveWorkspacePath(entry.workspaceRoot, meta.path).abs);
+      const bytes = withFileAccessSync(
+        { kind: "file-bytes", path: meta.path, docId: meta.id, purpose: "resolve-external" },
+        () => readFileSync(resolveWorkspacePath(entry.workspaceRoot, meta.path).abs),
+      );
       if (sha256(bytes) !== ext.hash)
         throw new FileOperationError("VERSION_CONFLICT", "外部文件刚刚又发生变化，请重试");
       if (choice === "loadExternal") {
-        const backup = this.backups.storeBytes(scope, meta.path, this.appVersionBytes(entry));
+        const backup = this.backups.storeBytes(scope, meta.path, this.appVersionBytes(entry), {
+          docId: meta.id,
+          revision: meta.rev,
+        });
         await this.reloadExternal(entry, bytes);
         return { meta: { ...meta }, backup };
       }
@@ -2008,6 +3742,14 @@ export class DocumentService {
       entry.meta.kind === "csv"
         ? importCsv(bytes, entry.meta.path)
         : importXlsx(bytes, entry.meta.path);
+    recordDocumentAccess({
+      kind: "package-cache-parse",
+      path: entry.meta.path,
+      docId: entry.meta.id,
+      rev: entry.meta.rev,
+      purpose: "decode-external-bytes",
+      packageState: "opened-file-bytes",
+    });
     const snapshot = imported.snapshot;
     const prevHash = entry.checkpointHash;
     entry.checkpointHash = sha256(bytes);
@@ -2024,6 +3766,10 @@ export class DocumentService {
       throw e;
     }
     clearTimeout(entry.timer);
+    entry.persistEngineResults = false;
+    delete entry.pendingWriteAccess;
+    delete entry.writeAccess;
+    entry.computedInMemoryOnly = false;
     await this.restore(entry, snapshot);
     entry.imported = imported;
     entry.checkpointSnapshot = structuredClone(entry.live.save());
@@ -2035,6 +3781,358 @@ export class DocumentService {
     this.onCheckpoint?.(entry.meta.id, entry.checkpointRev);
   }
 
+  /** Register a serialized SQL output at its legacy revision zero without reopening it. */
+  async publishNewSnapshot(
+    ctx: ToolContext,
+    path: string,
+    snapshot: IWorkbookData,
+  ): Promise<ToolResult> {
+    let published: { path: string; sha256: string } | undefined;
+    let attempted: { path: string; sha256: string } | undefined;
+    let committed = false;
+    try {
+      const permit = prepareEffectPlan({
+        workspaceRoot: ctx.workspaceRoot,
+        atomicScope: "single-resource",
+        signal: ctx.signal,
+        effects: [{ operation: "create", path }],
+      });
+      return await runWithEffectPlan(permit, () =>
+        this.inWorkspace(ctx.workspaceId, async () => {
+          this.assertWorkspaceRoot(ctx.workspaceId, ctx.workspaceRoot);
+          const rel = resolveWorkspacePath(ctx.workspaceRoot, path).rel;
+          this.validateCreatePath(ctx.workspaceRoot, rel);
+          if (
+            this.db
+              .prepare("SELECT 1 FROM documents WHERE workspace_id=? AND path=?")
+              .get(ctx.workspaceId, rel)
+          )
+            throw new FileOperationError("VERSION_CONFLICT", "目标已有文档身份，不能按新文件覆盖");
+          const bytes = minimalXlsx(snapshot);
+          const imported = importXlsx(bytes, rel);
+          recheckEffectPlan(permit);
+          ctx.signal.throwIfAborted();
+          attempted = { path: rel, sha256: sha256(bytes) };
+          const hash = atomicWrite(ctx.workspaceRoot, rel, bytes, null);
+          published = { path: rel, sha256: hash };
+          ctx.backups.markCreated(rel, { sha256: hash, size: bytes.length });
+          recheckEffectPlan(permit);
+          ctx.signal.throwIfAborted();
+          const docId = newId("doc"),
+            now = nowIso();
+          this.db.exec("BEGIN IMMEDIATE");
+          try {
+            this.db
+              .prepare(
+                "INSERT INTO documents (id,workspace_id,path,kind,rev,head_rev,checkpoint_rev,engine_version,created_at,last_opened_at,checkpoint_hash,checkpoint_snapshot) VALUES (?,?,?,'xlsx',0,0,0,?,?,?,?,?)",
+              )
+              .run(
+                docId,
+                ctx.workspaceId,
+                rel,
+                ENGINE_VERSION,
+                now,
+                now,
+                hash,
+                JSON.stringify(imported.snapshot),
+              );
+            this.db.exec("COMMIT");
+            committed = true;
+          } catch (error) {
+            this.db.exec("ROLLBACK");
+            throw error;
+          }
+          this.metas.set(docId, {
+            id: docId,
+            workspaceId: ctx.workspaceId,
+            path: rel,
+            kind: "xlsx",
+            rev: 0,
+            checkpointRev: 0,
+            createdAt: now,
+          });
+          return {
+            status: "ok",
+            data: { path: rel, docId, rev: 0 },
+            versions: { [rel]: hash },
+            changes: { paths: [rel] },
+          };
+        }),
+      );
+    } catch (error) {
+      const uncertain =
+        !published && attempted && error instanceof FileOperationError && error.uncertain
+          ? attempted
+          : undefined;
+      const affected = published ?? uncertain;
+      let reportingIncomplete = false;
+      if (affected) {
+        try {
+          await ctx.reportArtifactEffect?.({
+            path: affected.path,
+            effect: "data",
+            execution: published ? "partial" : "uncertain",
+            persistence: "unknown",
+            footprint: ["*"],
+          });
+        } catch {
+          reportingIncomplete = true;
+        }
+      }
+      return {
+        status: affected ? "partial" : "error",
+        ...(affected
+          ? {
+              data: {
+                published: [affected.path],
+                publication: published ? "confirmed" : "uncertain",
+                ...(published ? { sha256: published.sha256 } : { intendedSha256: affected.sha256 }),
+                registration: committed ? "committed" : "incomplete",
+                ...(reportingIncomplete ? { reportingIncomplete: true } : {}),
+              },
+            }
+          : {}),
+        error: {
+          code:
+            error instanceof FileOperationError ||
+            error instanceof TurnAccessError ||
+            error instanceof PathSafetyError
+              ? error.code
+              : "INTERNAL",
+          message: error instanceof Error ? error.message : "SQL 输出新建失败",
+          retryable: false,
+        },
+      };
+    }
+  }
+
+  /** Compile a new resource privately; no empty file is published and later mutated. */
+  async createWithOps(
+    ctx: ToolContext,
+    path: string,
+    ops: ChangeOp[],
+    dryRun = false,
+    sourceKind: "agent" | "script" = "agent",
+  ): Promise<ToolResult> {
+    let published: { path: string; sha256: string } | undefined;
+    let attemptedPublication: { path: string; sha256: string } | undefined;
+    try {
+      const access = currentToolAccess();
+      const identity =
+        access?.binding() ??
+        (ctx.turnId
+          ? turnAccessBinding(this.db, ctx.sessionId, ctx.agentId, ctx.turnId)
+          : undefined);
+      const expected = identity
+        ? identity.contractRef ||
+          this.db
+            .prepare(
+              "SELECT 1 FROM session_log WHERE session_id=? AND type='contract.expected' AND json_extract(data,'$.originAgentId')=? AND json_extract(data,'$.originTurnId')=? LIMIT 1",
+            )
+            .get(ctx.sessionId, identity.originAgentId, identity.originTurnId)
+        : this.db
+            .prepare(
+              "SELECT 1 FROM session_log WHERE session_id=? AND type='contract.expected' LIMIT 1",
+            )
+            .get(ctx.sessionId);
+      if (
+        expected &&
+        (!access ||
+          access.db !== this.db ||
+          access.sessionId !== ctx.sessionId ||
+          access.agentId !== ctx.agentId ||
+          access.turnId !== ctx.turnId ||
+          access.toolCallId !== ctx.toolCallId ||
+          !access.binding().contractRef)
+      )
+        throw new FileOperationError(
+          "INVALID_ARGUMENT",
+          "契约新建缺少当前宿主调用归属，不得降为旧路径",
+        );
+      const permit = prepareEffectPlan({
+        workspaceRoot: ctx.workspaceRoot,
+        atomicScope: "single-resource",
+        signal: ctx.signal,
+        effects: [
+          { operation: "create", path },
+          ...ops.flatMap((op) =>
+            op.op === "image.add"
+              ? [
+                  { operation: "read-content" as const, path: op.path },
+                  { operation: "read-metadata" as const, path: op.path },
+                ]
+              : [],
+          ),
+        ],
+      });
+      return await runWithEffectPlan(permit, () =>
+        this.inWorkspace(ctx.workspaceId, async () => {
+          this.assertWorkspaceRoot(ctx.workspaceId, ctx.workspaceRoot);
+          const rel = resolveWorkspacePath(ctx.workspaceRoot, path).rel;
+          if (
+            sourceKind === "agent" &&
+            ctx.toolTargets &&
+            (ctx.toolTargets.length !== 1 || ctx.toolTargets[0] !== rel)
+          )
+            throw new FileOperationError("INVALID_ARGUMENT", "新建目标与已检查租约路径不一致");
+          this.validateCreatePath(ctx.workspaceRoot, rel);
+          if (
+            this.db
+              .prepare("SELECT 1 FROM documents WHERE workspace_id=? AND path=?")
+              .get(ctx.workspaceId, rel)
+          )
+            throw new FileOperationError("VERSION_CONFLICT", "目标已有文档身份，不能按新文件覆盖");
+          let prepared:
+            | {
+                before: IWorkbookData;
+                snapshot: IWorkbookData;
+                compiled: CompiledOps;
+                mutations: DocMutation[];
+              }
+            | undefined;
+          const preview = await this.prepareCreation(ops, ctx.workspaceRoot, {
+            check: () => recheckEffectPlan(permit),
+            receive: (value) => {
+              prepared = value;
+            },
+          });
+          if (preview.status !== "ok" || dryRun) return preview;
+          if (!prepared) throw new FileOperationError("INTERNAL", "新建内容没有宿主编译结果");
+          const bytes = minimalXlsx(prepared.snapshot);
+          const imported = importXlsx(bytes, rel);
+          recheckEffectPlan(permit);
+          attemptedPublication = { path: rel, sha256: sha256(bytes) };
+          const created = atomicCreateDocument(this, ctx.workspaceRoot, rel, bytes);
+          const hash = created.sha256,
+            docId = created.docId;
+          published = { path: rel, sha256: hash };
+          const creation = created.receipt
+            ? consumeCreatedDocumentReceipt(created.receipt, {
+                owner: this,
+                db: this.db,
+                workspaceId: ctx.workspaceId,
+                root: ctx.workspaceRoot,
+                path: rel,
+                docId,
+                sha256: hash,
+              })
+            : undefined;
+          if (expected && !creation)
+            throw new FileOperationError("INVALID_ARGUMENT", "契约新建未生成宿主物理凭据", true);
+          ctx.backups.markCreated(rel, { sha256: hash, size: bytes.length });
+          recheckEffectPlan(permit);
+          const now = nowIso(),
+            rev = 1;
+          const writeSet: DocWriteSet = {
+            ranges: prepared.compiled.ranges,
+            structural: [
+              { sheetId: "s0", kind: "insertSheet", index: 0, count: 0 },
+              ...prepared.compiled.structural,
+            ],
+          };
+          this.db.exec("BEGIN IMMEDIATE");
+          try {
+            this.db
+              .prepare(
+                "INSERT INTO documents (id,workspace_id,path,kind,rev,head_rev,checkpoint_rev,engine_version,created_at,last_opened_at,checkpoint_hash,checkpoint_snapshot) VALUES (?,?,?,'xlsx',1,1,1,?,?,?,?,?)",
+              )
+              .run(
+                docId,
+                ctx.workspaceId,
+                rel,
+                ENGINE_VERSION,
+                now,
+                now,
+                hash,
+                JSON.stringify(imported.snapshot),
+              );
+            this.db
+              .prepare(
+                "INSERT INTO doc_ops (doc_id,rev,base_rev,source_kind,source_id,session_id,tool_call_id,write_set,mutations,inverse,created_at) VALUES (?,1,0,?,?,?,?,?,?,?,?)",
+              )
+              .run(
+                docId,
+                sourceKind,
+                `${ctx.sessionId}/${ctx.agentId}`,
+                ctx.sessionId,
+                ctx.toolCallId,
+                JSON.stringify(writeSet),
+                JSON.stringify(prepared.mutations),
+                JSON.stringify({
+                  needsSnapshot: true,
+                  snapshot: prepared.before,
+                  ...this.writeOriginMetadata(),
+                  ...(creation ? { _hostCreatedDocument: creation } : {}),
+                }),
+                now,
+              );
+            this.db.exec("COMMIT");
+          } catch (error) {
+            this.db.exec("ROLLBACK");
+            throw error;
+          }
+          this.metas.set(docId, {
+            id: docId,
+            workspaceId: ctx.workspaceId,
+            path: rel,
+            kind: "xlsx",
+            rev,
+            checkpointRev: rev,
+            createdAt: now,
+          });
+          ctx.reads.record(docId, writeSet.ranges, rev);
+          return {
+            status: "ok",
+            docRevs: { [docId]: rev },
+            versions: { [rel]: hash },
+            data: {
+              ...(preview.data as Record<string, unknown>),
+              dryRun: false,
+              docId,
+              path: rel,
+              rev,
+              docRevs: { [docId]: rev },
+              formulas: prepared.compiled.formulas,
+              calc: "computed",
+              formulaValues: readFormulaValues(prepared.compiled.formulas, prepared.snapshot),
+            },
+            changes: { paths: [rel] },
+          };
+        }),
+      );
+    } catch (error) {
+      if (
+        !published &&
+        attemptedPublication &&
+        error instanceof FileOperationError &&
+        error.uncertain
+      )
+        published = attemptedPublication;
+      return {
+        status: published ? "partial" : "error",
+        ...(published
+          ? {
+              data: {
+                published: [published.path],
+                sha256: published.sha256,
+                registration: "incomplete",
+              },
+            }
+          : {}),
+        error: {
+          code:
+            error instanceof FileOperationError ||
+            error instanceof TurnAccessError ||
+            error instanceof PathSafetyError
+              ? error.code
+              : "INTERNAL",
+          message: error instanceof Error ? error.message : "新建工作簿失败",
+          retryable: false,
+        },
+      };
+    }
+  }
+
   async create(
     workspaceId: string,
     root: string,
@@ -2043,11 +4141,13 @@ export class DocumentService {
     agentId: string,
     sheetName = "Sheet1",
   ): Promise<OpenedDoc> {
-    this.validateCreatePath(root, path);
-    const snapshot = this.newWorkbookSnapshot(path, sheetName);
-    atomicWrite(root, path, minimalXlsx(snapshot), null);
-    this.backups.bind({ workspaceId, workspaceRoot: root, sessionId, agentId }).markCreated(path);
-    return this.open(workspaceId, root, path);
+    return this.inWorkspace(workspaceId, async () => {
+      this.validateCreatePath(root, path);
+      const snapshot = this.newWorkbookSnapshot(path, sheetName);
+      atomicWrite(root, path, minimalXlsx(snapshot), null);
+      this.backups.bind({ workspaceId, workspaceRoot: root, sessionId, agentId }).markCreated(path);
+      return this.openUnlocked(workspaceId, root, path);
+    });
   }
 
   /** 用户在文件面板新建空工作簿：只写文件，不登记会话"新建"（不参与代理的新建回滚）。 */
@@ -2057,10 +4157,17 @@ export class DocumentService {
   }
 
   validateCreatePath(root: string, path: string): void {
-    const { abs } = resolveWorkspacePath(root, path);
-    if (existsSync(abs)) throw new FileOperationError("VERSION_CONFLICT", "新工作簿路径已存在");
-    if (extname(path).toLowerCase() !== ".xlsx")
-      throw new FileOperationError("INVALID_ARGUMENT", "新建工作簿必须使用 .xlsx");
+    const permit = prepareEffectPlan({
+      workspaceRoot: root,
+      atomicScope: "single-resource",
+      effects: [{ operation: "create", path }],
+    });
+    runWithEffectPlan(permit, () => {
+      if (effectPathExists(path, root))
+        throw new FileOperationError("VERSION_CONFLICT", "新工作簿路径已存在");
+      if (extname(path).toLowerCase() !== ".xlsx")
+        throw new FileOperationError("INVALID_ARGUMENT", "新建工作簿必须使用 .xlsx");
+    });
   }
 
   private newWorkbookSnapshot(path: string, sheetName = "Sheet1"): IWorkbookData {
@@ -2076,6 +4183,23 @@ export class DocumentService {
   }
 
   async previewCreate(ops: ChangeOp[], workspaceRoot?: string): Promise<ToolResult> {
+    return this.prepareCreation(ops, workspaceRoot);
+  }
+
+  private async prepareCreation(
+    ops: ChangeOp[],
+    workspaceRoot?: string,
+    host?: {
+      check(): void;
+      receive(value: {
+        before: IWorkbookData;
+        snapshot: IWorkbookData;
+        compiled: CompiledOps;
+        mutations: DocMutation[];
+      }): void;
+    },
+  ): Promise<ToolResult> {
+    host?.check();
     const boot = bootUniver();
     try {
       const snapshot = importXlsx(
@@ -2084,6 +4208,7 @@ export class DocumentService {
       ).snapshot;
       const book = createBook(boot, snapshot);
       const before = structuredClone(book.workbook.save());
+      assertNoExternalFormulaInputs(ops);
       const compiled = compileOps(
         {
           unitId: book.unitId,
@@ -2092,6 +4217,7 @@ export class DocumentService {
         },
         ops,
       );
+      assertExternalLinkWrites(before, ops, [], compiled);
       const boundedCells = boundedWriteRanges(compiled.ranges).reduce(
         (sum, r) => sum + (r.r1 - r.r0 + 1) * (r.c1 - r.c0 + 1),
         0,
@@ -2101,11 +4227,22 @@ export class DocumentService {
           "LIMIT_EXCEEDED",
           `单次提交最多 ${MAX_SUBMIT_CELLS} 格，本次约 ${boundedCells} 格`,
         );
-      for (const cmd of compiled.commands)
-        if (!(await boot.executeCommand(cmd.id, cmd.params)))
-          throw new OpCompileError("预览操作未生效");
+      const capture = new MutationCapture(boot),
+        mutations: DocMutation[] = [];
+      for (const cmd of compiled.commands) {
+        host?.check();
+        capture.begin();
+        const ok = await boot.executeCommand(cmd.id, cmd.params);
+        mutations.push(...capture.end());
+        if (!ok) throw new OpCompileError("预览操作未生效");
+      }
+      if (host && compiled.formulas.length && !(await boot.waitCalc(SYNC_CALC_MS)))
+        throw new FileOperationError("UNSUPPORTED_FEATURE", "新建公式计算尚未完成，尚未发布文件");
+      mutations.push(...capture.takeEngineResults());
       const after = book.workbook.save();
       minimalXlsx(after);
+      host?.check();
+      host?.receive({ before, snapshot: after, compiled, mutations });
       return {
         status: "ok",
         data: {
@@ -2158,6 +4295,7 @@ export class DocumentService {
       )
       .run(entry.meta.workspaceId, sessionId, entry.meta.path);
     this.docs.delete(docId);
+    this.liveEntries.delete(docId);
     this.metas.delete(docId);
   }
 
@@ -2189,6 +4327,7 @@ export class DocumentService {
         }
       }
       this.docs.clear();
+      this.liveEntries.clear();
     }
   }
 
@@ -2342,6 +4481,17 @@ function readFormulaValues(
   return out;
 }
 
+function mutationWritesFormula(value: unknown): boolean {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    Object.entries(value).some(
+      ([key, item]) =>
+        (key === "f" && typeof item === "string" && item.length > 0) || mutationWritesFormula(item),
+    )
+  );
+}
+
 /**
  * 引擎结果 mutation 只带 v/t；在线应用时公式控制器保留 f，但日志回放（fromCollab）会整格覆盖。
  * 落库前把当前快照中的公式补回，保证"重建 = 增量"。
@@ -2375,6 +4525,64 @@ function withFormulas(results: DocMutation[], snap: IWorkbookData): DocMutation[
 
 function fileSig(st: Stats): string {
   return `${st.size}:${st.mtimeMs}:${st.ino}`;
+}
+
+/** Populate newly readable metadata only from the already hash-matched disk package. */
+function hydrateMissingPivotRefresh(imported: ImportedWorkbook, snapshot: IWorkbookData): void {
+  const p = imported.preservation;
+  if (!p) return;
+  const sheets = Object.fromEntries(
+    Object.entries(snapshot.sheets).map(([id, sheet]) => [id, { ...sheet }]),
+  );
+  importPivotRefresh(p.parts, p.sheetParts, sheets);
+  for (const [sid, sheet] of Object.entries(snapshot.sheets)) {
+    const derived = objectsOf(sheets[sid]).pivotRefreshOnLoad;
+    if (!derived) continue;
+    const objects = objectsOf(sheet);
+    sheet.custom = {
+      ...sheet.custom,
+      excelmanusObjects: {
+        ...objects,
+        pivotRefreshOnLoad: { ...derived, ...objects.pivotRefreshOnLoad },
+      },
+    };
+  }
+}
+
+/** Old durable object logs predate this field; only replay/undo carry their missing keys. */
+function carryMissingPivotRefresh(mutation: DocMutation, snapshot: IWorkbookData): DocMutation {
+  if (mutation.id !== OBJECT_LAYER_MUTATION) return mutation;
+  const parsed = SheetObjectsMutation.safeParse(mutation.params);
+  if (!parsed.success) return mutation;
+  const { subUnitId, objects } = parsed.data;
+  const current = objectsOf(snapshot.sheets[subUnitId]).pivotRefreshOnLoad;
+  if (!current) return mutation;
+  return {
+    ...mutation,
+    params: {
+      ...parsed.data,
+      objects: { ...objects, pivotRefreshOnLoad: { ...current, ...objects.pivotRefreshOnLoad } },
+    },
+  };
+}
+
+/** Only undo may restore an original absent/false lexical value. Public writes only mark true. */
+function assertPivotRefreshChanges(
+  before: IWorkbookData,
+  after: IWorkbookData,
+  restore: boolean,
+): void {
+  if (restore) return;
+  for (const sid of new Set([...before.sheetOrder, ...after.sheetOrder])) {
+    const a = objectsOf(before.sheets[sid]).pivotRefreshOnLoad ?? {};
+    const b = objectsOf(after.sheets[sid]).pivotRefreshOnLoad ?? {};
+    for (const cacheId of new Set([...Object.keys(a), ...Object.keys(b)]))
+      if (a[cacheId] !== b[cacheId] && b[cacheId] !== "true")
+        throw new FileOperationError(
+          "UNSUPPORTED_FEATURE",
+          "仅支持将已有透视缓存标记为打开时刷新；不能清除、删除或改写原始标记",
+        );
+  }
 }
 
 function cellTotal(imported: ImportedWorkbook): number {
@@ -2416,10 +4624,10 @@ function loadImageFiles(ops: ChangeOp[], root: string | undefined) {
     if (op.op !== "image.add") continue;
     if (!root) throw new FileOperationError("INVALID_ARGUMENT", "图片预览需要工作区");
     const { abs } = resolveWorkspacePath(root, op.path);
-    const stat = statSync(abs);
+    const stat = statVerifiedResourceSync(root, abs, { purpose: "image-source" });
     if (!stat.isFile() || stat.size > 10_000_000)
       throw new FileOperationError("LIMIT_EXCEEDED", "图片必须是10MB以内的文件");
-    const bytes = readFileSync(abs),
+    const bytes = readVerifiedResourceSync(root, abs, { purpose: "image-source" }).bytes,
       mediaType = sniffWorkbookImage(bytes);
     if (!mediaType) throw new FileOperationError("INVALID_ARGUMENT", "仅支持 PNG、JPEG、GIF 图片");
     images[op.path] = { data: bytes.toString("base64"), mediaType };

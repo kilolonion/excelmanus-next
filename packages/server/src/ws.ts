@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { IncomingMessage, Server } from "node:http";
 import type { Duplex } from "node:stream";
 import { setImmediate as yieldLoop } from "node:timers/promises";
-import type { SessionLog, SyncBus } from "@excelmanus/kernel";
+import { runWithHostNativeAccess, type HostNativeAuthority, type SessionLog, type SyncBus } from "@excelmanus/kernel";
 import type {
   LogRecord,
   PresenceParticipant,
@@ -69,6 +69,7 @@ export interface SyncChannelOptions {
   docService?: DocumentService;
   /** docId → 所属工作区根（冷启动物化需要读文件）。 */
   workspaceRootFor?(docId: string): string | undefined;
+  nativeAuthorityFor?(docId:string):Pick<HostNativeAuthority,"db"|"workspaceId"|"workspaceRoot">|undefined;
   heartbeatMs?: number;
   heartbeatTimeoutMs?: number;
   emit?: (event: string, fields: Record<string, string | number | boolean>) => void;
@@ -450,7 +451,8 @@ export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () 
       case "doc.submit": {
         const svc = opts.docService;
         const root = opts.workspaceRootFor?.(msg.docId);
-        if (!svc || !root) {
+        const authority=opts.nativeAuthorityFor?.(msg.docId);
+        if (!svc || !root || !authority || authority.workspaceRoot!==root) {
           send(conn, {
             type: "doc.reject",
             clientOpId: msg.clientOpId,
@@ -458,13 +460,15 @@ export function attachSyncChannel(server: Server, opts: SyncChannelOptions): () 
           });
           break;
         }
-        void svc
+        // The connection was authenticated by its single-use sync ticket.
+        // Native authority is limited to this submitted operation, never a task.
+        void runWithHostNativeAccess({...authority,operationId:`ws:${conn.id}:${msg.clientOpId}`}, () => svc
           .submit(msg.docId, root, {
             baseRev: msg.baseRev,
             source: { kind: "user", id: conn.id },
             mutations: msg.mutations as DocMutation[],
             ...(msg.overwrite === true ? { overwrite: true } : {}),
-          })
+          }))
           .then((result) => {
             if (result.ok) {
               send(conn, { type: "doc.ack", clientOpId: msg.clientOpId, rev: result.rev });

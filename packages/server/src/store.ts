@@ -13,7 +13,8 @@ import type {
   ResolvedModel,
   UpdateModelProfileBody,
 } from "@excelmanus/protocol";
-import { decryptSecret, encryptSecret, maskSecret } from "./crypto.ts";
+import { decryptSecret, maskSecret } from "./crypto.ts";
+import { getConnectionRow, openConnectionHeaders } from "./provider-connections.ts";
 
 /** 装配层自有迁移：档案的额外请求头、并发上限与能力记录（09 §3）。 */
 export const SERVER_MIGRATIONS: Migration[] = [
@@ -39,7 +40,10 @@ export type CapabilityMap = Record<string, CapabilityRecord> & { _probeKey?: nev
 export interface ResolveDeps {
   subscription?(credentialId: string): ResolvedModel["subscription"];
   fetch?: typeof fetch;
-  catalog?(provider: string, model: string): { contextWindow?: number } | undefined;
+  catalog?(
+    provider: string,
+    model: string,
+  ): { contextWindow?: number; maxOutputTokens?: number } | undefined;
 }
 
 export const sha256 = (s: string): string => createHash("sha256").update(s).digest("hex");
@@ -105,6 +109,7 @@ export function getWorkspace(db: DatabaseSync, id: string): WorkspaceRow | undef
 
 interface ProfileRow {
   id: string;
+  connection_id: string;
   name: string;
   provider: string;
   model: string;
@@ -137,45 +142,6 @@ function credentialKind(db: DatabaseSync, id: string | null): string | null {
   return row?.kind ?? null;
 }
 
-function sealHeaders(
-  masterKey: Buffer,
-  headers: Record<string, string>,
-  prev?: Record<string, string>,
-): string {
-  const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(headers)) {
-    if (v === "••••" && prev?.[k] !== undefined) {
-      out[k] = prev[k];
-      continue;
-    }
-    const { ciphertext, nonce } = encryptSecret(masterKey, v);
-    out[k] = `${nonce.toString("base64")}.${ciphertext.toString("base64")}`;
-  }
-  return JSON.stringify(out);
-}
-
-function openHeaders(
-  masterKey: Buffer,
-  raw: string | null | undefined,
-): Record<string, string> | undefined {
-  if (!raw) return undefined;
-  const sealed = JSON.parse(raw) as Record<string, string>;
-  const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(sealed)) {
-    const [n, c] = v.split(".");
-    try {
-      out[k] = decryptSecret(
-        masterKey,
-        Buffer.from(c ?? "", "base64"),
-        Buffer.from(n ?? "", "base64"),
-      );
-    } catch {
-      out[k] = "";
-    }
-  }
-  return out;
-}
-
 export function profileCapabilities(row: {
   capabilities?: string | null;
 }): Record<string, CapabilityRecord> {
@@ -204,8 +170,11 @@ function profileToDto(row: ProfileRow, masked: string | null, kind?: string | nu
     ? (JSON.parse(row.extra_headers) as Record<string, string>)
     : undefined;
   const caps = profileCapabilities(row);
+  for (const [k, value] of Object.entries(caps))
+    if (k.endsWith(":manual") && value.source === "manual") caps[k.slice(0, -7)] = value;
   return {
     id: row.id,
+    connectionId: row.connection_id,
     name: row.name,
     provider: row.provider,
     model: row.model,
@@ -238,7 +207,7 @@ function profileToDto(row: ProfileRow, masked: string | null, kind?: string | nu
 
 export function listProfiles(db: DatabaseSync, masterKey: Buffer): ModelProfile[] {
   const rows = db
-    .prepare("SELECT * FROM model_profiles ORDER BY created_at")
+    .prepare(`${PROFILE_SELECT} ORDER BY p.created_at,p.id`)
     .all() as unknown as ProfileRow[];
   return rows.map((r) =>
     profileToDto(r, maskedOf(db, masterKey, r.credential_id), credentialKind(db, r.credential_id)),
@@ -260,8 +229,11 @@ function maskedOf(db: DatabaseSync, masterKey: Buffer, credentialId: string | nu
   }
 }
 
+const PROFILE_SELECT = `SELECT p.*,c.provider,c.base_url,c.credential_id,c.extra_headers
+  FROM model_profiles p JOIN provider_connections c ON c.id=p.connection_id`;
+
 export function getProfileRow(db: DatabaseSync, id: string): ProfileRow | undefined {
-  return db.prepare("SELECT * FROM model_profiles WHERE id = ?").get(id) as ProfileRow | undefined;
+  return db.prepare(`${PROFILE_SELECT} WHERE p.id = ?`).get(id) as ProfileRow | undefined;
 }
 
 export function getProfile(
@@ -279,164 +251,156 @@ export function getProfile(
     : undefined;
 }
 
+function modelLimits(
+  db: DatabaseSync,
+  connectionId: string,
+  model: string,
+  context: number | null | undefined,
+  output: number | null | undefined,
+  deps: ResolveDeps = {},
+) {
+  const connection = getConnectionRow(db, connectionId);
+  const cached = connection?.models_cache
+    ? (
+        JSON.parse(connection.models_cache) as {
+          id: string;
+          contextWindow?: number;
+          maxOutputTokens?: number;
+        }[]
+      ).find((m) => m.id === model)
+    : undefined;
+  const catalog = connection ? deps.catalog?.(connection.provider, model) : undefined;
+  return {
+    contextWindow: context ?? cached?.contextWindow ?? catalog?.contextWindow ?? null,
+    maxOutputTokens: output ?? cached?.maxOutputTokens ?? catalog?.maxOutputTokens ?? null,
+  };
+}
+function checkLimits(limits: {
+  contextWindow: number | null;
+  maxOutputTokens: number | null;
+}): void {
+  if (
+    limits.contextWindow &&
+    limits.maxOutputTokens &&
+    limits.maxOutputTokens > limits.contextWindow
+  )
+    throw new Error("最大输出不能超过模型上下文");
+}
 export function createProfile(
   db: DatabaseSync,
   masterKey: Buffer,
   body: CreateModelProfileBody,
+  deps: ResolveDeps = {},
 ): ModelProfile {
-  const now = nowIso();
-  let credentialId: string | null = body.accountId ?? null;
-  if (credentialId !== null && credentialKind(db, credentialId) !== "oauth") {
-    throw new Error("订阅账号不存在");
+  if (!getConnectionRow(db, body.connectionId)) throw new Error("供应商连接不存在");
+  checkLimits(
+    modelLimits(db, body.connectionId, body.model, body.contextWindow, body.maxOutputTokens, deps),
+  );
+  let name = body.name ?? body.model;
+  if (body.name === undefined) {
+    let n = 2;
+    while (db.prepare("SELECT id FROM model_profiles WHERE name=?").get(name))
+      name = `${body.model} (${n++})`;
   }
-  if (credentialId === null && body.apiKey !== undefined && body.apiKey !== "") {
-    const { ciphertext, nonce } = encryptSecret(masterKey, body.apiKey);
-    credentialId = newId("cred");
-    db.prepare(
-      "INSERT INTO credentials (id, kind, provider, ciphertext, nonce, meta, created_at, updated_at) VALUES (?, 'api_key', ?, ?, ?, '{}', ?, ?)",
-    ).run(credentialId, body.provider, ciphertext, nonce, now, now);
-  }
-  const id = newId("mp");
-  db.prepare(
-    `INSERT INTO model_profiles (id, name, provider, model, base_url, credential_id, context_window, max_output_tokens, reasoning, provider_options, is_default, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
-  ).run(
+  const id = newId("mp"),
+    now = nowIso();
+  db.prepare(`INSERT INTO model_profiles (id,name,connection_id,model,context_window,max_output_tokens,reasoning,provider_options,max_concurrency,is_default,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,0,?,?)`).run(
     id,
-    body.name,
-    body.provider,
+    name,
+    body.connectionId,
     body.model,
-    body.baseUrl ?? null,
-    credentialId,
     body.contextWindow ?? null,
     body.maxOutputTokens ?? null,
     body.reasoning ?? null,
-    body.providerOptions !== undefined ? JSON.stringify(body.providerOptions) : null,
+    body.providerOptions ? JSON.stringify(body.providerOptions) : null,
+    body.maxConcurrency ?? null,
     now,
     now,
   );
-  if (body.extraHeaders !== undefined || body.maxConcurrency !== undefined) {
-    db.prepare("UPDATE model_profiles SET extra_headers = ?, max_concurrency = ? WHERE id = ?").run(
-      body.extraHeaders ? sealHeaders(masterKey, body.extraHeaders) : null,
-      body.maxConcurrency ?? null,
+  if (body.capabilityOverrides)
+    setProfileCapabilities(
+      db,
       id,
+      Object.fromEntries(
+        Object.entries(body.capabilityOverrides)
+          .filter(([, value]) => value !== null)
+          .map(([k, value]) => [
+            `${k}:manual`,
+            { value: value!, source: "manual" as const, checkedAt: now },
+          ]),
+      ),
     );
-  }
-  if (body.isDefault || countProfiles(db) === 1) {
+  if (
+    body.isDefault ||
+    (db.prepare("SELECT count(*) AS n FROM model_profiles").get() as { n: number }).n === 1
+  )
     setDefaultProfile(db, id);
-  }
-  const row = getProfileRow(db, id);
-  if (!row) throw new Error("profile insert failed");
-  return profileToDto(
-    row,
-    maskedOf(db, masterKey, row.credential_id),
-    credentialKind(db, row.credential_id),
-  );
+  return getProfile(db, masterKey, id)!;
 }
-
-function countProfiles(db: DatabaseSync): number {
-  return (db.prepare("SELECT COUNT(*) AS c FROM model_profiles").get() as { c: number }).c;
-}
-
 export function updateProfile(
   db: DatabaseSync,
   masterKey: Buffer,
   id: string,
   body: UpdateModelProfileBody,
+  deps: ResolveDeps = {},
 ): ModelProfile | undefined {
   const row = getProfileRow(db, id);
   if (!row) return undefined;
-  const now = nowIso();
-  let credentialId = row.credential_id;
-  if (body.apiKey !== undefined && credentialKind(db, credentialId) !== "oauth") {
-    // 清除旧凭据
-    if (credentialId !== null) {
-      db.prepare("DELETE FROM credentials WHERE id = ?").run(credentialId);
-      credentialId = null;
-    }
-    if (body.apiKey !== "") {
-      const { ciphertext, nonce } = encryptSecret(masterKey, body.apiKey);
-      credentialId = newId("cred");
-      db.prepare(
-        "INSERT INTO credentials (id, kind, provider, ciphertext, nonce, meta, created_at, updated_at) VALUES (?, 'api_key', ?, ?, ?, '{}', ?, ?)",
-      ).run(credentialId, body.provider ?? row.provider, ciphertext, nonce, now, now);
-    }
-  }
+  if (body.connectionId && !getConnectionRow(db, body.connectionId))
+    throw new Error("供应商连接不存在");
+  const context = body.contextWindow === undefined ? row.context_window : body.contextWindow;
+  const output = body.maxOutputTokens === undefined ? row.max_output_tokens : body.maxOutputTokens;
+  checkLimits(
+    modelLimits(
+      db,
+      body.connectionId ?? row.connection_id,
+      body.model ?? row.model,
+      context,
+      output,
+      deps,
+    ),
+  );
   db.prepare(
-    `UPDATE model_profiles SET
-       name = COALESCE(?, name),
-       provider = COALESCE(?, provider),
-       model = COALESCE(?, model),
-       base_url = CASE WHEN ? THEN ? ELSE base_url END,
-       credential_id = ?,
-       context_window = CASE WHEN ? THEN ? ELSE context_window END,
-       max_output_tokens = CASE WHEN ? THEN ? ELSE max_output_tokens END,
-       reasoning = CASE WHEN ? THEN ? ELSE reasoning END,
-       provider_options = CASE WHEN ? THEN ? ELSE provider_options END,
-       updated_at = ?
-     WHERE id = ?`,
+    `UPDATE model_profiles SET name=?,connection_id=?,model=?,context_window=?,max_output_tokens=?,reasoning=?,provider_options=?,max_concurrency=?,updated_at=? WHERE id=?`,
   ).run(
-    body.name ?? null,
-    body.provider ?? null,
-    body.model ?? null,
-    body.baseUrl !== undefined ? 1 : 0,
-    body.baseUrl ?? null,
-    credentialId,
-    body.contextWindow !== undefined ? 1 : 0,
-    body.contextWindow ?? null,
-    body.maxOutputTokens !== undefined ? 1 : 0,
-    body.maxOutputTokens ?? null,
-    body.reasoning !== undefined ? 1 : 0,
-    body.reasoning ?? null,
-    body.providerOptions !== undefined ? 1 : 0,
-    body.providerOptions != null ? JSON.stringify(body.providerOptions) : null,
-    now,
+    body.name ?? row.name,
+    body.connectionId ?? row.connection_id,
+    body.model ?? row.model,
+    context ?? null,
+    output ?? null,
+    body.reasoning === undefined ? row.reasoning : body.reasoning,
+    body.providerOptions === undefined
+      ? row.provider_options
+      : body.providerOptions === null
+        ? null
+        : JSON.stringify(body.providerOptions),
+    body.maxConcurrency === undefined ? (row.max_concurrency ?? null) : body.maxConcurrency,
+    nowIso(),
     id,
   );
-  if (body.extraHeaders !== undefined) {
-    const prev = openHeaders(masterKey, row.extra_headers);
-    db.prepare("UPDATE model_profiles SET extra_headers = ? WHERE id = ?").run(
-      body.extraHeaders === null ? null : sealHeaders(masterKey, body.extraHeaders, prev),
-      id,
-    );
-  }
-  if (body.maxConcurrency !== undefined) {
-    db.prepare("UPDATE model_profiles SET max_concurrency = ? WHERE id = ?").run(
-      body.maxConcurrency,
-      id,
-    );
-  }
-  // 模型/提供商/地址/凭据变化使探测结果失效（09 §6 缓存键）
-  if (
-    body.model !== undefined ||
-    body.provider !== undefined ||
-    body.baseUrl !== undefined ||
-    body.apiKey !== undefined
-  ) {
+  if (body.model !== undefined || body.connectionId !== undefined) {
     const caps = profileCapabilities(row);
-    for (const k of Object.keys(caps)) if (caps[k]?.source === "probe") delete caps[k];
-    setProfileCapabilities(db, id, caps);
+    setProfileCapabilities(
+      db,
+      id,
+      Object.fromEntries(Object.entries(caps).filter(([, v]) => v?.source === "manual")),
+    );
   }
-  const updated = getProfileRow(db, id);
-  return updated
-    ? profileToDto(
-        updated,
-        maskedOf(db, masterKey, updated.credential_id),
-        credentialKind(db, updated.credential_id),
-      )
-    : undefined;
+  return getProfile(db, masterKey, id);
 }
-
 export function deleteProfile(db: DatabaseSync, id: string): boolean {
-  const row = getProfileRow(db, id);
-  if (!row) return false;
-  // 订阅账号凭据属于账号，不随档案删除
-  if (row.credential_id !== null && credentialKind(db, row.credential_id) !== "oauth") {
-    db.prepare("DELETE FROM model_profiles WHERE id = ?").run(id);
-    db.prepare("DELETE FROM credentials WHERE id = ?").run(row.credential_id);
-    return true;
-  }
-  db.prepare("DELETE FROM model_profiles WHERE id = ?").run(id);
-  return true;
+  if (
+    db
+      .prepare(
+        "SELECT 1 FROM settings WHERE key IN ('subAgentProfileId','compactionProfileId') AND value=?",
+      )
+      .get(JSON.stringify(id))
+  )
+    throw new Error("该模型仍用于子代理或上下文压缩，请先在模型配置中更换用途绑定");
+  if (db.prepare("SELECT 1 FROM agents WHERE model_profile_id=? AND closed_at IS NULL").get(id))
+    throw new Error("仍有未关闭的代理使用该模型，请先切换代理模型或关闭相应代理");
+  return db.prepare("DELETE FROM model_profiles WHERE id=?").run(id).changes > 0;
 }
 
 export function setDefaultProfile(db: DatabaseSync, id: string): void {
@@ -461,7 +425,7 @@ export function resolveProfileModel(
   const row =
     profileId !== null
       ? getProfileRow(db, profileId)
-      : (db.prepare("SELECT * FROM model_profiles WHERE is_default = 1 LIMIT 1").get() as
+      : (db.prepare(`${PROFILE_SELECT} WHERE p.is_default = 1 LIMIT 1`).get() as
           | ProfileRow
           | undefined);
   if (!row) {
@@ -512,9 +476,23 @@ export function resolveProfileModel(
       };
     }
   }
-  const contextWindow =
-    row.context_window ?? deps.catalog?.(row.provider, row.model)?.contextWindow ?? null;
-  const extraHeaders = openHeaders(masterKey, row.extra_headers);
+  const { contextWindow, maxOutputTokens } = modelLimits(
+    db,
+    row.connection_id,
+    row.model,
+    row.context_window,
+    row.max_output_tokens,
+    deps,
+  );
+  if (contextWindow && maxOutputTokens && maxOutputTokens > contextWindow)
+    return {
+      error: {
+        kind: "invalid_request",
+        retryable: false,
+        message: "最大输出不能超过模型上下文，请调整模型高级参数",
+      },
+    };
+  const extraHeaders = openConnectionHeaders(masterKey, row.extra_headers);
   return {
     profileId: row.id,
     provider: row.provider,
@@ -525,6 +503,7 @@ export function resolveProfileModel(
     ...(extraHeaders ? { extraHeaders } : {}),
     ...(deps.fetch ? { fetch: deps.fetch } : {}),
     ...(contextWindow !== null ? { contextWindow } : {}),
+    ...(maxOutputTokens !== null ? { maxOutputTokens } : {}),
     ...(row.provider_options !== null
       ? { providerOptions: JSON.parse(row.provider_options) as Record<string, unknown> }
       : {}),

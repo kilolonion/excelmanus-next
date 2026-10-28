@@ -21,6 +21,7 @@ import { bootUniver, createBook } from "../src/engine.ts";
 import { workbookRenderTool } from "../src/render.ts";
 import {
   CHECKPOINT_MIGRATION,
+  DOC_MOVES_MIGRATION,
   DOC_OPS_MIGRATION,
   DOC_OPS_REVERTS_MIGRATION,
   DOCUMENTS_MIGRATION,
@@ -41,6 +42,7 @@ const MIGRATIONS = [
   DOC_OPS_MIGRATION,
   BACKUPS_MIGRATION,
   CHECKPOINT_MIGRATION,
+  DOC_MOVES_MIGRATION,
   DOC_OPS_REVERTS_MIGRATION,
 ];
 
@@ -152,7 +154,10 @@ describe("读集按区域记录读取修订（P0-02）", () => {
       expect(authored.some((m) => m.id.startsWith("formula.mutation."))).toBe(false);
       const renderer = workbookRenderTool(svc, async () => "rendered");
       const ctx = ctxOf(db, root, "main");
-      const rendered = await renderer.execute({ docId, range: "销售!A1:F4" }, ctx);
+      const rendered = await renderer.execute(
+        { docId, range: "销售!A1:F4", mode: "reconstructed" },
+        ctx,
+      );
       expect(ctx.reads.get(docId)?.ranges).toEqual([
         { sheetId: "s0", r0: 0, c0: 0, r1: 3, c1: 5, rev: 0 },
       ]);

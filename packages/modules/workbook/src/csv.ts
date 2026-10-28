@@ -36,22 +36,45 @@ export function decodeCsv(bytes: Uint8Array): { text: string; encoding: string }
 const DELIMITERS = [",", ";", "\t", "|"] as const;
 
 function sniffDelimiter(text: string): string {
-  const head = text.split(/\r?\n/).slice(0, 5).join("\n");
-  let best: string = ",";
-  let bestCount = -1;
-  for (const d of DELIMITERS) {
-    let count = 0;
-    let inQuote = false;
-    for (const ch of head) {
-      if (ch === '"') inQuote = !inQuote;
-      else if (!inQuote && ch === d) count += 1;
+  // Count logical records, not physical lines inside quoted fields. Punctuation
+  // density is not evidence of a delimiter: consistent column counts are.
+  const records: number[][] = [];
+  let counts = DELIMITERS.map(() => 0),
+    inQuote = false,
+    content = false;
+  for (let i = 0; i < text.length && records.length < 5; i++) {
+    const ch = text[i]!;
+    if (ch === '"') {
+      if (inQuote && text[i + 1] === '"') i++;
+      else inQuote = !inQuote;
+      content = true;
+    } else if (!inQuote && (ch === "\r" || ch === "\n")) {
+      if (content) records.push(counts);
+      counts = DELIMITERS.map(() => 0);
+      content = false;
+      if (ch === "\r" && text[i + 1] === "\n") i++;
+    } else {
+      content = true;
+      if (!inQuote) {
+        const index = DELIMITERS.findIndex((d) => d === ch);
+        if (index >= 0) counts[index] = counts[index]! + 1;
+      }
     }
-    if (count > bestCount) {
-      bestCount = count;
+  }
+  if (content && records.length < 5) records.push(counts);
+  let best: string = ",";
+  let bestScore = 0;
+  for (const [index, d] of DELIMITERS.entries()) {
+    const frequencies = new Map<number, number>();
+    for (const row of records)
+      if (row[index]! > 0) frequencies.set(row[index]!, (frequencies.get(row[index]!) ?? 0) + 1);
+    const score = Math.max(0, ...frequencies.values());
+    if (score > bestScore) {
+      bestScore = score;
       best = d;
     }
   }
-  return bestCount <= 0 ? "," : best;
+  return best;
 }
 
 /** RFC4180 风格解析（引号、转义 ""、\r\n）。 */

@@ -24,6 +24,46 @@ const rec = (seq: number, type: string, data: Record<string, unknown>, agentId =
   });
 
 describe("reduceSession", () => {
+  test("消息用量累加本轮各步，包含结束后记录的最后一步且不混入其他轮或代理", () => {
+    let s = initialSessionState();
+    let seq = 0;
+    const apply = (type: string, data: Record<string, unknown>, agent = "main") => {
+      s = reduceSession(s, rec(++seq, type, data, agent));
+    };
+    const turn = (id: string, agent = "main") =>
+      visibleTimeline(s, agent).findLast(
+        (item): item is TurnSegment => item.kind === "turn" && item.turnId === id,
+      );
+    apply("turn.started", { turnId: "t1" });
+    apply("usage.updated", {
+      turnId: "t1",
+      usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 },
+    });
+    apply("turn.completed", {
+      turnId: "t1",
+      usage: { inputTokens: 200, outputTokens: 30, totalTokens: 230 },
+    });
+    const final = rec(++seq, "usage.updated", {
+      turnId: "t1",
+      usage: { inputTokens: 200, outputTokens: 30, totalTokens: 230 },
+    });
+    s = reduceSession(s, final);
+    s = reduceSession(s, final);
+    expect(turn("t1")?.usage).toMatchObject({
+      inputTokens: 300,
+      outputTokens: 50,
+      totalTokens: 350,
+    });
+    apply("turn.started", { turnId: "t2" });
+    apply("usage.updated", { turnId: "t2", usage: { inputTokens: 7, outputTokens: 3 } });
+    apply("turn.interrupted", { turnId: "t2" });
+    expect(turn("t2")?.usage?.totalTokens).toBe(10);
+    apply("turn.started", { turnId: "t1" }, "worker");
+    apply("usage.updated", { turnId: "t1", usage: { totalTokens: 5 } }, "worker");
+    expect(turn("t1", "worker")?.usage?.totalTokens).toBe(5);
+    expect(turn("t1")?.usage?.totalTokens).toBe(350);
+  });
+
   test("回放 e2e 录制的真实消息流", () => {
     const msgs = JSON.parse(readFileSync(fixturePath, "utf8")) as unknown[];
     let s = initialSessionState();

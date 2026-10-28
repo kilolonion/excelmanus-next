@@ -14,6 +14,14 @@ const cursors = new Map<string, () => number | undefined>();
 let client: SyncClient | null = null;
 let connectionId: string | null = null;
 
+function assertWritableChannel(): void {
+  if (
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("capture") === "1"
+  )
+    throw new Error("只读截图页面禁止建立或发送同步通道");
+}
+
 export function onSync(handler: Handler): () => void {
   handlers.add(handler);
   return () => handlers.delete(handler);
@@ -44,6 +52,7 @@ export function resubscribeTopic(topic: string): void {
 }
 
 export function sendSync(message: ClientMessage): boolean {
+  assertWritableChannel();
   return client?.send(message) ?? false;
 }
 
@@ -67,6 +76,7 @@ function handleRender(message: ServerMessage): void {
 }
 
 export function startChannel(opts: { onIncompatible(): void }): void {
+  assertWritableChannel();
   if (client) return;
   client = new SyncClient({
     ticket: async () => {
@@ -106,6 +116,7 @@ export function startChannel(opts: { onIncompatible(): void }): void {
 
 /** 桌面离屏截图窗口（?renderer=1）：不挂界面，只订阅 app 主题并响应截图请求。 */
 export async function startRendererOnly(): Promise<void> {
+  assertWritableChannel();
   if ((await connectBackend()) !== "ok") return;
   subscribeTopic("app");
   startChannel({ onIncompatible: () => undefined });

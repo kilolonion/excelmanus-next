@@ -1,14 +1,25 @@
+import { decryptSecret } from "./crypto.ts";
+import {
+  createConnection,
+  getConnectionRow,
+  openConnectionHeaders,
+} from "./provider-connections.ts";
 // M5 扩展能力的 REST 端点（11 §4）与会话环境装配（04 §7.2–7.3）：
 // 规则、记忆、技能、MCP、订阅账号、设置、能力探测与模型目录、工作区、备份与回收站、设备。
 // 所有端点挂在主应用的鉴权中间件之后（/api/v1 前缀、Bearer 设备令牌）。
 
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { newId, nowIso } from "@excelmanus/core";
 import {
   type BackupService,
+  runWithHostNativeAccess,
+  runWithHostBackupEntryAccess,
+  prepareEffectPlan,
+  runWithEffectPlan,
+  atomicWrite,
   isInsidePath,
   listProtectedRoots,
   type ModelGateway,
@@ -20,6 +31,7 @@ import { McpConfigError } from "@excelmanus/mcp";
 import type { MemoryService } from "@excelmanus/memory";
 import { listRemoteModels, type ModelCatalog, presetFor, probeModel } from "@excelmanus/models";
 import {
+  BackupPreviewQuery,
   CreateMcpServerBody,
   CreateMemoryBody,
   CreateRuleBody,
@@ -38,7 +50,8 @@ import { RuleLimitError, type RuleService } from "@excelmanus/rules";
 import { importSkills, SkillImportError, type SkillService } from "@excelmanus/skills";
 import { type Context, Hono } from "hono";
 import type { z } from "zod";
-import type { AccountService } from "./accounts.ts";
+import { type AccountService, CallbackUnavailableError } from "./accounts.ts";
+import { previewBackup } from "./backup-preview.ts";
 import { diagnosticRoutes } from "./diagnostics.ts";
 import { fileManagementRoutes } from "./files-manage.ts";
 import type { SettingsStore } from "./settings.ts";
@@ -80,6 +93,7 @@ export interface ExtensionDeps {
     path: string,
     replace: () => T,
   ): Promise<T>;
+  coordinateFileMoves?: Parameters<typeof fileManagementRoutes>[4];
   emit: (event: string, fields: Record<string, string | number | boolean>) => void;
 }
 
@@ -223,7 +237,10 @@ export function effectiveCapabilities(
 export function extensionRoutes(deps: ExtensionDeps, fail: Fail): Hono {
   const app = new Hono();
   app.route("/", diagnosticRoutes(deps.db, fail, deps.dataDir));
-  app.route("/", fileManagementRoutes(deps.db, deps.backups, deps.bus, fail));
+  app.route(
+    "/",
+    fileManagementRoutes(deps.db, deps.backups, deps.bus, fail, deps.coordinateFileMoves),
+  );
   const { db } = deps;
   const parse = <S extends z.ZodType<unknown>>(
     schema: S,
@@ -475,6 +492,7 @@ export function extensionRoutes(deps: ExtensionDeps, fail: Fail): Hono {
     try {
       return c.json({ attempt: await deps.accounts.start(b.method) });
     } catch (e) {
+      if (e instanceof CallbackUnavailableError) return fail(c, 409, "conflict", e.message);
       return fail(c, 502, "bad_gateway", e instanceof Error ? e.message : String(e));
     }
   });
@@ -551,6 +569,65 @@ export function extensionRoutes(deps: ExtensionDeps, fail: Fail): Hono {
     }
     setProfileCapabilities(db, id, caps);
     return c.json({ capabilities: effectiveCapabilities(db, deps.catalog, id) });
+  });
+  app.get("/provider-connections/:id/models", (c) => {
+    const row = getConnectionRow(db, c.req.param("id"));
+    if (!row) return fail(c, 404, "not_found", "供应商连接不存在");
+    return c.json({
+      items: row.models_cache ? JSON.parse(row.models_cache) : [],
+      updatedAt: row.models_updated_at,
+    });
+  });
+  app.post("/provider-connections/:id/models", async (c) => {
+    const row = getConnectionRow(db, c.req.param("id"));
+    if (!row) return fail(c, 404, "not_found", "供应商连接不存在");
+    try {
+      const credential = row.credential_id
+        ? (db
+            .prepare("SELECT kind,ciphertext,nonce FROM credentials WHERE id=?")
+            .get(row.credential_id) as
+            | { kind: string; ciphertext: Uint8Array; nonce: Uint8Array }
+            | undefined)
+        : undefined;
+      const subscription =
+        credential?.kind === "oauth" && row.credential_id
+          ? deps.resolveDeps.subscription?.(row.credential_id)
+          : undefined;
+      const apiKey =
+        credential && credential.kind !== "oauth"
+          ? decryptSecret(
+              deps.masterKey,
+              Buffer.from(credential.ciphertext),
+              Buffer.from(credential.nonce),
+            )
+          : "";
+      const items = await listRemoteModels({
+        profileId: "",
+        provider: row.provider,
+        model: "",
+        apiKey,
+        ...(row.base_url ? { baseUrl: row.base_url } : {}),
+        ...(subscription ? { subscription } : {}),
+        extraHeaders: openConnectionHeaders(deps.masterKey, row.extra_headers),
+        fetch: deps.resolveDeps.fetch ?? deps.settings.fetch(),
+      });
+      const updatedAt = nowIso();
+      // A refresh started before a connection edit must not repopulate its invalidated cache.
+      const updated = db
+        .prepare(
+          "UPDATE provider_connections SET models_cache=?,models_updated_at=? WHERE id=? AND updated_at=?",
+        )
+        .run(JSON.stringify(items), updatedAt, row.id, row.updated_at);
+      if (!updated.changes) return fail(c, 409, "conflict", "连接已变更，请重新刷新模型列表");
+      return c.json({ items, updatedAt });
+    } catch (e) {
+      return fail(
+        c,
+        502,
+        "bad_gateway",
+        `拉取模型列表失败：${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
   });
   app.post("/model-profiles/:id/models", async (c) => {
     const resolved = resolveProfileModel(db, deps.masterKey, c.req.param("id"), deps.resolveDeps);
@@ -728,6 +805,18 @@ export function extensionRoutes(deps: ExtensionDeps, fail: Fail): Hono {
     app.get(`/workspaces/:id/${seg}`, (c) => {
       const ws = getWorkspace(db, c.req.param("id"));
       if (!ws) return fail(c, 404, "not_found", "工作区不存在");
+      // 手动编辑的备份沿用连接 ID 分组；用真实修订来源确认，不能把未知会话都当作手动操作。
+      const hasDocOps = db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'doc_ops'").get();
+      const manualSources = new Set(
+        hasDocOps
+          ? db
+              .prepare(`SELECT DISTINCT o.source_id FROM doc_ops o
+              JOIN documents d ON d.id = o.doc_id
+              WHERE d.workspace_id = ? AND o.source_kind = 'user'`)
+              .all(ws.id)
+              .map((r) => String(r.source_id))
+          : [],
+      );
       return c.json({
         items: deps.backups.listEntries(ws.id, kind).map((b) => ({
           id: b.id,
@@ -736,8 +825,23 @@ export function extensionRoutes(deps: ExtensionDeps, fail: Fail): Hono {
           size: b.size,
           createdAt: b.createdAt,
           sessionId: b.sessionId,
+          ...(b.agentId === "user" || b.sessionId === "user" || manualSources.has(b.sessionId)
+            ? { sourceKind: "user" as const }
+            : {}),
         })),
       });
+    });
+    app.get(`/workspaces/:id/${seg}/:entryId/preview`, (c) => {
+      const ws = getWorkspace(db, c.req.param("id"));
+      if (!ws) return fail(c, 404, "not_found", "工作区不存在");
+      const query = BackupPreviewQuery.safeParse(c.req.query());
+      if (!query.success) return fail(c, 400, "invalid_input", "预览页码不合法");
+      try {
+        const { name, bytes } = deps.backups.readEntry(ws.id, ws.path, c.req.param("entryId"));
+        return c.json(previewBackup(name, bytes, query.data));
+      } catch (e) {
+        return fail(c, 400, "invalid_input", e instanceof Error ? e.message : "无法预览备份");
+      }
     });
     app.get(`/workspaces/:id/${seg}/:entryId/download`, (c) => {
       const ws = getWorkspace(db, c.req.param("id"));
@@ -764,10 +868,15 @@ export function extensionRoutes(deps: ExtensionDeps, fail: Fail): Hono {
           );
         const target = deps.backups.entryPath(ws.id, entryId);
         // 07 §7.3：已打开的文档由文档 actor 编排替换（先检查点，失败则 409），不再吞错
-        const out =
-          target !== undefined && deps.replaceDocumentFile
-            ? await deps.replaceDocumentFile(ws.id, ws.path, target, restore)
-            : restore();
+        const out = await runWithHostNativeAccess(
+          {db,workspaceId:ws.id,workspaceRoot:ws.path,operationId:newId("manual")},
+          () => runWithHostBackupEntryAccess(
+            {db,workspaceRoot:ws.path,workspaceId:ws.id,entryId,operation:"restore"},
+            () => target !== undefined && deps.replaceDocumentFile
+              ? deps.replaceDocumentFile(ws.id, ws.path, target, restore)
+              : restore(),
+          ),
+        );
         appEvent("files.changed", { workspaceId: ws.id });
         return c.json({
           ok: true,
@@ -787,9 +896,14 @@ export function extensionRoutes(deps: ExtensionDeps, fail: Fail): Hono {
     app.delete(`/workspaces/:id/${seg}/:entryId`, (c) => {
       const ws = getWorkspace(db, c.req.param("id"));
       if (!ws) return fail(c, 404, "not_found", "工作区不存在");
-      if (!deps.backups.removeEntry(ws.id, ws.path, c.req.param("entryId")))
-        return fail(c, 404, "not_found", "记录不存在");
-      return c.json({ ok: true });
+      const entryId=c.req.param("entryId");
+      try {
+        const removed=runWithHostNativeAccess({db,workspaceId:ws.id,workspaceRoot:ws.path,operationId:newId("manual")},()=>
+          runWithHostBackupEntryAccess({db,workspaceRoot:ws.path,workspaceId:ws.id,entryId,operation:"remove"},()=>
+            deps.backups.removeEntry(ws.id,ws.path,entryId)));
+        if(!removed)return fail(c,404,"not_found","记录不存在");
+        return c.json({ok:true});
+      }catch(error){return fail(c,409,"conflict",error instanceof Error?error.message:String(error));}
     });
   };
   backupRoutes("backup", "backups");
@@ -838,15 +952,33 @@ export function extensionRoutes(deps: ExtensionDeps, fail: Fail): Hono {
     if (!ws) return fail(c, 404, "not_found", "工作区不存在");
     const name = basename(c.req.param("name"));
     const src = join(deps.samplesDir, name);
-    if (!existsSync(src)) return fail(c, 404, "not_found", "示例不存在");
-    // 不覆盖已有文件：同名时追加序号
-    const ext = extname(name);
-    let target = name;
-    for (let i = 2; existsSync(join(ws.path, target)); i++)
-      target = `${name.slice(0, -ext.length)} (${i})${ext}`;
-    copyFileSync(src, join(ws.path, target));
-    appEvent("files.changed", { workspaceId: ws.id });
-    return c.json({ path: target }, 201);
+    let fd: number | undefined;
+    try {
+      // The configured sample directory is a host asset boundary, not a task read grant.
+      // Read a stable regular file descriptor; never follow an asset symlink.
+      fd = openSync(src, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const before = fstatSync(fd, {bigint:true});
+      if(!before.isFile() || before.nlink !== 1n) throw new Error("示例必须是独立的普通文件");
+      const bytes = readFileSync(fd);
+      const after = fstatSync(fd, {bigint:true}), current = lstatSync(src, {bigint:true});
+      if(!current.isFile() || current.nlink !== 1n || before.dev !== after.dev || before.ino !== after.ino ||
+        before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs ||
+        current.dev !== after.dev || current.ino !== after.ino)
+        throw new Error("示例身份在读取期间发生变化");
+      const ext = extname(name);
+      let target = name;
+      for (let i = 2; existsSync(join(ws.path, target)); i++)
+        target = `${name.slice(0, -ext.length)} (${i})${ext}`;
+      runWithHostNativeAccess({db,workspaceId:ws.id,workspaceRoot:ws.path,operationId:newId("manual")},()=>{
+        const permit=prepareEffectPlan({workspaceRoot:ws.path,atomicScope:"single-resource",effects:[{operation:"create",path:target}]});
+        runWithEffectPlan(permit,()=>atomicWrite(ws.path,target,bytes,null));
+      });
+      appEvent("files.changed", { workspaceId: ws.id });
+      return c.json({ path: target }, 201);
+    } catch(error) {
+      const code=(error as NodeJS.ErrnoException).code;
+      return fail(c,code==="ENOENT"?404:409,code==="ENOENT"?"not_found":"conflict",error instanceof Error?error.message:String(error));
+    } finally { if(fd !== undefined) closeSync(fd); }
   });
 
   // ----- 设备 -----
@@ -888,9 +1020,18 @@ export function autoProfilesForAccount(
   accountId: string,
   label: string,
 ): string[] {
+  let connection = db
+    .prepare("SELECT id FROM provider_connections WHERE credential_id=?")
+    .get(accountId) as { id: string } | undefined;
+  if (!connection)
+    connection = createConnection(db, masterKey, {
+      name: label || "ChatGPT",
+      provider: "chatgpt",
+      accountId,
+    });
   const existing = db
-    .prepare("SELECT id FROM model_profiles WHERE credential_id = ?")
-    .all(accountId) as { id: string }[];
+    .prepare("SELECT id FROM model_profiles WHERE connection_id=?")
+    .all(connection.id) as { id: string }[];
   if (existing.length > 0) return existing.map((r) => r.id);
   const models = presetFor("chatgpt")?.suggestedModels ?? ["gpt-5.1-codex"];
   const out: string[] = [];
@@ -899,7 +1040,7 @@ export function autoProfilesForAccount(
     if (db.prepare("SELECT 1 FROM model_profiles WHERE name = ?").get(name))
       name = `${name}（${label}）`;
     if (db.prepare("SELECT 1 FROM model_profiles WHERE name = ?").get(name)) continue;
-    out.push(createProfile(db, masterKey, { name, provider: "chatgpt", model, accountId }).id);
+    out.push(createProfile(db, masterKey, { name, connectionId: connection.id, model }).id);
   }
   return out;
 }

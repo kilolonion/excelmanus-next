@@ -257,7 +257,8 @@ export async function probeModel(
   // 图片放在 user 消息里发送：视觉判定不依赖工具调用能力（工具结果图片的发送方式由网关按适配器处理）
   const visionRun = await runOnceMore(
     gateway,
-    model,
+    // Explicit capability probes authorize this synthetic image, not normal user data.
+    { ...model, vision: true },
     [
       {
         kind: "user",

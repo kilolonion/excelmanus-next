@@ -1,18 +1,38 @@
+import { importArrays } from "./array-formulas.ts";
+import { importNames } from "./defined-names.ts";
+import { engineFormula } from "./formula-compat.ts";
+import { importTables } from "./tables.ts";
+import { importThreadedComments } from "./threaded-comments.ts";
 // xlsx → IWorkbookData 只读导入（07 §3 快照定影、ADR 0003）。
 // 自研解析：fflate 解 zip + fast-xml-parser 读 workbook/sharedStrings/styles/sheetData。
 // 覆盖：单元格值与公式（s/n/b/str/e/inlineStr）、数字格式（样式表 numFmt）、
 // 合并单元格、列宽行高、冻结窗格、隐藏表。不支持的部件只计数进 unsupported。
 
 import { posix } from "node:path";
+import { FileOperationError } from "@excelmanus/kernel";
 import type { ICellData, IWorkbookData, IWorksheetData } from "@univerjs/core";
-import { XMLParser, XMLValidator } from "fast-xml-parser";
+import { XMLParser } from "fast-xml-parser";
 import { unzipSync } from "fflate";
-import { importObjects } from "./objects.ts";
+import { CFB } from "xlsx";
+import { importNotes, importObjects } from "./objects.ts";
+import { importPivotRefresh } from "./pivot-codec.ts";
+import {
+  importPrintSettings,
+  type SpreadsheetXmlNode,
+  spreadsheetChildren,
+  spreadsheetXml,
+} from "./print-codec.ts";
 import { importRules } from "./rule-codec.ts";
+import { readWorkbookManifest } from "./workbook-manifest.ts";
+import { normalizeWorksheetXml } from "./worksheet-namespace.ts";
+import { assertXmlDocument, bytesOf, elements, textOf } from "./xml.ts";
 
-export class XlsxImportError extends Error {
-  constructor(message: string) {
-    super(message);
+export class XlsxImportError extends FileOperationError {
+  constructor(
+    message: string,
+    code: "INVALID_ARGUMENT" | "UNSUPPORTED_FEATURE" = "INVALID_ARGUMENT",
+  ) {
+    super(code, message);
     this.name = "XlsxImportError";
   }
 }
@@ -39,6 +59,8 @@ const parser = new XMLParser({
   attributeNamePrefix: "@_",
   textNodeName: "#text",
   parseTagValue: false,
+  trimValues: false,
+  htmlEntities: true,
   isArray: (tag) =>
     [
       "c",
@@ -107,6 +129,10 @@ import { BORDER_STYLES } from "./style-constants.ts";
 import { resolveColor, themeColors } from "./theme.ts";
 
 const BUILTIN_NUMFMT: Record<number, string> = {
+  1: "0",
+  2: "0.00",
+  3: "#,##0",
+  4: "#,##0.00",
   9: "0%",
   10: "0.00%",
   11: "0.00E+00",
@@ -234,7 +260,7 @@ function parseCell(node: Xml, sst: string[], xfToStyle: StylesOut["xfToStyle"]):
     const fType = typeof fNode === "object" ? attr(fNode as Xml, "t") : undefined;
     // 共享公式从属项在 parseWorksheet 的第二遍按主公式展开。
     if (fText !== undefined && String(fText) !== "") {
-      cell.f = `=${String(fText)}`;
+      cell.f = engineFormula(`=${String(fText)}`);
       isFormula = true;
     } else if (fType === "shared") {
       isFormula = true; // 计入公式数，但无 f 文本
@@ -300,6 +326,7 @@ interface ParsedSheet {
 
 function parseWorksheet(xml: Xml, sst: string[], xfToStyle: StylesOut["xfToStyle"]): ParsedSheet {
   const sheet = (xml.worksheet as Xml | undefined) ?? {};
+  const defaultHeight = attr((sheet.sheetFormatPr as Xml | undefined) ?? {}, "defaultRowHeight");
   const cellData: Record<number, Record<number, ICellData>> = {};
   const rowData: Record<number, { h?: number; hd?: number; custom?: Record<string, unknown> }> = {};
   const columnData: Record<number, { w?: number; hd?: number; custom?: Record<string, unknown> }> =
@@ -330,12 +357,20 @@ function parseWorksheet(xml: Xml, sst: string[], xfToStyle: StylesOut["xfToStyle
     const max = Number(attr(col, "max") ?? 0) - 1;
     const w = attr(col, "width");
     const hidden = attr(col, "hidden") === "1" || attr(col, "hidden") === "true";
+    const collapsed = ["1", "true"].includes(attr(col, "collapsed") ?? "");
+    const level = Number(attr(col, "outlineLevel"));
     for (let c = min; c <= max && c < 16384; c++) {
+      maxCol = Math.max(maxCol, c + 1);
       columnData[c] = {
         ...(w !== undefined ? { w: Math.round(Number(w) * 7) } : {}),
         ...(hidden ? { hd: 1 } : {}),
-        ...(Number(attr(col, "outlineLevel")) > 0
-          ? { custom: { excelmanusOutlineLevel: Number(attr(col, "outlineLevel")) } }
+        ...(level > 0 || collapsed
+          ? {
+              custom: {
+                ...(level > 0 ? { excelmanusOutlineLevel: level } : {}),
+                ...(collapsed ? { excelmanusCollapsed: true } : {}),
+              },
+            }
           : {}),
       };
     }
@@ -358,12 +393,21 @@ function parseWorksheet(xml: Xml, sst: string[], xfToStyle: StylesOut["xfToStyle
     if (!Number.isInteger(r) || r < 0) continue;
     const ht = attr(row, "ht");
     const hd = attr(row, "hidden");
-    if (ht !== undefined || hd === "1" || hd === "true" || Number(attr(row, "outlineLevel")) > 0) {
+    const collapsed = ["1", "true"].includes(attr(row, "collapsed") ?? "");
+    const level = Number(attr(row, "outlineLevel"));
+    if (ht !== undefined || hd === "1" || hd === "true" || level > 0 || collapsed) {
+      maxRow = Math.max(maxRow, r + 1);
       rowData[r] = {
-        ...(ht !== undefined ? { h: Number(ht) } : {}),
+        // OOXML ht uses points; the canvas and tool contract use CSS pixels (96 dpi).
+        ...(ht !== undefined ? { h: (Number(ht) * 4) / 3 } : {}),
         ...(hd === "1" || hd === "true" ? { hd: 1 } : {}),
-        ...(Number(attr(row, "outlineLevel")) > 0
-          ? { custom: { excelmanusOutlineLevel: Number(attr(row, "outlineLevel")) } }
+        ...(level > 0 || collapsed
+          ? {
+              custom: {
+                ...(level > 0 ? { excelmanusOutlineLevel: level } : {}),
+                ...(collapsed ? { excelmanusCollapsed: true } : {}),
+              },
+            }
           : {}),
       };
     }
@@ -427,6 +471,7 @@ function parseWorksheet(xml: Xml, sst: string[], xfToStyle: StylesOut["xfToStyle
     data: {
       rowCount,
       columnCount,
+      ...(defaultHeight !== undefined ? { defaultRowHeight: (Number(defaultHeight) * 4) / 3 } : {}),
       cellData: cellData as IWorksheetData["cellData"],
       ...(mergeData.length > 0 ? { mergeData } : {}),
       ...(Object.keys(rowData).length > 0 ? { rowData: rowData as IWorksheetData["rowData"] } : {}),
@@ -454,34 +499,70 @@ const UNSUPPORTED_PARTS: [RegExp, string][] = [
   [/^xl\/ctrlProps\//, "activeX"],
 ];
 
+function isEncryptedOfficeFile(bytes: Uint8Array): boolean {
+  try {
+    const compound = CFB.read(bytes, { type: "buffer" });
+    const info = CFB.find(compound, "EncryptionInfo");
+    const payload = CFB.find(compound, "EncryptedPackage");
+    return info?.type === 2 && info.size >= 8 && payload?.type === 2 && payload.size > 8;
+  } catch {
+    return false;
+  }
+}
+
 export function importXlsx(bytes: Uint8Array, name: string): ImportedWorkbook {
   let files: Record<string, Uint8Array>;
   try {
     files = unzipSync(bytes);
   } catch {
-    throw new XlsxImportError("不是有效的 xlsx（zip 解包失败）");
+    if (isEncryptedOfficeFile(bytes))
+      throw new XlsxImportError(
+        "工作簿已加密，暂不支持读取或修改。请在 Excel 中另存为未加密副本后再导入；原文件保持不变。",
+        "UNSUPPORTED_FEATURE",
+      );
+    throw new XlsxImportError(
+      "文件损坏或不是有效的 .xlsx/.xlsm 工作簿（ZIP 解包失败），请在 Excel 中检查并另存副本。",
+    );
   }
-  const readXmlDirect = (p: string, required = false): Xml | undefined => {
+  const parsedParts = { ...files };
+  const printRoots = new Map<string, SpreadsheetXmlNode>();
+  const readXmlDirect = (p: string, required = false, worksheet = false): Xml | undefined => {
     const raw = files[p];
     if (!raw) {
       if (required) throw new XlsxImportError("缺少工作簿引用的 XML 部件");
       return undefined;
     }
-    const text = new TextDecoder("utf-8", { fatal: true }).decode(raw);
-    if (/<!DOCTYPE|<!ENTITY/i.test(text))
-      throw new XlsxImportError("工作簿 XML 不允许 DTD 或实体声明");
-    if (XMLValidator.validate(text) !== true) {
-      throw new XlsxImportError("工作簿 XML 部件格式损坏");
-    }
     try {
+      let text = new TextDecoder("utf-8", { fatal: true }).decode(raw);
+      if (/<!DOCTYPE|<!ENTITY/i.test(text))
+        throw new XlsxImportError("工作簿 XML 不允许 DTD 或实体声明");
+      if (worksheet) printRoots.set(p, spreadsheetXml(text));
+      else assertXmlDocument(text);
+      if (worksheet) {
+        const normalized = normalizeWorksheetXml(text);
+        if (normalized !== text) parsedParts[p] = bytesOf(normalized);
+        text = normalized;
+      }
       return parser.parse(text) as Xml;
-    } catch {
-      throw new XlsxImportError("工作簿 XML 部件无法解析");
+    } catch (error) {
+      if (error instanceof FileOperationError) throw error;
+      throw new XlsxImportError(
+        "工作簿 XML 部件无法解析，文件可能损坏，请在 Excel 中检查并另存副本。",
+      );
     }
   };
 
-  const wbXml = readXmlDirect("xl/workbook.xml");
-  if (!wbXml) throw new XlsxImportError("缺少 xl/workbook.xml");
+  const wbBytes = files["xl/workbook.xml"];
+  if (!wbBytes) throw new XlsxImportError("缺少 xl/workbook.xml");
+  let sheetsArr: ReturnType<typeof readWorkbookManifest>["sheets"];
+  try {
+    sheetsArr = readWorkbookManifest(textOf(wbBytes)).sheets;
+  } catch (error) {
+    if (error instanceof FileOperationError) throw error;
+    throw new XlsxImportError(
+      "工作簿 XML 部件无法解析，文件可能损坏，请在 Excel 中检查并另存副本。",
+    );
+  }
   const relsXml = readXmlDirect("xl/_rels/workbook.xml.rels", true);
   const relTargets = new Map<string, string>();
   const relTypes = new Map<string, string>();
@@ -511,9 +592,6 @@ export function importXlsx(bytes: Uint8Array, name: string): ImportedWorkbook {
     readXmlDirect(relTypes.get("theme") ?? "xl/theme/theme1.xml"),
   );
 
-  const sheetsArr = asArr<Xml>(
-    ((wbXml.workbook as Xml | undefined)?.sheets as Xml | undefined)?.sheet as Xml[] | undefined,
-  );
   if (sheetsArr.length === 0) throw new XlsxImportError("workbook 中没有工作表");
 
   const sheetParts: XlsxPreservation["sheetParts"] = {};
@@ -522,28 +600,64 @@ export function importXlsx(bytes: Uint8Array, name: string): ImportedWorkbook {
   const cellCounts: Record<string, number> = {};
   const formulaCounts: Record<string, number> = {};
   sheetsArr.forEach((s, i) => {
-    const rid = attr(s, "id") ?? attr(s, "r:id");
+    const rid = s.rid;
     const target = rid !== undefined ? relTargets.get(rid) : undefined;
     const sheetId = `s${i}`;
     sheetOrder.push(sheetId);
-    const sheetName = attr(s, "name") ?? `Sheet${i + 1}`;
-    const state = attr(s, "state");
+    const sheetName = s.name ?? `Sheet${i + 1}`;
+    const state = s.state;
     const hidden = state === "hidden" ? 1 : state === "veryHidden" ? 2 : 0;
     if (!target) throw new XlsxImportError("工作表缺少有效的内部部件关系");
     sheetParts[sheetId] = {
       path: target,
       rid: rid as string,
-      sheetId: attr(s, "sheetId") ?? String(i + 1),
+      sheetId: s.sheetId ?? String(i + 1),
     };
-    const sheetXml = readXmlDirect(target, true);
+    const sheetXml = readXmlDirect(target, true, true);
     if (!sheetXml?.worksheet) throw new XlsxImportError("不支持的工作表部件或部件格式损坏");
     const parsed = parseWorksheet(sheetXml, sst, styles.xfToStyle);
+    // 页面设置不参与计算；保留在工作表快照中，使 sheet.copy 不丢失打印语义。
+    const rawSheet = textOf(files[target]!);
+    const printRoot = printRoots.get(target)!;
+    printRoots.delete(target);
+    const pageSetupNode = spreadsheetChildren(printRoot, "pageSetup")[0];
+    const sheetPr = spreadsheetChildren(printRoot, "sheetPr")[0];
+    const outlinePr = sheetPr && spreadsheetChildren(sheetPr, "outlinePr")[0];
+    const pageSetUpPrNode = sheetPr && spreadsheetChildren(sheetPr, "pageSetUpPr")[0];
+    const legacyFragment = (node: SpreadsheetXmlNode | undefined, parent?: SpreadsheetXmlNode) => {
+      if (!node) return undefined;
+      const raw = rawSheet.slice(node.start, node.end);
+      if (parsedParts[target] === files[target]) return raw;
+      // Normalize only the selected fragment with its source namespace context; do not rescan cells.
+      const body = parent
+        ? rawSheet.slice(parent.start, parent.openEnd) + raw + `</${parent.name}>`
+        : raw;
+      const wrapped =
+        rawSheet.slice(printRoot.start, printRoot.openEnd) + body + `</${printRoot.name}>`;
+      return elements(normalizeWorksheetXml(wrapped), node.local)[0]?.raw;
+    };
+    const pageSetup = legacyFragment(pageSetupNode);
+    const pageSetUpPr = legacyFragment(pageSetUpPrNode, sheetPr);
+    const printSettings = importPrintSettings(rawSheet, printRoot);
     cellCounts[sheetName] = parsed.cellCount;
     formulaCounts[sheetName] = parsed.formulaCount;
     sheets[sheetId] = {
       id: sheetId,
       name: sheetName,
       ...parsed.data,
+      ...(Object.keys(printSettings).length || outlinePr
+        ? {
+            custom: {
+              ...(Object.keys(printSettings).length
+                ? { excelmanusPrintSettings: printSettings }
+                : {}),
+              ...(outlinePr ? { excelmanusOutlineSettings: outlinePr.attributes } : {}),
+              ...(pageSetup || pageSetUpPr
+                ? { excelmanusPrintSetup: { pageSetup, pageSetUpPr } }
+                : {}),
+            },
+          }
+        : {}),
       ...(hidden !== 0 ? { hidden } : {}),
     };
   });
@@ -555,7 +669,11 @@ export function importXlsx(bytes: Uint8Array, name: string): ImportedWorkbook {
     }
   }
 
-  importObjects(files, sheetParts, sheets);
+  const arrays = importArrays(parsedParts, sheetParts, sheets);
+  importObjects(parsedParts, sheetParts, sheets);
+  importNotes(parsedParts, sheetParts, sheets);
+  importThreadedComments(parsedParts, sheetParts, sheets);
+  importPivotRefresh(files, sheetParts, sheets);
   return {
     preservation: { parts: files, sheetParts, stylesPart: stylesPart ?? "xl/styles.xml" },
     snapshot: {
@@ -565,8 +683,11 @@ export function importXlsx(bytes: Uint8Array, name: string): ImportedWorkbook {
       locale: "zh-CN" as never,
       styles: styles.styles as never,
       resources: [
-        ...(importRules(files, sheetParts, stylesPart ?? "xl/styles.xml") ?? []),
-        importFilterLinks(files, sheetParts, sheets),
+        arrays,
+        importNames(parsedParts, sheetOrder),
+        importTables(parsedParts, sheetParts),
+        ...(importRules(parsedParts, sheetParts, stylesPart ?? "xl/styles.xml") ?? []),
+        importFilterLinks(parsedParts, sheetParts, sheets),
       ],
       sheetOrder,
       sheets,

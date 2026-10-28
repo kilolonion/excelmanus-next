@@ -412,30 +412,51 @@ export const SessionList = memo(function SessionList() {
     [workspaces],
   );
 
+  const searchTitles = useMemo(() => new WeakMap<SessionSummary, string>(), [sessions]);
   const filteredSessions = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    return (dragSessions ?? sessions).filter(
-      (session) => !q || fuzzyMatch(sessionTitle(session).toLowerCase(), q),
-    );
-  }, [sessions, dragSessions, searchQuery]);
+    const source = dragSessions ?? sessions;
+    if (!q) return source;
+    return source.filter((session) => {
+      let title = searchTitles.get(session);
+      if (title === undefined) {
+        title = sessionTitle(session).toLowerCase();
+        searchTitles.set(session, title);
+      }
+      return fuzzyMatch(title, q);
+    });
+  }, [sessions, dragSessions, searchQuery, searchTitles]);
 
   const groupedSessions = useMemo(() => {
     const known = new Set(workspaces.map((w) => w.id));
+    const members = new Map<string, SessionSummary[]>();
+    const orphans: SessionSummary[] = [];
+    for (const session of filteredSessions) {
+      const workspaceId = session.workspaceId;
+      if (!known.has(workspaceId)) {
+        orphans.push(session);
+        continue;
+      }
+      const group = members.get(workspaceId);
+      if (group) group.push(session);
+      else members.set(workspaceId, [session]);
+    }
     const groups: SessionGroup[] = workspaces.map((ws) => ({
       key: ws.id,
       title: ws.name,
       workspace: ws,
-      sessions: applySidebarOrder(
-        filteredSessions.filter((s) => s.workspaceId === ws.id),
-        order.sessions[ws.id],
-      ),
+      sessions: applySidebarOrder(members.get(ws.id) ?? [], order.sessions[ws.id]),
     }));
     // 工作区登记被移除前删除了会话；日志里仍可能有尚未刷新的旧会话，归入"其他"
-    const orphans = filteredSessions.filter((s) => !known.has(s.workspaceId));
     if (orphans.length > 0)
       groups.push({ key: "__orphans__", title: "其他", workspace: null, sessions: orphans });
     return groups;
   }, [filteredSessions, workspaces, order.sessions]);
+
+  const unreadCounts = useMemo(
+    () => new Map<SessionGroup, number>(),
+    [groupedSessions, seen, activeSessionId],
+  );
 
   // 组头与展开的会话拍平后虚拟化，长历史也只渲染视口内的行
   const rows = useMemo(
@@ -452,18 +473,37 @@ export const SessionList = memo(function SessionList() {
       }),
     [groupedSessions, collapsedGroups, searchQuery],
   );
-  const pinnedIndices = rows.flatMap((row, index) =>
-    (row.session && (row.session.id === editingSessionId || row.session.id === sessionMenuId)) ||
-    (!row.session && row.group.key === workspaceMenuKey) ||
-    (drag?.kind === "workspace" && !row.session && row.group.key === drag.groupKey) ||
-    (drag?.kind === "session" && row.session?.id === drag.id)
-      ? [index]
-      : [],
-  );
+  const rowIndices = useMemo(() => {
+    const sessions = new Map<string, number>();
+    const workspaces = new Map<string, number>();
+    const groups = new Map<string, { first: string; last: string }>();
+    rows.forEach((row, index) => {
+      const bounds = groups.get(row.group.key);
+      if (bounds) bounds.last = row.key;
+      else groups.set(row.group.key, { first: row.key, last: row.key });
+      if (row.session) sessions.set(row.session.id, index);
+      else workspaces.set(row.group.key, index);
+    });
+    return { sessions, workspaces, groups };
+  }, [rows]);
+  const pinnedIndices = useMemo(() => {
+    const indices = [
+      editingSessionId === null ? undefined : rowIndices.sessions.get(editingSessionId),
+      sessionMenuId === null ? undefined : rowIndices.sessions.get(sessionMenuId),
+      workspaceMenuKey === null ? undefined : rowIndices.workspaces.get(workspaceMenuKey),
+      drag?.kind === "workspace"
+        ? rowIndices.workspaces.get(drag.groupKey)
+        : drag?.kind === "session"
+          ? rowIndices.sessions.get(drag.id)
+          : undefined,
+    ];
+    return indices.filter((index): index is number => index !== undefined);
+  }, [rowIndices, editingSessionId, sessionMenuId, workspaceMenuKey, drag]);
+  const getItemKey = useCallback((index: number) => rows[index].key, [rows]);
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => viewportRef.current,
-    getItemKey: (index) => rows[index].key,
+    getItemKey,
     estimateSize: () => 44,
     overscan: 5,
     rangeExtractor: (range) =>
@@ -481,12 +521,13 @@ export const SessionList = memo(function SessionList() {
       return { id: row.session.id, side, rowKey: row.key };
     }
     if (!row.group.workspace || row.group.key === drag.groupKey) return null;
-    const groupRows = rows.filter((item) => item.group.key === row.group.key);
+    const bounds = rowIndices.groups.get(row.group.key);
+    if (!bounds) return null;
     const groupSide = row.session ? "after" : side;
     return {
       id: row.group.workspace.id,
       side: groupSide,
-      rowKey: groupSide === "before" ? groupRows[0].key : groupRows[groupRows.length - 1].key,
+      rowKey: groupSide === "before" ? bounds.first : bounds.last,
     };
   };
 
@@ -602,9 +643,14 @@ export const SessionList = memo(function SessionList() {
   const renderGroupHeader = (group: SessionGroup) => {
     const collapsed = collapsedGroups.has(group.key) && !searchQuery.trim();
     const ws = group.workspace;
-    const unreadIds = group.sessions
-      .filter((item) => isUnread(item, seen, activeSessionId))
-      .map((item) => item.id);
+    let unreadCount = unreadCounts.get(group);
+    if (unreadCount === undefined) {
+      unreadCount = group.sessions.reduce(
+        (count, item) => count + Number(isUnread(item, seen, activeSessionId)),
+        0,
+      );
+      unreadCounts.set(group, unreadCount);
+    }
     return (
       <div
         className={cn(
@@ -650,9 +696,9 @@ export const SessionList = memo(function SessionList() {
           <span className="em-workspace-count" aria-label={`${group.sessions.length} 个对话`}>
             {group.sessions.length}
           </span>
-          {unreadIds.length > 0 ? (
-            <span className="em-workspace-unread" aria-label={`${unreadIds.length} 个未读对话`}>
-              {unreadIds.length > 99 ? "99+" : unreadIds.length}
+          {unreadCount > 0 ? (
+            <span className="em-workspace-unread" aria-label={`${unreadCount} 个未读对话`}>
+              {unreadCount > 99 ? "99+" : unreadCount}
             </span>
           ) : null}
           {ws?.isDefault ? (
@@ -731,7 +777,7 @@ export const SessionList = memo(function SessionList() {
             ) : null}
             <DropdownMenuItem
               className={glassMenuItemClass}
-              disabled={unreadIds.length === 0}
+              disabled={unreadCount === 0}
               onClick={() => {
                 markSessionsRead(group.sessions.map((item) => item.id));
                 setWorkspaceMenuKey(null);

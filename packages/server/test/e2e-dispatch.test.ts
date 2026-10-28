@@ -1,3 +1,4 @@
+import { createTestProfile } from "./fixtures/create-model.ts";
 // M3 消息派发三策略集成测试（04 §4.1–4.3、§8.3，14 场景 8；ADR 0006：
 // 真实 HTTP/WebSocket/SQLite 文件 + MockLanguageModelV4 只替代模型输出）。
 // 假模型用可控 gate 卡住 doStream，记录每次调用的 prompt 以断言注入时机。
@@ -140,7 +141,7 @@ async function boot(
   });
   servers.push(srv);
   const api = createApiClient(srv.url, srv.token);
-  await api.createModelProfile({
+  await createTestProfile(api, {
     name: "mock",
     provider: "custom-openai-compatible",
     model: "mock-dispatch",
@@ -719,7 +720,7 @@ describe("M3 消息派发三策略（04 §4.1–4.3）", () => {
       log: () => {},
     });
     const api1 = createApiClient(srv1.url, srv1.token);
-    await api1.createModelProfile({
+    await createTestProfile(api1, {
       name: "mock",
       provider: "custom-openai-compatible",
       model: "mock-dispatch",

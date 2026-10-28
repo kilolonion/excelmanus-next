@@ -1,9 +1,11 @@
+import type { ApiReadOptions } from "@excelmanus/protocol";
 // 应用级状态：启动/连接、部署信息、工作区、模型档案与提供商、全局设置。
 // 启动编排在 lib/boot.ts；这里只放数据与刷新动作。
 
 import type {
   AppSettings,
   ModelProfile,
+  ProviderConnection,
   ProviderPreset,
   UpdateSettingsBody,
   Workspace,
@@ -28,6 +30,10 @@ interface AppState {
   hasModelProfile: boolean;
   workspaces: Workspace[];
   profiles: ModelProfile[];
+  profilesLoaded: boolean;
+  profilesLoading: boolean;
+  profilesError: string | null;
+  connections: ProviderConnection[];
   providers: ProviderPreset[];
   settings: AppSettings | null;
   /** 桌面版自动更新状态（检查中 / 下载中 / 已就绪 / 失败）。 */
@@ -46,34 +52,73 @@ export const useAppStore = create<AppState>()(() => ({
   hasModelProfile: false,
   workspaces: [],
   profiles: [],
+  profilesLoaded: false,
+  profilesLoading: false,
+  profilesError: null,
+  connections: [],
   providers: [],
   settings: null,
   desktopUpdate: null,
 }));
 
 const set = useAppStore.setState;
+let workspaceRead = 0;
+let profileRead = 0;
 
-export async function refreshWorkspaces(): Promise<Workspace[]> {
-  const { items } = await api().listWorkspaces();
+let latestWorkspaceRead: Promise<Workspace[]> | null = null;
+
+export function refreshWorkspaces(options?: ApiReadOptions): Promise<Workspace[]> {
+  const request = ++workspaceRead;
+  const pending = readWorkspaces(request, options).catch((error: unknown) => {
+    if (request !== workspaceRead && latestWorkspaceRead) return latestWorkspaceRead;
+    throw error;
+  });
+  latestWorkspaceRead = pending;
+  return pending;
+}
+
+async function readWorkspaces(request: number, options?: ApiReadOptions): Promise<Workspace[]> {
+  const { items } = await api().listWorkspaces(options);
+  if (request !== workspaceRead) return latestWorkspaceRead ?? useAppStore.getState().workspaces;
   set({ workspaces: items });
   return items;
 }
 
-export async function refreshProfiles(): Promise<void> {
-  const [profiles, providers] = await Promise.all([
-    api().listModelProfiles(),
-    api().listProviders(),
-  ]);
-  set({
-    profiles: profiles.items,
-    providers: providers.items,
-    hasModelProfile: profiles.items.length > 0,
-  });
+export async function refreshProfiles(options?: ApiReadOptions): Promise<void> {
+  const request = ++profileRead;
+  set({ profilesLoading: true, profilesError: null });
+  try {
+    const [profiles, providers, connections] = await Promise.all([
+      api().listModelProfiles(options),
+      api().listProviders(options),
+      api().listProviderConnections(options),
+    ]);
+    if (request !== profileRead) return;
+    set({
+      profiles: profiles.items,
+      connections: connections.items,
+      providers: providers.items,
+      hasModelProfile: profiles.items.length > 0,
+      profilesLoaded: true,
+      profilesLoading: false,
+      profilesError: null,
+    });
+  } catch (error) {
+    if (request === profileRead)
+      set({
+        profilesLoading: false,
+        profilesError: error instanceof Error ? error.message : "无法读取模型列表",
+      });
+    throw error;
+  }
 }
 
-export async function refreshSettings(): Promise<AppSettings> {
-  const { settings } = await api().getSettings();
-  set({ settings });
+let settingsRead = 0;
+
+export async function refreshSettings(options?: ApiReadOptions): Promise<AppSettings> {
+  const request = ++settingsRead;
+  const { settings } = await api().getSettings(options);
+  if (request === settingsRead) set({ settings });
   return settings;
 }
 
@@ -81,6 +126,7 @@ export async function updateSettings(
   patch: UpdateSettingsBody,
 ): Promise<{ restartRequired: string[] }> {
   const res = await api().updateSettings(patch);
+  settingsRead += 1;
   set({ settings: res.settings });
   return { restartRequired: res.restartRequired };
 }

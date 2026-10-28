@@ -13,8 +13,9 @@ import {
 } from "lucide-react";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { errorMessage } from "@/lib/backend/api";
-import { downloadWorkspaceFile, fetchWorkspaceFile, useFilesStore } from "@/stores/files-store";
+import { Button } from "@/components/ui/button";
+import { useWorkspaceImage } from "@/lib/use-workspace-image";
+import { downloadWorkspaceFile, useFilesStore } from "@/stores/files-store";
 
 /* ─── types ─── */
 interface ImagePreviewModalProps {
@@ -23,36 +24,6 @@ interface ImagePreviewModalProps {
   trigger?: React.ReactNode;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
-}
-
-/** 带鉴权取工作区图片，转 object URL；文件变化（version）后重新读取。 */
-function useWorkspaceImage(path: string, enabled: boolean, version: number) {
-  const [state, setState] = useState<{ blobUrl: string | null; loading: boolean; error: string }>({
-    blobUrl: null,
-    loading: false,
-    error: "",
-  });
-  useEffect(() => {
-    if (!enabled) return;
-    let cancelled = false;
-    let url: string | null = null;
-    setState((s) => ({ ...s, loading: true, error: "" }));
-    fetchWorkspaceFile(path)
-      .then((blob) => {
-        if (cancelled) return;
-        url = URL.createObjectURL(blob);
-        setState({ blobUrl: url, loading: false, error: "" });
-      })
-      .catch((err: unknown) => {
-        if (!cancelled)
-          setState({ blobUrl: null, loading: false, error: errorMessage(err, "图片加载失败") });
-      });
-    return () => {
-      cancelled = true;
-      if (url) URL.revokeObjectURL(url);
-    };
-  }, [path, enabled, version]);
-  return state;
 }
 
 /* ─── constants ─── */
@@ -103,13 +74,14 @@ export function ImagePreviewModal({
     },
     [controlledOpen, onOpenChange],
   );
+  const [attempt, setAttempt] = useState(0);
   const [zoom, setZoom] = useState(1);
   const [rotation, setRotation] = useState(0);
-  const [imgLoaded, setImgLoaded] = useState(false);
-  const [decodeError, setDecodeError] = useState("");
+  const [decoded, setDecoded] = useState<{ url: string; error: string } | null>(null);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
   const dragStart = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
+  const dragPointer = useRef<number | null>(null);
   const workspaceFilesVersion = useFilesStore((s) => s.version);
 
   // ── authenticated image loading ──
@@ -117,25 +89,21 @@ export function ImagePreviewModal({
     blobUrl,
     loading: fetchLoading,
     error: fetchError,
-  } = useWorkspaceImage(imagePath, open, workspaceFilesVersion);
-  const error = fetchError || decodeError;
+  } = useWorkspaceImage(imagePath, open, workspaceFilesVersion, attempt);
+  const currentDecode = decoded?.url === blobUrl ? decoded : null;
+  const imgLoaded = currentDecode !== null && !currentDecode.error;
+  const error = fetchError || currentDecode?.error || "";
   const loading = fetchLoading || (!imgLoaded && !error && open);
-
-  useEffect(() => {
-    if (!fetchLoading) return;
-    setImgLoaded(false);
-    setDecodeError("");
-  }, [fetchLoading, imagePath]);
 
   // ── reset on close ──
   useEffect(() => {
     if (!open) {
       setZoom(1);
       setRotation(0);
-      setImgLoaded(false);
-      setDecodeError("");
+      setDecoded(null);
       setPan({ x: 0, y: 0 });
       setDragging(false);
+      dragPointer.current = null;
     }
   }, [open, setOpen]);
 
@@ -197,26 +165,26 @@ export function ImagePreviewModal({
   // ── drag to pan (when zoomed) ──
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
-      if (zoom <= 1) return;
+      if (zoom <= 1 || !e.isPrimary || e.button !== 0 || dragPointer.current !== null) return;
+      dragPointer.current = e.pointerId;
       e.preventDefault();
       setDragging(true);
       dragStart.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y };
-      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+      e.currentTarget.setPointerCapture(e.pointerId);
     },
     [zoom, pan],
   );
 
-  const handlePointerMove = useCallback(
-    (e: React.PointerEvent) => {
-      if (!dragging) return;
-      const dx = e.clientX - dragStart.current.x;
-      const dy = e.clientY - dragStart.current.y;
-      setPan({ x: dragStart.current.panX + dx, y: dragStart.current.panY + dy });
-    },
-    [dragging],
-  );
+  const handlePointerMove = useCallback((e: React.PointerEvent) => {
+    if (dragPointer.current !== e.pointerId) return;
+    const dx = e.clientX - dragStart.current.x;
+    const dy = e.clientY - dragStart.current.y;
+    setPan({ x: dragStart.current.panX + dx, y: dragStart.current.panY + dy });
+  }, []);
 
-  const handlePointerUp = useCallback(() => {
+  const handlePointerUp = useCallback((e: React.PointerEvent) => {
+    if (dragPointer.current !== e.pointerId) return;
+    dragPointer.current = null;
     setDragging(false);
   }, []);
 
@@ -372,7 +340,12 @@ export function ImagePreviewModal({
               onPointerDown={handlePointerDown}
               onPointerMove={handlePointerMove}
               onPointerUp={handlePointerUp}
-              style={{ cursor: isPanned ? (dragging ? "grabbing" : "grab") : "default" }}
+              onPointerCancel={handlePointerUp}
+              onLostPointerCapture={handlePointerUp}
+              style={{
+                cursor: isPanned ? (dragging ? "grabbing" : "grab") : "default",
+                touchAction: isPanned ? "none" : "auto",
+              }}
             >
               {/* checkerboard pattern for transparent images */}
               <div
@@ -399,6 +372,16 @@ export function ImagePreviewModal({
                   <span className="max-w-[36rem] px-6 text-center text-xs text-gray-400 dark:text-gray-500">
                     {error}
                   </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setDecoded(null);
+                      setAttempt((value) => value + 1);
+                    }}
+                  >
+                    重新读取
+                  </Button>
                   <span className="text-xs text-gray-300 dark:text-gray-600">按 Esc 关闭</span>
                 </div>
               ) : (
@@ -418,12 +401,10 @@ export function ImagePreviewModal({
                       display: imgLoaded ? "block" : "none",
                     }}
                     onLoad={() => {
-                      setDecodeError("");
-                      setImgLoaded(true);
+                      setDecoded({ url: blobUrl, error: "" });
                     }}
                     onError={() => {
-                      setImgLoaded(false);
-                      setDecodeError("图片数据已下载，但浏览器无法解码");
+                      setDecoded({ url: blobUrl, error: "图片数据已下载，但浏览器无法解码" });
                     }}
                   />
                 )

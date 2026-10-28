@@ -10,6 +10,7 @@ import { createApiClient, type ServerMessage } from "@excelmanus/protocol";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { WebSocket } from "ws";
 import { type RunningServer, startServer } from "../src/index.ts";
+import { createTestProfile } from "./fixtures/create-model.ts";
 
 const GOOGLE_KEY = "AIzaSyFAKEKEY1234567890abcdefXYZ9";
 const HEADER_SECRET = "hdr-secret-ABCDEFGH123";
@@ -34,6 +35,7 @@ async function readBody(req: IncomingMessage): Promise<string> {
 let fake: Server;
 let fakeBase = "";
 let cutCount = 0;
+let incompleteCount = 0;
 
 beforeAll(async () => {
   fake = createServer(async (req, res) => {
@@ -54,6 +56,13 @@ beforeAll(async () => {
     const cutAll = body.includes("[[cutall]]");
     const cutOnce = body.includes("[[cut]]") && cutCount === 0;
     res.writeHead(200, { "content-type": "text/event-stream" });
+    if (
+      body.includes("[[incomplete-all]]") ||
+      (body.includes("[[incomplete]]") && incompleteCount++ === 0)
+    ) {
+      res.end(`${chunk(null)}data: [DONE]\n\n`);
+      return;
+    }
     if (cutAll || cutOnce) {
       cutCount += 1;
       res.write(chunk("半截输出"));
@@ -100,9 +109,46 @@ async function waitLog(
 }
 
 describe("模型网关与契约缺口回归", () => {
+  test("200 骨架 SSE + DONE 缺 finish：重试恢复，耗尽时失败而非空成功", async () => {
+    const { api } = await boot();
+    await createTestProfile(api, {
+      name: "不完整流",
+      provider: "custom-openai-compatible",
+      model: "fake",
+      baseUrl: `${fakeBase}/ok/v1`,
+      apiKey: "sk-fixture-incomplete",
+    });
+    incompleteCount = 0;
+    const { session } = await api.createSession({});
+    await api.sendMessage(session.id, "main", {
+      clientMessageId: "incomplete1",
+      text: "[[incomplete]] 回答",
+    });
+    const recovered = await waitLog(api, session.id, (types) => types.includes("turn.completed"));
+    expect(recovered.filter((e) => e.type === "retry.scheduled")).toHaveLength(1);
+    expect(recovered.find((e) => e.type === "retry.scheduled")?.data.reason).toBe(
+      "stream_interrupted",
+    );
+    expect(recovered.filter((e) => e.type === "model.output")).toHaveLength(1);
+    expect(recovered.find((e) => e.type === "model.output")?.data.text).toBe("完整回答");
+
+    const { session: failedSession } = await api.createSession({});
+    await api.sendMessage(failedSession.id, "main", {
+      clientMessageId: "incomplete2",
+      text: "[[incomplete-all]] 回答",
+    });
+    const failed = await waitLog(api, failedSession.id, (types) => types.includes("turn.failed"));
+    expect(failed.some((e) => e.type === "turn.completed")).toBe(false);
+    expect(failed.some((e) => e.type === "model.output" || e.type === "tool.intent")).toBe(false);
+    expect(failed.find((e) => e.type === "turn.failed")?.data.error).toMatchObject({
+      kind: "stream_interrupted",
+      retryable: true,
+      detail: "incomplete_stream",
+    });
+  });
   test("P0-12：上游回显的 apiKey 与 extraHeaders 明文不进入会话日志与测试连接响应", async () => {
     const { api } = await boot();
-    const { profile } = await api.createModelProfile({
+    const { profile } = await createTestProfile(api, {
       name: "回显",
       provider: "custom-openai-compatible",
       model: "fake",
@@ -127,7 +173,7 @@ describe("模型网关与契约缺口回归", () => {
 
   test("P1-41：流中途断开按 stream_interrupted 重试并写 attempt.discarded；失败轮不留 snapshot", async () => {
     const { srv, api } = await boot();
-    await api.createModelProfile({
+    await createTestProfile(api, {
       name: "正常",
       provider: "custom-openai-compatible",
       model: "fake",
@@ -177,7 +223,7 @@ describe("模型网关与契约缺口回归", () => {
     await new Promise<void>((r) => closed.listen(0, "127.0.0.1", () => r()));
     const port = (closed.address() as AddressInfo).port;
     await new Promise<void>((r) => closed.close(() => r()));
-    await api.createModelProfile({
+    await createTestProfile(api, {
       name: "断网",
       provider: "custom-openai-compatible",
       model: "fake",

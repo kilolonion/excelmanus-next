@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "vitest";
 
-import { evaluateLicenses } from "../../scripts/check-licenses.ts";
+import { evaluateLicenses, licenseCommand } from "../../scripts/check-licenses.ts";
 
 const grouped = (license: string, names: string[]) => ({
   [license]: names.map((name) => ({ name, license })),
@@ -159,4 +159,16 @@ describe("报告形态兼容", () => {
     expect(violations).toHaveLength(1);
     expect(violations[0]).toContain("bad");
   });
+});
+
+test("license scan reuses the invoking pnpm, not an older executable on PATH", () => {
+  expect(licenseCommand("/tools/pnpm/bin/pnpm.cjs", false)).toEqual({
+    command: process.execPath,
+    args: ["/tools/pnpm/bin/pnpm.cjs", "licenses", "list", "--json"],
+  });
+  expect(licenseCommand(undefined, true)).toEqual({
+    command: "pnpm",
+    args: ["licenses", "list", "--json", "--prod"],
+  });
+  expect(licenseCommand("/tools/npm/bin/npm-cli.js", false).command).toBe("pnpm");
 });

@@ -1,3 +1,4 @@
+import { createTestProfile } from "./create-model.ts";
 // 流式滚动浏览器验收：真实 HTTP/WS/SQLite，只有模型输出是夹具。
 // node packages/server/test/fixtures/chat-scroll-server.ts <dataDir> [port]
 import { writeFileSync } from "node:fs";
@@ -80,7 +81,7 @@ const server = await startServer({
 });
 writeFileSync(resolve(dataDir, "workspace", "scroll.csv"), "A,B\n1,2\n");
 const api = createApiClient(server.url, server.token);
-await api.createModelProfile({
+await createTestProfile(api, {
   name: "滚动验收模型",
   provider: "custom-openai-compatible",
   model: "chat-scroll",

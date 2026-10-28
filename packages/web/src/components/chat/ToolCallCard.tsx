@@ -1,8 +1,9 @@
 // 一个工具步骤：单行标题 + 上下文，点开看参数与结果。需要授权或回答时，确认面板直接内联在这一步下面。
 
 import { ChevronRight, CircleSlash, Loader2, TriangleAlert } from "lucide-react";
-import React, { useEffect, useId, useRef, useState } from "react";
+import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { changeForTool } from "@/lib/session/reducer";
 import { type ToolDisplayStatus, toolDisplayStatus } from "@/lib/session/tool-view";
 import type { ToolState } from "@/lib/session/types";
 import {
@@ -18,6 +19,7 @@ import { QuestionInline } from "./AskUserCard";
 import { CodeBlock } from "./CodeBlock";
 import StreamingTextPreview from "./StreamingTextPreview";
 import {
+  OutputFiles,
   PublishPlan,
   ScriptResult,
   TextChange,
@@ -75,14 +77,28 @@ function formatDuration(ms: number | undefined): string | null {
     : `${Math.floor(ms / 60_000)}m${Math.round((ms % 60_000) / 1000)}s`;
 }
 
-/** 写入类工具成功后的改动 / 读取类的数据预览：始终可见，不需要点开。 */
+/** 写入类工具的改动 / 读取类的数据预览，与执行详情一起折叠。 */
 function InlineResult({ tool }: { tool: ToolState }) {
-  const change = useChatStore((s) => s.session.changes.find((c) => c.toolCallId === tool.id));
+  const change = useChatStore((s) => changeForTool(s.session, tool.id));
   if (tool.phase !== "done" || (tool.status !== "ok" && tool.status !== "partial")) return null;
   const data = tool.result?.data;
   if (tool.name === "workbook_edit") {
+    const output = data as { created?: boolean; path?: string } | undefined;
+    if (output?.created && output.path)
+      return (
+        <>
+          <OutputFiles paths={[output.path]} />
+          {change && <WorkbookEditResult change={change} />}
+        </>
+      );
     if (change) return <WorkbookEditResult change={change} />;
     return null;
+  }
+  if (tool.name === "workbook_export") {
+    const files = (data as { files?: unknown } | undefined)?.files;
+    return Array.isArray(files) ? (
+      <OutputFiles paths={files.filter((path): path is string => typeof path === "string")} />
+    ) : null;
   }
   if (tool.name === "workbook_read") return <WorkbookReadResult data={data} />;
   if (tool.name === "run_script") return <ScriptResult data={data} />;
@@ -121,21 +137,44 @@ export const ToolCallCard = React.memo(function ToolCallCard({
   );
   const [open, setOpen] = useState(false);
   const [opened, setOpened] = useState(false);
+  useEffect(() => {
+    if (open || !opened) return;
+    // Keep the closing animation, then release hidden DOM, JSON strings and code workers.
+    // Matches .em-step-details grid-template-rows duration.
+    const timer = setTimeout(() => setOpened(false), 220);
+    return () => clearTimeout(timer);
+  }, [open, opened]);
   const detailsId = useId();
   const status = tool ? toolDisplayStatus(tool, approval, question) : "pending";
   const running = status === "running";
   const elapsed = useElapsed(running);
+  const { args, title, contextLine, hasArgs } = useMemo(() => {
+    const args = (tool?.args ?? {}) as Record<string, unknown>;
+    const name = tool?.name ?? "";
+    return {
+      args,
+      title: toolActionTitle(name, args),
+      contextLine: formatToolContextLine(extractToolContext(name, args)),
+      hasArgs: Object.keys(args).length > 0,
+    };
+  }, [tool?.args, tool?.name]);
+  const data = tool?.result?.data;
+  const argsText = useMemo(
+    () =>
+      opened && hasArgs && !(tool?.name === "run_script" && typeof args.code === "string")
+        ? stringify(args, isMobile)
+        : "",
+    [opened, hasArgs, tool?.name, args, isMobile],
+  );
+  const resultText = useMemo(
+    () => (opened && data !== undefined ? stringify(data, isMobile) : ""),
+    [opened, data, isMobile],
+  );
   if (!tool) return null;
-
-  const args = (tool.args ?? {}) as Record<string, unknown>;
-  const title = toolActionTitle(tool.name, args);
-  const contextLine = formatToolContextLine(extractToolContext(tool.name, args));
   const Icon = toolIcon(tool.name);
   const statusText = STATUS_TEXT[status];
   const error = tool.result?.error;
   const timing = running ? (elapsed > 0 ? `${elapsed}s` : null) : formatDuration(tool.durationMs);
-  const hasArgs = Object.keys(args).length > 0;
-  const data = tool.result?.data;
   const publishPlan =
     approval?.status === "pending"
       ? (approval.args as { publishPlan?: unknown } | undefined)?.publishPlan
@@ -218,20 +257,25 @@ export const ToolCallCard = React.memo(function ToolCallCard({
         </div>
       )}
 
-      {streaming && tool.phase !== "done" && (
+      {open && streaming && tool.phase !== "done" && (
         <div className="ml-5 mt-1">
           <StreamingTextPreview toolName={tool.name} rawArgs={streaming} />
         </div>
       )}
-      {!streaming && (tool.name === "write" || tool.name === "edit") && tool.phase !== "done" && (
-        <div className="ml-5 mt-1">
-          <TextChange tool={tool} />
+      {open &&
+        !streaming &&
+        (tool.name === "write" || tool.name === "edit") &&
+        tool.phase !== "done" && (
+          <div className="ml-5 mt-1">
+            <TextChange tool={tool} />
+          </div>
+        )}
+
+      {open && (
+        <div className="ml-5 empty:hidden [&>*]:mt-1">
+          <InlineResult tool={tool} />
         </div>
       )}
-
-      <div className="ml-5 empty:hidden [&>*]:mt-1">
-        <InlineResult tool={tool} />
-      </div>
 
       <div
         id={detailsId}
@@ -255,14 +299,14 @@ export const ToolCallCard = React.memo(function ToolCallCard({
                   {tool.name === "run_script" && typeof args.code === "string" ? (
                     <CodeBlock language="typescript" code={args.code} maxHeightClass="max-h-64" />
                   ) : (
-                    <pre className="em-step-pre max-h-56">{stringify(args, isMobile)}</pre>
+                    <pre className="em-step-pre max-h-56">{argsText}</pre>
                   )}
                 </div>
               )}
               {data !== undefined && (
                 <div className="em-step-block">
                   <div className="em-step-block-label">结果</div>
-                  <pre className="em-step-pre">{stringify(data, isMobile)}</pre>
+                  <pre className="em-step-pre">{resultText}</pre>
                 </div>
               )}
               {error && (

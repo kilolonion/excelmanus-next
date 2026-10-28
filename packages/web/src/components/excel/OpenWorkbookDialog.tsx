@@ -3,7 +3,7 @@
 import type { FileEntry } from "@excelmanus/protocol";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
 import { FileSpreadsheet, FolderOpen, Loader2, RefreshCw, Search, Upload } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { errorMessage } from "@/lib/backend/api";
 import { isLegacySpreadsheetFile, isSpreadsheetFile } from "@/lib/file-kind";
-import { dirName, samePath } from "@/lib/paths";
+import { dirName, normalizePath } from "@/lib/paths";
 import { listAllFiles, uploadFiles, useFilesStore } from "@/stores/files-store";
 import { useUIStore } from "@/stores/ui-store";
 import { openWorkbook, useWorkbookStore } from "@/stores/workbook-store";
@@ -27,13 +27,15 @@ export function OpenWorkbookDialog() {
   const open = target !== null;
   const tabs = useWorkbookStore((s) => s.tabs);
   const filesVersion = useFilesStore((s) => s.version);
+  const workspaceId = useFilesStore((s) => s.workspaceId);
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [source, setSource] = useState<Source>("workspace");
   const [query, setQuery] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [opening, setOpening] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
+  const operation = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -42,7 +44,7 @@ export function OpenWorkbookDialog() {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    void listAllFiles(4000, 8)
+    void listAllFiles(4000, 8, () => !cancelled)
       .then((items) => {
         if (!cancelled)
           setFiles(
@@ -60,33 +62,60 @@ export function OpenWorkbookDialog() {
     };
   }, [open, reload, filesVersion]);
 
+  // 新打开或切工作区时重置操作，不因文件列表刷新而打断。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: tabs 变化不重置当前打开操作
   useEffect(() => {
+    operation.current += 1;
     if (open) {
       setQuery("");
       setOpening(null);
       setSource(tabs.length > 0 ? "open" : "workspace");
     }
-    // 只在打开时决定默认来源
-    // biome-ignore lint/correctness/useExhaustiveDependencies: tabs 变化不重置
-  }, [open]);
+    return () => {
+      operation.current += 1;
+    };
+  }, [open, workspaceId]);
 
-  const candidates = useMemo(() => {
-    const q = query.trim().toLocaleLowerCase();
-    const rows =
+  const filesByPath = useMemo(() => {
+    const indexed = new Map<string, FileEntry>();
+    for (const file of files) {
+      if (!file.path) continue;
+      const key = normalizePath(file.path);
+      if (!indexed.has(key)) indexed.set(key, file);
+    }
+    return indexed;
+  }, [files]);
+  const openPaths = useMemo(
+    () => new Set(tabs.filter((tab) => tab.path).map((tab) => normalizePath(tab.path))),
+    [tabs],
+  );
+  const sourceRows = useMemo(
+    () =>
       source === "open"
         ? tabs.map(
-            (t) =>
-              files.find((f) => samePath(f.path, t.path)) ??
-              ({ path: t.path, name: t.path.split("/").pop() ?? t.path } as FileEntry),
+            (tab) =>
+              (tab.path ? filesByPath.get(normalizePath(tab.path)) : undefined) ??
+              ({ path: tab.path, name: tab.path.split("/").pop() ?? tab.path } as FileEntry),
           )
-        : files;
-    return rows.filter((f) => !q || f.path.toLocaleLowerCase().includes(q));
-  }, [files, tabs, source, query]);
+        : files,
+    [files, filesByPath, tabs, source],
+  );
+  const searchRows = useMemo(() => {
+    let normalized: string[] | undefined;
+    return (query: string) => {
+      const q = query.trim().toLocaleLowerCase();
+      if (!q) return sourceRows;
+      const paths = (normalized ??= sourceRows.map((file) => file.path.toLocaleLowerCase()));
+      return sourceRows.filter((_, index) => paths[index].includes(q));
+    };
+  }, [sourceRows]);
+  const candidates = useMemo(() => searchRows(query), [searchRows, query]);
 
+  const getItemKey = useCallback((index: number) => candidates[index]?.path ?? index, [candidates]);
   const virtualizer = useVirtualizer({
     count: open ? candidates.length : 0,
     getScrollElement: () => listRef.current,
-    getItemKey: (index) => candidates[index]?.path ?? index,
+    getItemKey,
     estimateSize: () => 60,
     overscan: 6,
     rangeExtractor: defaultRangeExtractor,
@@ -99,41 +128,55 @@ export function OpenWorkbookDialog() {
       : candidates.slice(0, 8).map((file, index) => ({ key: file.path, index, start: index * 60 }));
   const listHeight = Math.max(virtualizer.getTotalSize(), candidates.length * 60);
 
+  const beginOperation = () => {
+    const id = ++operation.current;
+    const workspaceId = useFilesStore.getState().workspaceId;
+    return () =>
+      id === operation.current &&
+      useUIStore.getState().workbookPicker === target &&
+      target !== null &&
+      useFilesStore.getState().workspaceId === workspaceId;
+  };
+
   const openPath = async (path: string) => {
     if (opening) return;
+    const isCurrent = beginOperation();
+    if (!isCurrent()) return;
     setOpening(`正在打开 ${path.split("/").pop()}…`);
     setError(null);
     try {
-      await openWorkbook(path, { full: target === "full" });
+      const opened = await openWorkbook(path, { full: target === "full", isCurrent });
+      if (!isCurrent()) return;
       if (useWorkbookStore.getState().loadError)
         throw new Error(useWorkbookStore.getState().loadError ?? "表格打开失败");
-      close();
+      if (opened) close();
     } catch (err) {
-      setError(errorMessage(err, "表格打开失败"));
+      if (isCurrent()) setError(errorMessage(err, "表格打开失败"));
     } finally {
-      setOpening(null);
+      if (isCurrent()) setOpening(null);
     }
   };
 
   const uploadAndOpen = async (file: File) => {
     if (opening) return;
-    if (!isSpreadsheetFile(file.name)) {
-      setError(
-        isLegacySpreadsheetFile(file.name)
-          ? "暂不支持 .xls / .xlsb，请先另存为 .xlsx"
-          : "请选择 xlsx、xlsm、csv 或 tsv 表格",
-      );
+    if (!isSpreadsheetFile(file.name) && !isLegacySpreadsheetFile(file.name)) {
+      setError("请选择 xlsx、xlsm、xls、xlsb、csv 或 tsv 表格");
       return;
     }
+    const isCurrent = beginOperation();
+    if (!isCurrent()) return;
     setError(null);
     setOpening(`正在上传 ${file.name}…`);
     try {
       const [path] = await uploadFiles([file]);
+      if (!isCurrent()) return;
       setOpening(null);
       if (path) await openPath(path);
     } catch (err) {
-      setError(errorMessage(err, "上传失败"));
-      setOpening(null);
+      if (isCurrent()) {
+        setError(errorMessage(err, "上传失败"));
+        setOpening(null);
+      }
     }
   };
 
@@ -213,7 +256,7 @@ export function OpenWorkbookDialog() {
                 const file = candidates[row.index];
                 if (!file) return null;
                 const legacy = isLegacySpreadsheetFile(file.path);
-                const alreadyOpen = tabs.some((t) => samePath(t.path, file.path));
+                const alreadyOpen = Boolean(file.path) && openPaths.has(normalizePath(file.path));
                 const dir = dirName(file.path);
                 return (
                   <div
@@ -223,10 +266,8 @@ export function OpenWorkbookDialog() {
                   >
                     <button
                       type="button"
-                      disabled={legacy || Boolean(opening)}
-                      title={
-                        legacy ? "暂不支持在工作台打开 .xls / .xlsb，请另存为 .xlsx" : file.path
-                      }
+                      disabled={Boolean(opening)}
+                      title={legacy ? "导入为新 .xlsx，原文件保留" : file.path}
                       onClick={() => void openPath(file.path)}
                       className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                     >
@@ -234,7 +275,7 @@ export function OpenWorkbookDialog() {
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm">{file.path.split("/").pop()}</span>
                         <span className="block truncate text-xs text-muted-foreground">
-                          {legacy ? "需另存为 .xlsx 后打开" : dir || "工作区根目录"}
+                          {legacy ? "导入为新 .xlsx 后打开" : dir || "工作区根目录"}
                         </span>
                       </span>
                       {alreadyOpen ? (
@@ -249,7 +290,7 @@ export function OpenWorkbookDialog() {
                 );
               })}
             </div>
-          ) : (
+          ) : error ? null : (
             <p className="py-10 text-center text-sm text-muted-foreground">
               {query
                 ? "没有匹配的表格"
@@ -284,7 +325,7 @@ export function OpenWorkbookDialog() {
         <input
           ref={inputRef}
           type="file"
-          accept=".xlsx,.xlsm,.csv,.tsv"
+          accept=".xlsx,.xlsm,.xls,.xlsb,.csv,.tsv"
           className="hidden"
           aria-label="上传并打开表格"
           onChange={(e) => {

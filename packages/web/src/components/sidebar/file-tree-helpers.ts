@@ -2,6 +2,8 @@
 // 数据来自 files-store（按目录懒加载的 FileEntry）。
 
 import type { FileEntry } from "@excelmanus/protocol";
+import { createDateLabels } from "@/lib/date-labels";
+import { compareFileNames } from "@/lib/file-sorting";
 import { dirName, fileName, joinPath, normalizePath } from "@/lib/paths";
 
 /** 默认隐藏的目录名（任意层级的第一段）。 */
@@ -25,7 +27,7 @@ export function isSystemEntry(entry: Pick<FileEntry, "path" | "kind">): boolean 
 export function sortEntries(entries: FileEntry[]): FileEntry[] {
   return [...entries].sort((a, b) => {
     if (a.kind !== b.kind) return a.kind === "dir" ? -1 : 1;
-    return a.name.localeCompare(b.name, "zh-CN", { numeric: true });
+    return compareFileNames(a.name, b.name);
   });
 }
 
@@ -84,4 +86,15 @@ export function formatTime(iso: string | undefined): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+/** Share one date formatter within a rendered record list, preserving the file-time fallback. */
+export function createFileTimeFormatter() {
+  const format = createDateLabels({
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return (iso: string | undefined) => (iso ? format(iso) : "-");
 }

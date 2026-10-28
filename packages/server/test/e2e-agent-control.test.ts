@@ -11,6 +11,7 @@ import { summarizeWriteSet, unionArea } from "@excelmanus/workbook";
 import { MockLanguageModelV4 } from "ai/test";
 import { afterAll, describe, expect, test } from "vitest";
 import { type RunningServer, startServer } from "../src/index.ts";
+import { createTestProfile } from "./fixtures/create-model.ts";
 
 const servers: RunningServer[] = [];
 const dirs: string[] = [];
@@ -145,7 +146,20 @@ async function boot(b: Behaviour, maxConcurrentSubAgents: number, prompts: strin
             b.spawn.map((n, i) => ({
               id: `spawn-${i}`,
               tool: "agent_spawn",
-              input: { name: n, role: "worker", task: `写入 ${n} 文件`, files: [`${n}.xlsx`] },
+              input: {
+                name: n,
+                role: "worker",
+                task: `写入 ${n} 文件`,
+                files: [`${n}.xlsx`],
+                handoff: {
+                  goal: "创建演示文件",
+                  scope: [{ path: `${n}.xlsx`, sheet: "Sheet1", range: "A1:B2" }],
+                  constraints: ["不要改原表"],
+                  deliverables: [`${n}.xlsx`],
+                  acceptance: ["包含四个数值单元格"],
+                  evidence: ["目标文件尚未创建；没有已知 rev"],
+                },
+              },
             })),
           ),
         };
@@ -161,7 +175,7 @@ async function boot(b: Behaviour, maxConcurrentSubAgents: number, prompts: strin
   });
   servers.push(server);
   const api = createApiClient(server.url, server.token);
-  await api.createModelProfile({
+  await createTestProfile(api, {
     name: "m",
     provider: "custom-openai-compatible",
     model: "mock",
@@ -231,6 +245,9 @@ describe("多代理控制面", () => {
       expect(p).toContain("不要改原表");
       expect(p).toContain("工作区：");
       expect(p).toContain("子代理任务说明");
+      expect(p).toContain('"acceptance":["包含四个数值单元格"]');
+      expect(p).toContain('"range":"A1:B2"');
+      expect(p).toContain("不授予额外权限");
     }
   }, 60_000);
 

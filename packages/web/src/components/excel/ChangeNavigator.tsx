@@ -10,18 +10,16 @@ import {
   LocateFixed,
   RotateCcw,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { confirmAction } from "@/components/ui/confirm-dialog";
 import { toast } from "@/components/ui/toaster";
 import { api, errorMessage } from "@/lib/backend/api";
 import { fileName } from "@/lib/paths";
-import { changeRanges, lastUserSeq } from "@/lib/session/reducer";
 import { cn } from "@/lib/utils";
-import { useChatStore } from "@/stores/chat-store";
+import { readComparisonSnapshot, readRevisionBefore } from "@/lib/workbook/change-reads";
+import { useChangeNavigation } from "@/lib/workbook/use-overlay-data";
 import { focusRange, openWorkbook, useWorkbookStore } from "@/stores/workbook-store";
-
-type BeforeResponse = Awaited<ReturnType<ReturnType<typeof api>["getDocRevBefore"]>>;
-const beforeCache = new Map<string, Promise<BeforeResponse>>();
 
 function show(value: unknown): string {
   return value === null || value === undefined || value === "" ? "（空）" : String(value);
@@ -30,7 +28,7 @@ function show(value: unknown): string {
 /**
  * 该修订首格的「修改前 → 现在」：修改前取自服务端逆操作，现在取自当前快照。
  */
-function BeforeAfter({
+export function BeforeAfter({
   workspaceId,
   docId,
   rev,
@@ -45,23 +43,22 @@ function BeforeAfter({
   const [cell, setCell] = useState<{ before: string; after: string; ref: string } | "same" | null>(
     null,
   );
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let alive = true;
     setCell(null);
+    setLoadError(null);
     let p: ReturnType<typeof parseRange>;
     try {
       p = parseRange(range);
     } catch {
       return;
     }
-    const key = `${workspaceId}:${docId}:${rev}`;
-    let req = beforeCache.get(key);
-    if (!req) {
-      req = api().getDocRevBefore(workspaceId, docId, rev);
-      beforeCache.set(key, req);
-      req.catch(() => beforeCache.delete(key));
-    }
-    void Promise.all([req, api().getDocSnapshot(workspaceId, docId)])
+    void Promise.all([
+      readRevisionBefore(workspaceId, docId, rev),
+      readComparisonSnapshot(workspaceId, docId, currentRev, attempt > 0),
+    ])
       .then(([res, current]) => {
         if (!alive) return;
         // 逆操作为空：这次写入的值与原值相同
@@ -101,11 +98,27 @@ function BeforeAfter({
           }),
         });
       })
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        if (alive) setLoadError(errorMessage(error, "修改前后值读取失败"));
+      });
     return () => {
       alive = false;
     };
-  }, [workspaceId, docId, rev, range, currentRev]);
+  }, [workspaceId, docId, rev, range, currentRev, attempt]);
+  if (loadError)
+    return (
+      <span
+        role="alert"
+        className="inline-flex min-w-0 items-center gap-2 text-xs text-muted-foreground"
+      >
+        <span className="truncate" title={loadError}>
+          {loadError}
+        </span>
+        <Button size="sm" variant="ghost" onClick={() => setAttempt((value) => value + 1)}>
+          重新读取
+        </Button>
+      </span>
+    );
   if (!cell) return null;
   if (cell === "same")
     return (
@@ -174,18 +187,9 @@ function RestoreBackup({ workspaceId, docPath }: { workspaceId: string; docPath:
 export function ChangeNavigator() {
   const doc = useWorkbookStore((s) => s.doc);
   const workspaceId = useWorkbookStore((s) => s.workspaceId);
-  const session = useChatStore((s) => s.session);
   const [scope, setScope] = useState<"turn" | "all">("turn");
   const [index, setIndex] = useState(0);
-  const since = scope === "turn" ? lastUserSeq(session) : 0;
-  const items = useMemo(
-    () => (doc ? changeRanges(session, doc.docId, since) : []),
-    [session, doc, since],
-  );
-  const total = useMemo(
-    () => (doc ? changeRanges(session, doc.docId, 0).length : 0),
-    [session, doc],
-  );
+  const { items, total } = useChangeNavigation(scope);
   // 新改动到达时跳到最新一处
   useEffect(() => {
     setIndex(Math.max(0, items.length - 1));
@@ -196,9 +200,7 @@ export function ChangeNavigator() {
     return (
       <div className="flex min-w-0 flex-1 items-center gap-2 text-xs text-muted-foreground">
         <History className="h-3.5 w-3.5 shrink-0" />
-        <span className="truncate">
-          本会话还没有修改这份表格。代理写入后，可在这里逐处查看修改前后的值。
-        </span>
+        <span className="truncate">本会话还没有代理改动。手动编辑请在「修订历史」中查看。</span>
       </div>
     );
   }
@@ -238,7 +240,7 @@ export function ChangeNavigator() {
         ))}
       </div>
       {items.length === 0 || !cur ? (
-        <span className="shrink-0 text-muted-foreground">本轮还没有修改</span>
+        <span className="shrink-0 text-muted-foreground">本轮还没有代理改动</span>
       ) : (
         <>
           <span className="shrink-0 font-mono whitespace-nowrap text-muted-foreground tabular-nums">

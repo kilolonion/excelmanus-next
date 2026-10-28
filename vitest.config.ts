@@ -16,6 +16,9 @@ export default defineConfig({
     fileParallelism: false,
     projects: [
       ...packageRoots.map((root) => ({
+        ...(root === "packages/web"
+          ? { resolve: { alias: { "@": new URL("./packages/web/src", import.meta.url).pathname } } }
+          : {}),
         test: {
           name: root.replace(/^packages\//, "").replaceAll("/", "-"),
           root,
